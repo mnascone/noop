@@ -74,24 +74,37 @@ struct RootTabView: View {
         if liquidTodayEnabled { LiquidTodayView() } else { TodayView() }
     }
 
-    /// Native tab selection binding. SwiftUI sends taps on the already-selected item through the
-    /// setter, which lets the system tab bar retain the app's refresh / pop-to-root / scroll-to-top
-    /// convention without placing a custom hit-testing layer over the platform bar.
-    private var nativeTabSelection: Binding<Int> {
-        Binding(
-            get: { selectedTab },
-            set: { tag in
-                if tag == selectedTab {
-                    reselectTab(tag)
-                } else {
-                    selectedTab = tag
-                }
-            }
-        )
+    /// Tab tags in on-screen order. Coach (3) only when its master switch is on.
+    private var visibleTabOrder: [Int] { coachEnabled ? [0, 1, 2, 5, 3, 4] : [0, 1, 2, 5, 4] }
+
+    /// Tabs opened at least once. Each is built on first visit and then kept alive (hidden) so it keeps its
+    /// scroll position and navigation stack, the way the native tab bar kept them.
+    @State private var visitedTabs: Set<Int> = [0]
+
+    /// The bar's items, in order.
+    private var barItems: [NoopTabBar.Item] {
+        var items: [NoopTabBar.Item] = [
+            .init(tag: 0, title: "Today", icon: "square.grid.2x2"),
+            .init(tag: 1, title: "Trends", icon: "chart.line.uptrend.xyaxis"),
+            .init(tag: 2, title: "Sleep", icon: "bed.double"),
+            .init(tag: 5, title: "Workouts", icon: "figure.run"),
+        ]
+        if coachEnabled { items.append(.init(tag: 3, title: "Coach", icon: "sparkles")) }
+        items.append(.init(tag: 4, title: "More", icon: "ellipsis"))
+        return items
     }
 
-    /// Tab tags in on-screen order.
-    static let visibleTabOrder = [0, 1, 2, 5, 4]
+    /// One tab's content, built on first visit and kept alive after.
+    @ViewBuilder
+    private func tabLayer<V: View>(_ tag: Int, @ViewBuilder _ content: () -> V) -> some View {
+        if visitedTabs.contains(tag) || selectedTab == tag {
+            content()
+                .opacity(selectedTab == tag ? 1 : 0)
+                .allowsHitTesting(selectedTab == tag)
+                .accessibilityHidden(selectedTab != tag)
+                .zIndex(selectedTab == tag ? 1 : 0)
+        }
+    }
 
     private func reselectTab(_ tag: Int) {
         Task { await repo.refresh() }
@@ -119,7 +132,7 @@ struct RootTabView: View {
                 guard abs(dx) > 60, abs(dx) > abs(dy) * 1.6 else { return }
                 // Tags are identities, not positions (Workouts is tag 5 but sits third), so step through
                 // the visible order.
-                let order = Self.visibleTabOrder
+                let order = visibleTabOrder
                 guard let i = order.firstIndex(of: selectedTab) else { return }
                 let next = order[min(order.count - 1, max(0, i + (dx < 0 ? 1 : -1)))]
                 if next != selectedTab {
@@ -129,29 +142,35 @@ struct RootTabView: View {
     }
 
     var body: some View {
-        // The platform tab bar is intentionally left fully native. iOS 26 supplies Liquid Glass and
-        // its dynamic interaction with scrolling content automatically; older supported releases use
-        // the corresponding system material and safe-area behaviour from the same TabView.
-        TabView(selection: nativeTabSelection) {
-            tab(todayTabRoot, "Today", "square.grid.2x2", path: $tabPaths[0], scrollSignal: scrollTop[0]).tag(0)
-            tab(TrendsView(), "Trends", "chart.line.uptrend.xyaxis", path: $tabPaths[1], scrollSignal: scrollTop[1]).tag(1)
-            tab(SleepView(), "Sleep", "bed.double", path: $tabPaths[2], scrollSignal: scrollTop[2]).tag(2)
-            // Workouts: live tracking, auto-tracking places and the history. iPhone shows five tabs, so it
-            // takes Coach's slot; Coach stays one tap away in More. Tag 5 keeps the existing tags (and
-            // their paths and scroll positions) unchanged.
-            tab(WorkoutsHubView(), "Workouts", "figure.run", path: $tabPaths[5], scrollSignal: scrollTop[5]).tag(5)
-            moreTab(path: $tabPaths[4], scrollSignal: scrollTop[4]).tag(4)
+        // Six tabs (Today, Trends, Sleep, Workouts, Coach, More) don't fit the native iPhone tab bar, which
+        // folds anything past five into a system "More". So the tabs are layered here and a custom bar drives
+        // them. Each tab keeps its own NavigationStack, path and scroll-to-top signal exactly as before.
+        ZStack {
+            tabLayer(0) { tab(todayTabRoot, "Today", "square.grid.2x2", path: $tabPaths[0], scrollSignal: scrollTop[0]) }
+            tabLayer(1) { tab(TrendsView(), "Trends", "chart.line.uptrend.xyaxis", path: $tabPaths[1], scrollSignal: scrollTop[1]) }
+            tabLayer(2) { tab(SleepView(), "Sleep", "bed.double", path: $tabPaths[2], scrollSignal: scrollTop[2]) }
+            tabLayer(5) { tab(WorkoutsHubView(), "Workouts", "figure.run", path: $tabPaths[5], scrollSignal: scrollTop[5]) }
+            if coachEnabled {
+                tabLayer(3) { tab(CoachView(), "Coach", "sparkles", path: $tabPaths[3], scrollSignal: scrollTop[3]) }
+            }
+            tabLayer(4) { moreTab(path: $tabPaths[4], scrollSignal: scrollTop[4]) }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            NoopTabBar(items: barItems, selected: selectedTab) { tag in
+                if tag == selectedTab {
+                    reselectTab(tag)
+                } else {
+                    selectedTab = tag
+                }
+            }
+        }
+        .onChange(of: selectedTab) { _, tag in visitedTabs.insert(tag) }
         .tint(StrandPalette.accent)
         // Switching Coach off while STANDING on it leaves `selectedTab` pointing at a tag no tab claims
-        // any more, which renders as an empty tab rather than as an error. Send that wearer to Today, and
-        // only in that case, so a flip made from anywhere else does not move them.
-        // Coach no longer has a tab of its own; anyone restored onto its old tag lands on Today.
-        .onAppear { if selectedTab == 3 { selectedTab = 0 } }
-        // #1841: the same "Hide bar when scrolling" preference Android drives its own bar with. Here the
-        // system owns the behaviour — iOS 26's tab bar MINIMISES to a pill on scroll down rather than
-        // sliding away entirely, so this is the platform's read of the same intent, not a copy of ours.
-        .noopTabBarAutoHide(bottomBarAutoHide)
+        // any more. Send that wearer to Today, and only in that case.
+        .onChangeCompat(of: coachEnabled) { enabled in
+            if !enabled && selectedTab == 3 { selectedTab = 0 }
+        }
             // Tab crossfade — README §Motion: ~240ms opacity swap between tab roots, global calm
             // easing cubic-bezier(0.22,1,0.36,1).
             .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24), value: selectedTab)
@@ -224,8 +243,7 @@ struct RootTabView: View {
                     router.requestedDestination = nil
                     break
                 }
-                // Coach no longer has a tab (Workouts took the slot), so it opens as a sheet.
-                routedPillar = dest
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 3 }
                 router.requestedDestination = nil
             case .trends:
                 // Trends is a primary tab on iPhone (not a pillar sheet) — switch to it.
@@ -468,10 +486,7 @@ struct RootTabView: View {
                 moreSection("Insights") {
                     MoreRow("What Moves You", "wand.and.sparkles", .insightsHub)
                     MoreRow("Intelligence", "brain.head.profile", .intelligence)
-                    // Coach lives here again: its tab slot went to Workouts.
-                    if coachEnabled {
-                        MoreRow("Coach", "sparkles", .coach)
-                    }
+                    // K3: Coach promoted to a top-level tab — no longer listed under More.
                     MoreRow("Insights", "lightbulb.fill", .insights)
                     MoreRow("Explore", "square.grid.2x2.fill", .explore)
                     MoreRow("Compare", "rectangle.split.2x1.fill", .compare)
@@ -768,6 +783,65 @@ private struct QuickActionSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+
+/// The bottom bar: six tabs across (five with Coach off). Native look where possible: Liquid Glass on
+/// iOS 26, the system material before it.
+struct NoopTabBar: View {
+    struct Item: Identifiable {
+        let tag: Int
+        let title: LocalizedStringKey
+        let icon: String
+        var id: Int { tag }
+    }
+
+    let items: [Item]
+    let selected: Int
+    let onSelect: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(items) { item in
+                let isOn = item.tag == selected
+                Button {
+                    onSelect(item.tag)
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: item.icon)
+                            .font(.system(size: 18, weight: isOn ? .semibold : .regular))
+                            .frame(height: 22)
+                        Text(item.title)
+                            .font(.system(size: 10, weight: .medium))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                    }
+                    .foregroundStyle(isOn ? StrandPalette.accent : StrandPalette.textSecondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(item.title))
+                .accessibilityAddTraits(isOn ? [.isButton, .isSelected] : .isButton)
+            }
+        }
+        .padding(.horizontal, 6)
+        .background { barBackground }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 2)
+    }
+
+    @ViewBuilder
+    private var barBackground: some View {
+        if #available(iOS 26.0, *) {
+            Capsule().fill(.clear).glassEffect(.regular, in: Capsule())
+        } else {
+            Capsule()
+                .fill(.ultraThinMaterial)
+                .overlay(Capsule().strokeBorder(StrandPalette.hairline, lineWidth: 0.8))
+        }
     }
 }
 

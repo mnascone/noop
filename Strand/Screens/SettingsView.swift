@@ -1567,11 +1567,28 @@ struct SettingsView: View {
         SettingsSection(
             icon: "bell.badge",
             title: "Live notifications",
-            blurb: "Shown on the Lock Screen and in the Dynamic Island. A switch only hides one: NOOP still measures and records everything."
+            blurb: "Lock Screen and Dynamic Island. Turning one off only hides it. Everything still gets recorded."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
                 liveNotificationSwitch("Live heart rate", isOn: $liveActivityEnabled,
                                        detail: "While the strap is connected.")
+                if liveActivityEnabled {
+                    NavigationLink {
+                        LiveBannerSettingsView()
+                    } label: {
+                        HStack {
+                            Text("Choose what it shows")
+                                .font(StrandFont.subhead)
+                                .foregroundStyle(StrandPalette.accent)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(StrandPalette.textTertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
                 rowDivider
                 liveNotificationSwitch("Lift Log session", isOn: $liftLiveActivityEnabled,
                                        detail: "Your set, rest and heart rate, and the Lock Screen light-up on a double-tap.")
@@ -1707,12 +1724,12 @@ struct SettingsView: View {
                 .tint(StrandPalette.accent)
                 .accessibilityHint("Offers to save a workout when it spots sustained elevated heart rate")
 
-                Text("After a sync, NOOP looks over your recent heart rate for a sustained, raised stretch that looks like exercise and offers to save it. It only ever suggests. Nothing is saved until you tap Save, and you can dismiss any suggestion. Turning this off stops future suggestions but keeps your existing workout history. Deliberately conservative, so the odd workout may be missed. On \(Platform.deviceNounPhrase) only.")
+                Text("After a sync, spots 12+ minutes of raised heart rate you didn't log and offers to save it. Nothing saves unless you tap Save. It's cautious, so it'll miss some. On \(Platform.deviceNounPhrase) only.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("Skips sessions that overlap a saved or imported workout, including workouts from Apple Health.")
+                Text("Ignores anything that overlaps a workout you already have, including Apple Health ones.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1720,8 +1737,22 @@ struct SettingsView: View {
                 rowDivider
 
                 #if os(iOS)
-                // Live start/end notifications (gym geofence, walk detection). iOS-only file.
-                LiveWorkoutSuggestionsSettings()
+                // Automatic workout tracking (places, walks, set detection). Lives in the Workouts tab too.
+                NavigationLink {
+                    AutoTrackingSettingsView()
+                } label: {
+                    HStack {
+                        Text("Workout auto-tracking")
+                            .font(StrandFont.subhead)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(StrandPalette.textTertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
 
                 rowDivider
                 #endif

@@ -1,50 +1,75 @@
 import Foundation
 
-// LiveWorkoutSuggestionEngine.swift — live "start / end workout?" suggestions for the iPhone.
+// LiveWorkoutSuggestionEngine.swift — decides when a workout starts and ends, live, on the iPhone.
 //
-// The retrospective `AutoWorkoutDetector` only runs after a sync and only offers to SAVE a past window.
-// This engine runs while the app is awake (BLE heart-rate notifies, region and motion callbacks keep it
-// running in the background) and decides when to OFFER to start or end a live workout, the way Apple
-// Watch does. Like the retrospective detector it only ever suggests: the app layer turns each action into
-// a notification and nothing starts or stops until the wearer taps it.
-//
-// Three inputs drive it, all supplied by the app layer:
-//   1. Gym geofence: `gymEntered` / `gymExited` from a CLCircularRegion the wearer set.
+// The app layer feeds it three signals and acts on what it returns:
+//   1. Places: `placeEntered` / `placeExited` from geofences the wearer pinned (a gym, an ice rink).
+//      Each place carries its own start/end thresholds.
 //   2. Phone motion: the CMMotionActivity classification (walking / running / stationary / automotive).
 //   3. Heart rate: the smoothed live bpm, available only while the realtime stream is armed.
 //
-// Heart rate is the confirming signal, and the realtime stream costs strap battery, so the engine also
-// says when it WANTS the stream (`wantsRealtime`): from gym arrival until a start suggestion is resolved,
-// during a sustained walking bout, and during any active workout. Otherwise the stream stays off.
+// Whether a `start` / `end` action is applied automatically or offered as a notification is the app
+// layer's choice. The engine only says what happened and when, including backdated times.
+//
+// Heart rate costs strap battery, so the engine also says when it WANTS the stream (`wantsRealtime`):
+// from arriving at a place until a workout starts there (capped), during a sustained walking bout, and
+// during any active workout.
 //
 // Start rules:
-//   - Gym: inside the gym for `gymMinDwellS`, at least `minHRCoverageSamples` samples since arrival in the
-//     last `startWindowS`, and at least `gymElevatedFraction` of them at or above resting + `gymMarginBPM`. Start is backdated to the first
-//     elevated sample of the current elevated stretch, never earlier than gym arrival.
+//   - Place: inside for `placeMinDwellS`, at least `minHRCoverageSamples` samples since arrival in the last
+//     `startWindowS`, and at least `elevatedFraction` of them at or above resting + the place's margin.
+//     Start is the first elevated sample of the current elevated stretch, never before arrival.
 //   - Walk / run: a walking or running bout held for `walkMinBoutS` (`runMinBoutS` when mostly running),
 //     with the window's median HR at or above resting + `walkMarginBPM` (`runMarginBPM`). With no heart
-//     rate at all (strap disconnected) a bout of `walkNoHRMinBoutS` still qualifies. Start is backdated to
-//     the beginning of the bout. A walking bout inside the gym is left to the gym rule.
+//     rate at all a bout of `walkNoHRMinBoutS` still qualifies. Start is the beginning of the bout. A walk
+//     inside a place is left to the place rule.
 //
-// End rules (active workout, one suggestion until activity resumes):
-//   - Gym: leaving the gym ends it immediately. Otherwise heart rate quiet (under resting +
-//     `quietMarginBPM` for all but `quietTolerance` of samples) for `gymQuietEndS`.
+// End rules (active workout, one end until activity resumes):
+//   - Place: leaving it ends the workout at the LAST elevated sample (when heart rate dropped for the last
+//     time), not at the exit. Staying put with heart rate under resting + `quietMarginBPM` for the place's
+//     quiet span also ends it, at the last loud sample.
 //   - Walk / run: motion stopped for `walkStopGraceS` with heart rate back below the walk floor, or stopped
-//     for `walkStopMaxS` regardless of heart rate, or automotive at once. End is backdated to the last
-//     walking moment.
+//     for `walkStopMaxS` regardless, or driving at once. End is the last moment on foot.
 //   - Any other workout (started by hand): heart rate quiet for `otherQuietEndS`.
 //
-// Pure and deterministic: no clock, no I/O. All timestamps are unix seconds supplied by the caller. Events
-// may arrive slightly out of order (motion history is replayed after a background wake); the engine keeps
-// its own "now" as the latest timestamp seen. iOS-only feature: there is no Kotlin twin. NOT medical advice.
+// Pure and deterministic: no clock, no I/O. Timestamps are unix seconds supplied by the caller. Events may
+// arrive slightly out of order (motion history is replayed after a background wake); the engine keeps its
+// own "now" as the latest timestamp seen. iOS-only: no Kotlin twin. NOT medical advice.
 
 public struct LiveWorkoutSuggestionEngine: Sendable {
 
     // MARK: - Types
 
-    /// What kind of session a suggestion is about. The app layer maps it to a catalogue sport.
-    public enum Context: String, Sendable, Equatable {
-        case gym, walk, run
+    /// What a start/end is about. Encoded with `key` for notification payloads.
+    public enum Context: Sendable, Equatable, Hashable {
+        case place(String)
+        case walk
+        case run
+
+        public var key: String {
+            switch self {
+            case .place(let id): return "place:" + id
+            case .walk: return "walk"
+            case .run: return "run"
+            }
+        }
+
+        public init?(key: String) {
+            switch key {
+            case "walk": self = .walk
+            case "run": self = .run
+            default:
+                guard key.hasPrefix("place:") else { return nil }
+                let id = String(key.dropFirst("place:".count))
+                guard !id.isEmpty else { return nil }
+                self = .place(id)
+            }
+        }
+
+        public var placeId: String? {
+            if case .place(let id) = self { return id }
+            return nil
+        }
     }
 
     /// Phone motion classification, reduced from CMMotionActivity by the app layer.
@@ -54,105 +79,106 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         var isOnFoot: Bool { self == .walking || self == .running }
     }
 
-    /// Why an end suggestion was raised. Drives the notification copy.
     public enum EndReason: String, Sendable, Equatable {
-        case leftGym, stoppedMoving, startedDriving, heartRateRecovered
+        case leftPlace, stoppedMoving, startedDriving, heartRateRecovered
+    }
+
+    /// Per-place thresholds. Defaults suit lifting. Team sports use `sport`.
+    public struct PlaceParams: Sendable, Equatable {
+        /// Heart rate at or above resting + this counts as working.
+        public var marginBPM: Int
+        /// End after this long with heart rate near resting while still inside.
+        public var quietEndS: Int
+
+        public init(marginBPM: Int = 20, quietEndS: Int = 10 * 60) {
+            self.marginBPM = max(5, marginBPM)
+            self.quietEndS = max(3 * 60, quietEndS)
+        }
+
+        public static let lifting = PlaceParams(marginBPM: 20, quietEndS: 10 * 60)
+        public static let sport = PlaceParams(marginBPM: 30, quietEndS: 15 * 60)
     }
 
     public enum Event: Sendable, Equatable {
-        case gymEntered
-        case gymExited
+        case placeEntered(id: String, params: PlaceParams)
+        case placeExited(id: String)
         case motion(Motion)
         case heartRate(Int)
-        /// A workout became active. `context` is the suggestion it came from, nil when started by hand.
+        /// A workout became active. `context` is what started it, nil when started by hand.
         case workoutStarted(context: Context?)
         case workoutEnded
-        /// The wearer declined the start suggestion ("Not now").
+        /// The wearer declined a start offer ("Not now"), or discarded an auto-start.
         case startDismissed
-        /// The wearer declined the end suggestion ("Keep going").
+        /// The wearer declined an end offer ("Keep going").
         case endDismissed
-        /// No new data, just time passing.
         case tick
     }
 
     public enum Action: Sendable, Equatable {
-        case suggestStart(context: Context, startTs: Int, avgBpm: Int?)
+        case start(context: Context, startTs: Int, avgBpm: Int?)
         case withdrawStart
-        case suggestEnd(context: Context?, endTs: Int, reason: EndReason)
+        case end(context: Context?, endTs: Int, reason: EndReason)
         case withdrawEnd
     }
 
     public struct Config: Sendable, Equatable {
         public var restingBpm: Int
-        public var gymEnabled: Bool
+        public var placesEnabled: Bool
         public var walkEnabled: Bool
 
-        public init(restingBpm: Int, gymEnabled: Bool = true, walkEnabled: Bool = true) {
+        public init(restingBpm: Int, placesEnabled: Bool = true, walkEnabled: Bool = true) {
             self.restingBpm = restingBpm
-            self.gymEnabled = gymEnabled
+            self.placesEnabled = placesEnabled
             self.walkEnabled = walkEnabled
         }
     }
 
     // MARK: - Tunables (named constants, fixed a priori, not fit to labels)
 
-    /// Gym work (lifting, circuits) raises HR less than cardio, so its floor sits below the retrospective
-    /// detector's resting + 30.
-    public static let gymMarginBPM = 20
-    public static let gymElevatedFraction = 0.6
-    /// Time inside the gym before a start can be suggested. Arriving out of breath (cycled, ran for the bus)
-    /// settles within a few minutes, and the window below only judges samples since arrival.
-    public static let gymMinDwellS = 3 * 60
-    /// A brisk walk sits roughly 15 to 40 bpm over resting. 12 keeps a slow stroll out.
+    public static let elevatedFraction = 0.6
+    /// Time inside a place before a start can fire. Arriving out of breath settles within minutes, and the
+    /// window only judges samples since arrival.
+    public static let placeMinDwellS = 3 * 60
     public static let walkMarginBPM = 12
     public static let runMarginBPM = 25
-    /// Rolling window the start rules judge.
     public static let startWindowS = 180
-    /// Fewer samples than this in the window means "no usable heart rate" (the stream runs about 1 Hz).
+    /// Fewer samples than this in a window means "no usable heart rate" (the stream runs about 1 Hz).
     public static let minHRCoverageSamples = 30
     public static let walkMinBoutS = 5 * 60
     public static let runMinBoutS = 3 * 60
     public static let walkNoHRMinBoutS = 10 * 60
-    /// A walking bout survives a pause this long (a crossing, a red light).
     public static let walkStopGraceS = 120
     public static let walkStopMaxS = 5 * 60
-    /// Arm the realtime stream once a walking bout has lasted this long, so HR is ready by `walkMinBoutS`.
     public static let walkArmAfterS = 60
-    /// Stop holding the stream for a bout that never qualified after this long.
     public static let walkMaxArmS = 30 * 60
-    /// Stop holding the stream for a gym visit with no start suggestion after this long.
-    public static let gymMaxArmS = 2 * 60 * 60
+    /// Stop holding the stream for a place visit with no start after this long.
+    public static let placeMaxArmS = 3 * 60 * 60
     /// An elevated stretch ends at a sub-floor gap longer than this (rest between sets is shorter).
     public static let elevatedStretchGapS = 5 * 60
-    /// "Quiet" heart rate for the end rules: under resting + this.
     public static let quietMarginBPM = 10
-    /// Fraction of samples allowed above the quiet line inside a quiet stretch.
     public static let quietTolerance = 0.1
-    public static let gymQuietEndS = 10 * 60
     public static let otherQuietEndS = 15 * 60
-    /// Activity counts as resumed (re-enabling an end suggestion) after this much elevated HR.
     public static let resumeElevatedS = 3 * 60
-    /// A start suggestion nobody answered is withdrawn after this long.
     public static let pendingStartTimeoutS = 30 * 60
-    /// Heart-rate history kept in memory.
-    public static let hrHistoryS = 20 * 60
+    /// Heart-rate history kept in memory: enough to backdate an end across a long session's tail.
+    public static let hrHistoryS = 4 * 60 * 60
 
     // MARK: - State
 
     public var config: Config
-
     public private(set) var now: Int = 0
 
-    public private(set) var inGym = false
-    private var gymEnteredAt: Int?
-    private var gymStartSuggested = false
+    public private(set) var currentPlace: String?
+    private var placeParams = PlaceParams.lifting
+    private var placeEnteredAt: Int?
+    private var placeStartRaised = false
 
     private var motion: Motion = .unknown
     private var walkBoutStart: Int?
     private var lastOnFootTs: Int?
     private var runSecondsInBout = 0
     private var lastMotionTs: Int?
-    private var walkStartSuggestedForBout = false
+    private var walkStartRaisedForBout = false
     private var drivingSince: Int?
 
     private var hr: [(ts: Int, bpm: Int)] = []
@@ -160,7 +186,8 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     public private(set) var workoutActive = false
     public private(set) var workoutContext: Context?
     private var workoutStartedAt: Int?
-    private var endSuggested = false
+    private var workoutParams: PlaceParams?
+    private var endRaised = false
 
     public private(set) var pendingStart: (context: Context, startTs: Int)?
     private var pendingStartRaisedAt: Int?
@@ -169,48 +196,49 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         self.config = config
     }
 
+    public var inPlace: Bool { currentPlace != nil }
+
     // MARK: - Public API
 
-    /// Whether the engine needs live heart rate right now. The app layer holds the realtime arm while true.
     public var wantsRealtime: Bool {
         if workoutActive { return true }
-        if config.gymEnabled, inGym, let entered = gymEnteredAt {
-            if pendingStart?.context == .gym { return true }
-            if !gymStartSuggested, now - entered < Self.gymMaxArmS { return true }
+        if config.placesEnabled, currentPlace != nil, let entered = placeEnteredAt {
+            if pendingStart?.context.placeId != nil { return true }
+            if !placeStartRaised, now - entered < Self.placeMaxArmS { return true }
         }
-        if config.walkEnabled, !inGym, let bout = walkBoutStart, !walkStartSuggestedForBout {
+        if config.walkEnabled, currentPlace == nil, let bout = walkBoutStart, !walkStartRaisedForBout {
             let dur = now - bout
             if dur >= Self.walkArmAfterS, dur < Self.walkMaxArmS { return true }
         }
-        if let p = pendingStart, p.context != .gym { return true }
+        if let p = pendingStart, p.context.placeId == nil { return true }
         return false
     }
 
-    /// Live heart-rate samples the engine holds in `[from, to]`, for seeding a backdated workout.
     public func heartRate(from: Int, to: Int) -> [(ts: Int, bpm: Int)] {
         hr.filter { $0.ts >= from && $0.ts <= to }
     }
 
-    /// Feed one event observed at `ts`. Returns the suggestions to raise or withdraw, in order.
     public mutating func handle(_ event: Event, at ts: Int) -> [Action] {
         now = max(now, ts)
         var out: [Action] = []
 
         switch event {
-        case .gymEntered:
-            if !inGym {
-                inGym = true
-                gymEnteredAt = ts
-                gymStartSuggested = false
+        case let .placeEntered(id, params):
+            if currentPlace != id {
+                currentPlace = id
+                placeParams = params
+                placeEnteredAt = ts
+                placeStartRaised = false
             }
-        case .gymExited:
-            if inGym {
-                inGym = false
-                gymEnteredAt = nil
-                if pendingStart?.context == .gym { clearPending(&out) }
-                if workoutActive, !endSuggested, workoutContext == .gym || workoutContext == nil {
-                    endSuggested = true
-                    out.append(.suggestEnd(context: workoutContext, endTs: ts, reason: .leftGym))
+        case .placeExited(let id):
+            if currentPlace == id {
+                currentPlace = nil
+                placeEnteredAt = nil
+                if pendingStart?.context == .place(id) { clearPending(&out) }
+                if workoutActive, !endRaised, workoutContext == .place(id) || workoutContext == nil {
+                    endRaised = true
+                    out.append(.end(context: workoutContext, endTs: lastElevatedTs(fallback: ts),
+                                    reason: .leftPlace))
                 }
             }
         case .motion(let m):
@@ -229,29 +257,25 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
             workoutActive = true
             workoutContext = context ?? inferredContext()
             workoutStartedAt = ts
-            endSuggested = false
-            if pendingStart != nil {
-                pendingStart = nil
-                pendingStartRaisedAt = nil
-            }
-            if inGym { gymStartSuggested = true }
-            if walkBoutStart != nil { walkStartSuggestedForBout = true }
+            workoutParams = workoutContext?.placeId != nil ? placeParams : nil
+            endRaised = false
+            pendingStart = nil
+            pendingStartRaisedAt = nil
+            if currentPlace != nil { placeStartRaised = true }
+            if walkBoutStart != nil { walkStartRaisedForBout = true }
         case .workoutEnded:
             workoutActive = false
             workoutContext = nil
             workoutStartedAt = nil
-            if endSuggested {
-                endSuggested = false
+            workoutParams = nil
+            if endRaised {
+                endRaised = false
                 out.append(.withdrawEnd)
             }
         case .startDismissed:
-            if pendingStart != nil {
-                pendingStart = nil
-                pendingStartRaisedAt = nil
-            }
-        case .endDismissed:
-            break   // endSuggested stays set until activity resumes
-        case .tick:
+            pendingStart = nil
+            pendingStartRaisedAt = nil
+        case .endDismissed, .tick:
             break
         }
 
@@ -262,7 +286,6 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     // MARK: - Motion
 
     private mutating func applyMotion(_ m: Motion, at ts: Int) {
-        // Count running time inside the current bout before switching state.
         if motion == .running, let since = lastMotionTs, ts > since, walkBoutStart != nil {
             runSecondsInBout += ts - since
         }
@@ -270,18 +293,17 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
             if walkBoutStart == nil {
                 walkBoutStart = ts
                 runSecondsInBout = 0
-                walkStartSuggestedForBout = false
+                walkStartRaisedForBout = false
             }
             lastOnFootTs = ts
         } else if motion.isOnFoot {
-            lastOnFootTs = ts   // the bout ran up to this transition
+            lastOnFootTs = ts
         }
         drivingSince = (m == .automotive) ? (drivingSince ?? ts) : nil
         motion = m
         lastMotionTs = ts
     }
 
-    /// Seconds since the wearer was last on foot, 0 while on foot.
     private func stoppedFor() -> Int? {
         if motion.isOnFoot { return 0 }
         guard let last = lastOnFootTs else { return nil }
@@ -297,7 +319,7 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     }
 
     private func inferredContext() -> Context? {
-        if inGym { return .gym }
+        if let p = currentPlace { return .place(p) }
         if walkBoutStart != nil { return boutIsRun() ? .run : .walk }
         return nil
     }
@@ -305,7 +327,6 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     // MARK: - Evaluation
 
     private mutating func evaluate(_ out: inout [Action]) {
-        // Close a walking bout that has been stopped past the grace window.
         if let stopped = stoppedFor(), walkBoutStart != nil, !motion.isOnFoot {
             let walkFloor = config.restingBpm + Self.walkMarginBPM
             let calm = (windowMedian(seconds: 120) ?? 0) < walkFloor
@@ -313,19 +334,18 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
                 || (stopped >= Self.walkStopGraceS && (calm || stopped >= Self.walkStopMaxS))
             if boutOver {
                 let endTs = lastOnFootTs ?? now
-                if workoutActive, !endSuggested, workoutContext == .walk || workoutContext == .run {
-                    endSuggested = true
-                    out.append(.suggestEnd(context: workoutContext, endTs: endTs,
-                                           reason: drivingSince != nil ? .startedDriving : .stoppedMoving))
+                if workoutActive, !endRaised, workoutContext == .walk || workoutContext == .run {
+                    endRaised = true
+                    out.append(.end(context: workoutContext, endTs: endTs,
+                                    reason: drivingSince != nil ? .startedDriving : .stoppedMoving))
                 }
-                if let p = pendingStart, p.context != .gym { clearPending(&out) }
+                if let p = pendingStart, p.context.placeId == nil { clearPending(&out) }
                 walkBoutStart = nil
                 runSecondsInBout = 0
-                walkStartSuggestedForBout = false
+                walkStartRaisedForBout = false
             }
         }
 
-        // Withdraw a start suggestion nobody answered.
         if let raised = pendingStartRaisedAt, now - raised >= Self.pendingStartTimeoutS {
             clearPending(&out)
         }
@@ -338,23 +358,23 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     }
 
     private mutating func evaluateStart(_ out: inout [Action]) {
-        if config.gymEnabled, inGym, !gymStartSuggested, let entered = gymEnteredAt,
-           now - entered >= Self.gymMinDwellS {
-            // Judge only heart rate since arrival: walking or cycling there must not count as the session.
+        if config.placesEnabled, let place = currentPlace, !placeStartRaised, let entered = placeEnteredAt,
+           now - entered >= Self.placeMinDwellS {
             let window = recent(seconds: Self.startWindowS).filter { $0.ts >= entered }
             if window.count >= Self.minHRCoverageSamples {
-                let floor = config.restingBpm + Self.gymMarginBPM
+                let floor = config.restingBpm + placeParams.marginBPM
                 let elevated = window.filter { $0.bpm >= floor }.count
-                if Double(elevated) / Double(window.count) >= Self.gymElevatedFraction {
+                if Double(elevated) / Double(window.count) >= Self.elevatedFraction {
                     let start = max(entered, elevatedStretchStart(floor: floor) ?? window[0].ts)
-                    raise(.gym, startTs: start, &out)
-                    gymStartSuggested = true
+                    raise(.place(place), startTs: start, &out)
+                    placeStartRaised = true
                     return
                 }
             }
         }
 
-        if config.walkEnabled, !inGym, let bout = walkBoutStart, !walkStartSuggestedForBout, motion.isOnFoot {
+        if config.walkEnabled, currentPlace == nil, let bout = walkBoutStart, !walkStartRaisedForBout,
+           motion.isOnFoot {
             let dur = now - bout
             let isRun = boutIsRun()
             let window = recent(seconds: Self.startWindowS)
@@ -363,55 +383,73 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
                 let floor = config.restingBpm + (isRun ? Self.runMarginBPM : Self.walkMarginBPM)
                 if let median = windowMedian(seconds: Self.startWindowS), median >= floor {
                     raise(isRun ? .run : .walk, startTs: bout, &out)
-                    walkStartSuggestedForBout = true
+                    walkStartRaisedForBout = true
                 }
             } else if dur >= Self.walkNoHRMinBoutS {
                 raise(isRun ? .run : .walk, startTs: bout, &out)
-                walkStartSuggestedForBout = true
+                walkStartRaisedForBout = true
             }
         }
     }
 
     private mutating func evaluateEnd(_ out: inout [Action]) {
         let quietLine = config.restingBpm + Self.quietMarginBPM
-        if endSuggested {
-            // Activity resumed: withdraw the stale suggestion so a later stop can raise a fresh one.
+        if endRaised {
             let resumedByHR = sustainedElevated(seconds: Self.resumeElevatedS, floor: quietLine + 5)
-            let resumedByFoot = (workoutContext == .walk || workoutContext == .run) && motion.isOnFoot
+            let onFootContext = workoutContext == .walk || workoutContext == .run
+            let resumedByFoot = onFootContext && motion.isOnFoot
                 && (now - (walkBoutStart ?? now)) >= Self.walkStopGraceS
-            let resumedInGym = workoutContext == .gym && inGym && resumedByHR
-            if (workoutContext == .gym && resumedInGym) || (workoutContext != .gym && (resumedByHR || resumedByFoot)) {
-                endSuggested = false
+            let resumedAtPlace = workoutContext?.placeId != nil && currentPlace == workoutContext?.placeId
+                && resumedByHR
+            let resumed: Bool
+            if workoutContext?.placeId != nil {
+                resumed = resumedAtPlace
+            } else {
+                resumed = resumedByHR || resumedByFoot
+            }
+            if resumed {
+                endRaised = false
                 out.append(.withdrawEnd)
             }
             return
         }
         let quietSpan: Int
         switch workoutContext {
-        case .gym: quietSpan = Self.gymQuietEndS
-        case .walk, .run: return   // motion drives walk/run ends (see evaluate)
+        case .place: quietSpan = workoutParams?.quietEndS ?? PlaceParams.lifting.quietEndS
+        case .walk, .run: return   // motion drives walk/run ends
         case nil: quietSpan = Self.otherQuietEndS
         }
         guard let started = workoutStartedAt, now - started >= quietSpan else { return }
         let window = recent(seconds: quietSpan)
-        // Require reasonable coverage across the whole span, not a few samples at its tail.
         guard window.count >= quietSpan / 6, let first = window.first, first.ts - (now - quietSpan) <= 60 else { return }
         let loud = window.filter { $0.bpm >= quietLine }
         if Double(loud.count) / Double(window.count) <= Self.quietTolerance {
-            endSuggested = true
+            endRaised = true
             let endTs = loud.last?.ts ?? first.ts
-            out.append(.suggestEnd(context: workoutContext, endTs: endTs, reason: .heartRateRecovered))
+            out.append(.end(context: workoutContext, endTs: endTs, reason: .heartRateRecovered))
         }
     }
 
     // MARK: - Helpers
+
+    /// When heart rate dropped for the last time in this workout: the last sample at or above the
+    /// workout's working floor. Falls back to `fallback` when there is no heart rate at all.
+    private func lastElevatedTs(fallback: Int) -> Int {
+        guard let started = workoutStartedAt else { return fallback }
+        let margin = workoutParams?.marginBPM ?? PlaceParams.lifting.marginBPM
+        let floor = config.restingBpm + margin
+        let inWorkout = hr.filter { $0.ts >= started && $0.ts <= fallback }
+        guard !inWorkout.isEmpty else { return fallback }
+        if let last = inWorkout.last(where: { $0.bpm >= floor }) { return last.ts }
+        return started
+    }
 
     private mutating func raise(_ context: Context, startTs: Int, _ out: inout [Action]) {
         pendingStart = (context, startTs)
         pendingStartRaisedAt = now
         let bpms = heartRate(from: startTs, to: now).map(\.bpm)
         let avg = bpms.isEmpty ? nil : Int((Double(bpms.reduce(0, +)) / Double(bpms.count)).rounded())
-        out.append(.suggestStart(context: context, startTs: startTs, avgBpm: avg))
+        out.append(.start(context: context, startTs: startTs, avgBpm: avg))
     }
 
     private mutating func clearPending(_ out: inout [Action]) {
@@ -423,7 +461,10 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
 
     private func recent(seconds: Int) -> [(ts: Int, bpm: Int)] {
         let from = now - seconds
-        return hr.filter { $0.ts > from }
+        // Samples are time-ordered: scan back from the end instead of filtering hours of history.
+        var i = hr.count
+        while i > 0, hr[i - 1].ts > from { i -= 1 }
+        return Array(hr[i...])
     }
 
     private func windowMedian(seconds: Int) -> Int? {
@@ -436,11 +477,9 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     private func sustainedElevated(seconds: Int, floor: Int) -> Bool {
         let w = recent(seconds: seconds)
         guard w.count >= Self.minHRCoverageSamples else { return false }
-        return Double(w.filter { $0.bpm >= floor }.count) / Double(w.count) >= Self.gymElevatedFraction
+        return Double(w.filter { $0.bpm >= floor }.count) / Double(w.count) >= Self.elevatedFraction
     }
 
-    /// Earliest elevated sample reachable from now without crossing a sub-floor gap longer than
-    /// `elevatedStretchGapS`.
     private func elevatedStretchStart(floor: Int) -> Int? {
         var earliest: Int?
         var lastElevated: Int?

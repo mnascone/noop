@@ -94,6 +94,9 @@ final class AppModel: ObservableObject {
     /// "manual"), which then shows in the Workouts view. The day's strain already counts this HR (it's
     /// the same live stream the store persists), so this is a per-session annotation, not a double-count.
     @Published var activeWorkout: ActiveWorkout?
+    /// Optional notes for a live workout at save time, given its [start, end] in unix seconds. Set by the
+    /// iOS live tracker to record sets and rests. nil = no notes (the default everywhere else).
+    var workoutNotesProvider: ((Int, Int) -> String?)?
     /// The just-ended workout, for a brief inline confirmation on Live (cleared on the next start).
     @Published var lastWorkout: WorkoutRow?
 
@@ -1086,7 +1089,8 @@ final class AppModel: ObservableObject {
             // GPS distance rides the shared row so the Workouts list / detail show it like any other
             // distance workout; the polyline itself is persisted alongside in RouteStore (the shared
             // WorkoutRow has no route column on Apple). Only a real route sets distance , honest ",".
-            distanceM: route?.distanceM, zonesJSON: nil, notes: nil, steps: nil)
+            distanceM: route?.distanceM, zonesJSON: nil,
+            notes: workoutNotesProvider?(startTs, Int(end.timeIntervalSince1970)), steps: nil)
         // Persist the route polyline under the row's natural key so WorkoutDetailView can draw it. On
         // device only; mirrors the moments / sleepMarks UserDefaults persistence. (#524)
         if let route { RouteStore.store(route, startTs: startTs, sport: w.sport) }

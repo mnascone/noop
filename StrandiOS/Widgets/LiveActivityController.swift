@@ -3,6 +3,8 @@ import Foundation
 import ActivityKit
 import Combine
 import UIKit
+import WhoopStore
+import StrandAnalytics
 
 /// Starts, updates, and ends the live-HR Live Activity on the Lock Screen and in the Dynamic Island: the heart rate
 /// while the strap measures it, the dash while it does not. It follows the strap from process start (`follow`).
@@ -60,6 +62,23 @@ final class LiveActivityController {
                                     model.$bpm.map { _ in () }.eraseToAnyPublisher()])
             .sink { [weak self] in self?.refreshBanner() }
             .store(in: &cancellables)
+        // Workout and set/rest changes reach the banner without waiting for the next heart-rate tick.
+        model.$activeWorkout.map { $0.map { Int($0.start.timeIntervalSince1970) } }.removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshBanner() }
+            .store(in: &cancellables)
+        LiveIntervalTracker.shared.$summary.map { $0.map { "\($0.count)|\($0.phase)" } }.removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshBanner() }
+            .store(in: &cancellables)
+        // A change to the chosen fields shows at once.
+        NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .map { _ in LiveBannerPrefs.load() }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in self?.refreshBanner() }
+            .store(in: &cancellables)
         // The switch is the one way to be rid of the banner, so it acts at once — not at the next heart-rate tick,
         // which a strap off the wrist may not send for hours.
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
@@ -89,7 +108,39 @@ final class LiveActivityController {
         update(bpm: connected ? (model.bpm ?? model.live.heartRate) : nil,
                recovery: day?.recovery.map { Int($0.rounded()) }, connected: connected, standsAside: standsAside(),
                appActive: appActive ?? (UIApplication.shared.applicationState == .active),
-               effort: day?.strain.map { Int($0.rounded()) })
+               effort: day?.strain.map { Int($0.rounded()) },
+               extras: bannerExtras(model, day: day))
+    }
+
+    /// The customizable part of the banner: which fields, plus the values only some fields need.
+    struct BannerExtras: Equatable {
+        var fields: [LiveBannerField] = LiveBannerPrefs.defaultFields
+        var rest: Int?
+        var workoutStart: Date?
+        var workoutSport: String?
+        var restSince: Date?
+        var setCount: Int?
+    }
+
+    private func bannerExtras(_ model: AppModel, day: DailyMetric?) -> BannerExtras {
+        var e = BannerExtras(fields: LiveBannerPrefs.load())
+        if e.fields.contains(.rest), let day {
+            let inputs = SleepScoreInputs.resolve(intelligence: model.intelligence, days: model.repo.days,
+                                                  age: model.profile.age)
+            e.rest = AnalyticsEngine.Rest.composite(daily: day, needHours: inputs.needHours,
+                                                    consistency: inputs.consistency).map { Int($0.rounded()) }
+        }
+        if let w = model.activeWorkout {
+            // Paused time is left out of the clock by shifting its start forward.
+            e.workoutStart = w.start.addingTimeInterval(w.pausedDuration)
+            e.workoutSport = w.sport
+            let tracker = LiveIntervalTracker.shared
+            if let s = tracker.summary, tracker.mode != nil {
+                e.setCount = s.count
+                if case .resting(let since) = s.phase { e.restSince = Date(timeIntervalSince1970: TimeInterval(since)) }
+            }
+        }
+        return e
     }
 
     /// Drive the activity from the latest live values (`LiveHRBannerLifecycle` decides start / push / end). Starts
@@ -99,7 +150,7 @@ final class LiveActivityController {
     /// (`standsAside`). Pushed when what it shows changes, and often enough to stay fresh (`LiveHRBannerPushPolicy`,
     /// `staleAfter`).
     private func update(bpm: Int?, recovery: Int?, connected: Bool, standsAside: Bool, appActive: Bool,
-                        effort: Int?) {
+                        effort: Int?, extras: BannerExtras = BannerExtras()) {
         guard authInfo.areActivitiesEnabled else { return }
 
         // A banner iOS ended (after about eight hours) or the user swiped away is gone: forget it, so the next time
@@ -150,8 +201,13 @@ final class LiveActivityController {
         // Link down: the dash, never the last number (`bonded` stays true across a disconnect, and keying off it once
         // left a fabricated "live" HR standing). No timed end: a timer in a suspended app fires at its next wake,
         // which is typically the strap coming back — exactly when the banner should stay.
-        let state = NOOPActivityAttributes.ContentState(bpm: connected ? bpm : nil, recovery: recovery,
-                                                        bonded: connected, effort: effort)
+        // Timers are sent as start dates, so the Lock Screen counts them itself without a push per second.
+        let state = NOOPActivityAttributes.ContentState(
+            bpm: connected ? bpm : nil, recovery: recovery, bonded: connected, effort: effort,
+            fields: extras.fields, rest: extras.rest, workoutStart: extras.workoutStart,
+            workoutSport: extras.workoutSport,
+            restSince: extras.restSince,
+            setCount: extras.setCount)
 
         if step == .renew, activity != nil {
             // The fresh banner first, then the old one goes, so the Lock Screen is never without one; if iOS refuses

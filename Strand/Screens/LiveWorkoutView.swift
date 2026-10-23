@@ -48,6 +48,8 @@ struct LiveWorkoutView: View {
                 let cards: [AnyView] = [
                     AnyView(header),
                     AnyView(timeBlock),
+                    // Live sets / intervals and the rest timer (iOS), for tracked sports only.
+                    AnyView(intervalReadout),
                     AnyView(heartRateBlock),
                     AnyView(effortGauge),
                     AnyView(zoneSection),
@@ -150,6 +152,16 @@ struct LiveWorkoutView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text("Recording workout"))
+    }
+
+    /// Sets / intervals and rests from heart rate. iOS only; nothing for untracked sports.
+    @ViewBuilder
+    private var intervalReadout: some View {
+        #if os(iOS)
+        LiveIntervalCard()
+        #else
+        EmptyView()
+        #endif
     }
 
     /// Centered elapsed-time stack — same TimelineView source as before; card chrome removed so

@@ -12,6 +12,9 @@ import StrandAnalytics
 /// itself rather than relying on the values WHOOP computed in the imported CSV.
 @MainActor
 final class IntelligenceEngine: ObservableObject {
+    /// The personal sleep need and regularity the latest scoring pass used. nil until a pass has run.
+    @Published private(set) var lastSleepNeedHours: Double?
+    @Published private(set) var lastSleepConsistency: Double?
     /// Minimum raw HR samples a day needs before it is scored at all. Mirrors the Kotlin
     /// `IntelligenceEngine.MIN_HR_SAMPLES`, which has been a named constant there while this side carried
     /// the literal in more than one place — so a threshold change had to find every copy on this platform
@@ -676,8 +679,12 @@ final class IntelligenceEngine: ObservableObject {
     static let sleepWearRescoreFlagKey = "intelligence.sleepWearRescore.v1.done"
     private var sleepWearRescoreRunning = false
 
-    static func historyRepairIsPending(effortDone: Bool, sleepWearDone: Bool) -> Bool {
-        !effortDone || !sleepWearDone
+    /// Personal build: the stricter v2 sleep score needs every banked night rescored once, so history and
+    /// new nights sit on one scale. Rides the same full-history pass.
+    static let restScoreV2RescoreFlagKey = "intelligence.restScoreV2Rescore.done"
+
+    static func historyRepairIsPending(effortDone: Bool, sleepWearDone: Bool, restV2Done: Bool = true) -> Bool {
+        !effortDone || !sleepWearDone || !restV2Done
     }
 
     func runSleepWearRescoreIfNeeded(historyDays: Int = 4000) async {
@@ -687,7 +694,8 @@ final class IntelligenceEngine: ObservableObject {
     private func runHistoryRepairIfNeeded(historyDays: Int) async {
         guard Self.historyRepairIsPending(
                   effortDone: UserDefaults.standard.bool(forKey: Self.effortRescoreFlagKey),
-                  sleepWearDone: UserDefaults.standard.bool(forKey: Self.sleepWearRescoreFlagKey)),
+                  sleepWearDone: UserDefaults.standard.bool(forKey: Self.sleepWearRescoreFlagKey),
+                  restV2Done: UserDefaults.standard.bool(forKey: Self.restScoreV2RescoreFlagKey)),
               !sleepWearRescoreRunning, !computing, !Task.isCancelled,
               !RescoreBackgroundScheduler.isBackgrounded else { return }
         // Launch and scene activation can overlap while the store handle is being awaited.
@@ -697,6 +705,7 @@ final class IntelligenceEngine: ObservableObject {
                             preserveUnscoredHistory: true) {
             UserDefaults.standard.set(true, forKey: Self.effortRescoreFlagKey)
             UserDefaults.standard.set(true, forKey: Self.sleepWearRescoreFlagKey)
+            UserDefaults.standard.set(true, forKey: Self.restScoreV2RescoreFlagKey)
         }
     }
 
@@ -999,6 +1008,9 @@ final class IntelligenceEngine: ObservableObject {
         let sleepConsistency = VitalityEngine.sleepConsistency(nightlyHours: Array(nightlyHours.suffix(28)))
         let sleepNeedHours = AnalyticsEngine.Rest.personalizedNeedHours(nightlyHours: nightlyHours,
                                                                         age: profile.age)
+        // Published so the sleep-score breakdown and the Sleep tab score with the same inputs as this pass.
+        lastSleepNeedHours = sleepNeedHours
+        lastSleepConsistency = sleepConsistency
 
         // ── FIX 1 (main-actor jank): run the ENTIRE per-day enumeration OFF the main actor ───────────
         // Every `await store.…` read inside this loop has its continuation RESUME on the main actor

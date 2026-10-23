@@ -6,7 +6,7 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
     typealias E = LiveWorkoutSuggestionEngine
 
     private func engine(resting: Int = 60, gym: Bool = true, walk: Bool = true) -> E {
-        E(config: .init(restingBpm: resting, gymEnabled: gym, walkEnabled: walk))
+        E(config: .init(restingBpm: resting, placesEnabled: gym, walkEnabled: walk))
     }
 
     /// Feed one HR sample per second over [from, to). Returns every action raised.
@@ -23,14 +23,14 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
 
     private func starts(_ actions: [E.Action]) -> [(E.Context, Int)] {
         actions.compactMap {
-            if case let .suggestStart(c, s, _) = $0 { return (c, s) }
+            if case let .start(c, s, _) = $0 { return (c, s) }
             return nil
         }
     }
 
     private func ends(_ actions: [E.Action]) -> [(Int, E.EndReason)] {
         actions.compactMap {
-            if case let .suggestEnd(_, t, r) = $0 { return (t, r) }
+            if case let .end(_, t, r) = $0 { return (t, r) }
             return nil
         }
     }
@@ -45,9 +45,9 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
 
     func testGymArrivalArmsRealtimeAndExpiresAfterCap() {
         var e = engine()
-        _ = e.handle(.gymEntered, at: 0)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
         XCTAssertTrue(e.wantsRealtime)
-        _ = e.handle(.tick, at: E.gymMaxArmS + 1)
+        _ = e.handle(.tick, at: E.placeMaxArmS + 1)
         XCTAssertFalse(e.wantsRealtime)
     }
 
@@ -62,7 +62,7 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
 
     func testDisabledFeaturesNeverArm() {
         var e = engine(gym: false, walk: false)
-        _ = e.handle(.gymEntered, at: 0)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
         _ = e.handle(.motion(.walking), at: 0)
         _ = e.handle(.tick, at: 300)
         XCTAssertFalse(e.wantsRealtime)
@@ -72,30 +72,30 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
 
     func testGymStartFiresOnSustainedElevatedHRAndBackdates() {
         var e = engine()
-        _ = e.handle(.gymEntered, at: 0)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
         // Resting HR for 5 min (changing room), then elevated from t=300.
         feedHR(&e, from: 0, to: 300) { _ in 70 }
         let actions = feedHR(&e, from: 300, to: 600) { _ in 105 }
         let s = starts(actions)
         XCTAssertEqual(s.count, 1)
-        XCTAssertEqual(s.first?.0, .gym)
+        XCTAssertEqual(s.first?.0, .place("gym"))
         XCTAssertEqual(s.first?.1, 300, "start is backdated to the first elevated sample")
     }
 
     func testGymStartNotBeforeArrival() {
         var e = engine()
         feedHR(&e, from: 0, to: 100) { _ in 110 }   // elevated before arriving (cycled there)
-        XCTAssertTrue(starts(e.handle(.gymEntered, at: 100)).isEmpty, "arriving out of breath is not a start")
-        let early = feedHR(&e, from: 100, to: 100 + E.gymMinDwellS - 1) { _ in 110 }
+        XCTAssertTrue(starts(e.handle(.placeEntered(id: "gym", params: .lifting), at: 100)).isEmpty, "arriving out of breath is not a start")
+        let early = feedHR(&e, from: 100, to: 100 + E.placeMinDwellS - 1) { _ in 110 }
         XCTAssertTrue(starts(early).isEmpty, "nothing before the dwell time")
-        let actions = feedHR(&e, from: 100 + E.gymMinDwellS - 1, to: 500) { _ in 110 }
+        let actions = feedHR(&e, from: 100 + E.placeMinDwellS - 1, to: 500) { _ in 110 }
         XCTAssertEqual(starts(actions).first?.1, 100)
     }
 
     func testArrivingElevatedThenSettlingDoesNotSuggest() {
         var e = engine()
         feedHR(&e, from: 0, to: 100) { _ in 125 }
-        _ = e.handle(.gymEntered, at: 100)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 100)
         // Heart rate settles within about a minute of walking in, then stays at rest.
         let actions = feedHR(&e, from: 100, to: 1_000) { t in t < 160 ? 100 : 72 }
         XCTAssertTrue(starts(actions).isEmpty)
@@ -103,7 +103,7 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
 
     func testGymRestPeriodsDoNotBreakTheStretch() {
         var e = engine()
-        _ = e.handle(.gymEntered, at: 0)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
         // Sets: 60 s at 115, 90 s rest at 75, repeated. Elevated fraction in 3 min ≈ 0.4 to 0.67.
         var actions: [E.Action] = []
         actions += feedHR(&e, from: 0, to: 1_200) { t in (t % 150) < 90 ? 115 : 75 }
@@ -117,31 +117,31 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
 
     func testGymStartOnlyOncePerVisit() {
         var e = engine()
-        _ = e.handle(.gymEntered, at: 0)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
         var actions = feedHR(&e, from: 0, to: 400) { _ in 110 }
         actions += e.handle(.startDismissed, at: 400)
         actions += feedHR(&e, from: 400, to: 1_200) { _ in 110 }
         XCTAssertEqual(starts(actions).count, 1)
         // A new visit can suggest again.
-        _ = e.handle(.gymExited, at: 1_300)
-        _ = e.handle(.gymEntered, at: 5_000)
+        _ = e.handle(.placeExited(id: "gym"), at: 1_300)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 5_000)
         let again = feedHR(&e, from: 5_000, to: 5_400) { _ in 110 }
         XCTAssertEqual(starts(again).count, 1)
     }
 
     func testCalmGymVisitDoesNotSuggest() {
         var e = engine()
-        _ = e.handle(.gymEntered, at: 0)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
         let actions = feedHR(&e, from: 0, to: 1_800) { _ in 72 }
         XCTAssertTrue(starts(actions).isEmpty)
     }
 
     func testLeavingGymWithdrawsUnansweredStart() {
         var e = engine()
-        _ = e.handle(.gymEntered, at: 0)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
         feedHR(&e, from: 0, to: 400) { _ in 110 }
         XCTAssertNotNil(e.pendingStart)
-        let out = e.handle(.gymExited, at: 500)
+        let out = e.handle(.placeExited(id: "gym"), at: 500)
         XCTAssertTrue(out.contains(.withdrawStart))
         XCTAssertNil(e.pendingStart)
     }
@@ -190,30 +190,30 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
 
     func testWalkInsideGymIsLeftToGymRule() {
         var e = engine()
-        _ = e.handle(.gymEntered, at: 0)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
         _ = e.handle(.motion(.walking), at: 0)
         let actions = feedHR(&e, from: 0, to: 400) { _ in 95 }   // treadmill, above gym floor
-        XCTAssertEqual(starts(actions).first?.0, .gym)
+        XCTAssertEqual(starts(actions).first?.0, .place("gym"))
     }
 
     // MARK: - Ends
 
     func testLeavingGymSuggestsEndAtExitTime() {
         var e = engine()
-        _ = e.handle(.gymEntered, at: 0)
-        _ = e.handle(.workoutStarted(context: .gym), at: 100)
-        let out = e.handle(.gymExited, at: 4_000)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
+        _ = e.handle(.workoutStarted(context: .place("gym")), at: 100)
+        let out = e.handle(.placeExited(id: "gym"), at: 4_000)
         XCTAssertEqual(ends(out).first?.0, 4_000)
-        XCTAssertEqual(ends(out).first?.1, .leftGym)
+        XCTAssertEqual(ends(out).first?.1, .leftPlace)
     }
 
     func testGymQuietHeartRateSuggestsEnd() {
         var e = engine()
-        _ = e.handle(.gymEntered, at: 0)
-        _ = e.handle(.workoutStarted(context: .gym), at: 0)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
+        _ = e.handle(.workoutStarted(context: .place("gym")), at: 0)
         var actions = feedHR(&e, from: 0, to: 1_800) { _ in 110 }
         XCTAssertTrue(ends(actions).isEmpty)
-        actions = feedHR(&e, from: 1_800, to: 1_800 + E.gymQuietEndS + 5) { _ in 66 }
+        actions = feedHR(&e, from: 1_800, to: 1_800 + E.PlaceParams.lifting.quietEndS + 5) { _ in 66 }
         XCTAssertEqual(ends(actions).count, 1)
         XCTAssertEqual(ends(actions).first?.1, .heartRateRecovered)
         XCTAssertEqual(ends(actions).first?.0, 1_799, "end is the last loud sample")
@@ -272,17 +272,17 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
     func testManualWorkoutUsesLongQuietSpan() {
         var e = engine()
         _ = e.handle(.workoutStarted(context: nil), at: 0)
-        var actions = feedHR(&e, from: 0, to: E.gymQuietEndS + 10) { _ in 64 }
+        var actions = feedHR(&e, from: 0, to: E.PlaceParams.lifting.quietEndS + 10) { _ in 64 }
         XCTAssertTrue(ends(actions).isEmpty)
-        actions = feedHR(&e, from: E.gymQuietEndS + 10, to: E.otherQuietEndS + 10) { _ in 64 }
+        actions = feedHR(&e, from: E.PlaceParams.lifting.quietEndS + 10, to: E.otherQuietEndS + 10) { _ in 64 }
         XCTAssertEqual(ends(actions).count, 1)
     }
 
     func testEndingWorkoutWithdrawsEndSuggestion() {
         var e = engine()
-        _ = e.handle(.gymEntered, at: 0)
-        _ = e.handle(.workoutStarted(context: .gym), at: 0)
-        _ = e.handle(.gymExited, at: 100)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
+        _ = e.handle(.workoutStarted(context: .place("gym")), at: 0)
+        _ = e.handle(.placeExited(id: "gym"), at: 100)
         let out = e.handle(.workoutEnded, at: 120)
         XCTAssertTrue(out.contains(.withdrawEnd))
         XCTAssertFalse(e.wantsRealtime)
@@ -302,10 +302,62 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
 
     func testUnansweredStartTimesOut() {
         var e = engine()
-        _ = e.handle(.gymEntered, at: 0)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
         feedHR(&e, from: 0, to: 400) { _ in 110 }
         XCTAssertNotNil(e.pendingStart)
         let out = e.handle(.tick, at: 400 + E.pendingStartTimeoutS)
         XCTAssertTrue(out.contains(.withdrawStart))
+    }
+
+    // MARK: - Places v2
+
+    func testLeavingPlaceEndsAtLastHeartRateDrop() {
+        var e = engine()
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
+        _ = e.handle(.workoutStarted(context: .place("gym")), at: 300)
+        feedHR(&e, from: 300, to: 3_000) { _ in 112 }        // lifting
+        feedHR(&e, from: 3_000, to: 3_600) { _ in 70 }       // packing up, walking out
+        let out = e.handle(.placeExited(id: "gym"), at: 3_600)
+        XCTAssertEqual(ends(out).first?.0, 2_999, "ends when HR dropped for the last time, not at the exit")
+        XCTAssertEqual(ends(out).first?.1, .leftPlace)
+    }
+
+    func testPerPlaceMarginControlsStart() {
+        // A rink with a 30 bpm margin: 85 bpm (resting 60) does not start it, 95 does.
+        var e = engine()
+        _ = e.handle(.placeEntered(id: "rink", params: .sport), at: 0)
+        let calm = feedHR(&e, from: 0, to: 600) { _ in 85 }
+        XCTAssertTrue(starts(calm).isEmpty)
+        let hard = feedHR(&e, from: 600, to: 900) { _ in 95 }
+        XCTAssertEqual(starts(hard).first?.0, .place("rink"))
+    }
+
+    func testPerPlaceQuietSpanControlsEnd() {
+        var e = engine()
+        _ = e.handle(.placeEntered(id: "rink", params: .init(marginBPM: 30, quietEndS: 20 * 60)), at: 0)
+        _ = e.handle(.workoutStarted(context: .place("rink")), at: 0)
+        feedHR(&e, from: 0, to: 3_600) { _ in 140 }
+        var actions = feedHR(&e, from: 3_600, to: 3_600 + 15 * 60) { _ in 65 }
+        XCTAssertTrue(ends(actions).isEmpty, "15 min quiet is not enough for a 20 min place setting")
+        actions = feedHR(&e, from: 3_600 + 15 * 60, to: 3_600 + 21 * 60) { _ in 65 }
+        XCTAssertEqual(ends(actions).first?.0, 3_599)
+    }
+
+    func testSwitchingPlacesTracksTheNewOne() {
+        var e = engine()
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
+        _ = e.handle(.placeExited(id: "gym"), at: 100)
+        _ = e.handle(.placeEntered(id: "rink", params: .sport), at: 200)
+        XCTAssertEqual(e.currentPlace, "rink")
+        _ = e.handle(.placeExited(id: "gym"), at: 300)   // stale exit for another place is ignored
+        XCTAssertEqual(e.currentPlace, "rink")
+    }
+
+    func testContextKeyRoundTrip() {
+        for c: E.Context in [.walk, .run, .place("A1-b"), .place("with:colon")] {
+            XCTAssertEqual(E.Context(key: c.key), c)
+        }
+        XCTAssertNil(E.Context(key: "place:"))
+        XCTAssertNil(E.Context(key: "bogus"))
     }
 }

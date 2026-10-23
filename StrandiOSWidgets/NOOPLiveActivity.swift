@@ -13,28 +13,39 @@ struct NOOPLiveActivity: Widget {
         context.isStale ? nil : context.state.bpm
     }
 
+    /// The fields to draw: the chosen order, minus workout-only fields when no workout is running. Never
+    /// empty (falls back to heart rate).
+    static func fields(_ state: NOOPActivityAttributes.ContentState) -> [LiveBannerField] {
+        let chosen = state.fields ?? LiveBannerPrefs.defaultFields
+        let shown = chosen.filter { !$0.workoutOnly || state.workoutStart != nil }
+        return shown.isEmpty ? [.heartRate] : shown
+    }
+
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NOOPActivityAttributes.self) { context in
-            // Lock Screen / banner presentation.
+            // Lock Screen / banner presentation: the first field large, the rest as small stats.
+            let fields = Self.fields(context.state)
             HStack(spacing: 14) {
-                Image(systemName: "waveform.path.ecg")
-                    .font(.title2)
-                    .foregroundStyle(StrandPalette.statusCritical)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(context.attributes.title)
-                        .font(.caption).foregroundStyle(StrandPalette.textSecondary)
-                    Text("\(Self.shownBpm(context).map(String.init) ?? "–") bpm")
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
-                        .foregroundStyle(StrandPalette.textPrimary)
+                if let primary = fields.first {
+                    Image(systemName: primary.symbol)
+                        .font(.title2)
+                        .foregroundStyle(primary == .heartRate ? StrandPalette.statusCritical : StrandPalette.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(context.state.workoutStart != nil
+                             ? (context.state.workoutSport ?? primary.label) : primary.label)
+                            .font(.caption).foregroundStyle(StrandPalette.textSecondary)
+                        FieldValue(field: primary, context: context, large: true)
+                    }
                 }
                 Spacer()
-                // Charge + Effort (#446) on the banner, mirroring the Dynamic Island expanded stats.
                 HStack(spacing: 12) {
-                    if let r = context.state.recovery {
-                        bannerStat(label: "Charge", value: "\(r)%")
-                    }
-                    if let e = context.state.effort {
-                        bannerStat(label: "Effort", value: "\(e)")
+                    ForEach(Array(fields.dropFirst()), id: \.self) { f in
+                        VStack(alignment: .center, spacing: 2) {
+                            Text(f.label).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
+                            FieldValue(field: f, context: context, large: false)
+                        }
+                        .multilineTextAlignment(.center)
+                        .fixedSize()
                     }
                 }
             }
@@ -42,62 +53,92 @@ struct NOOPLiveActivity: Widget {
             .activityBackgroundTint(StrandPalette.surfaceBase)
             .activitySystemActionForegroundColor(StrandPalette.textPrimary)
         } dynamicIsland: { context in
-            DynamicIsland {
+            let fields = Self.fields(context.state)
+            return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Label("\(Self.shownBpm(context).map(String.init) ?? "–")", systemImage: "heart.fill")
-                        .foregroundStyle(StrandPalette.statusCritical)
+                    if let primary = fields.first {
+                        HStack(spacing: 4) {
+                            Image(systemName: primary.symbol)
+                            FieldValue(field: primary, context: context, large: false)
+                        }
+                        .foregroundStyle(primary == .heartRate ? StrandPalette.statusCritical : StrandPalette.accent)
+                    }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    // Charge + Effort (#446) — one more stat alongside the leading live HR.
                     HStack(spacing: 10) {
-                        if let r = context.state.recovery {
-                            statColumn(label: "Charge", value: "\(r)%")
-                        }
-                        if let e = context.state.effort {
-                            statColumn(label: "Effort", value: "\(e)")
+                        ForEach(Array(fields.dropFirst().prefix(2)), id: \.self) { f in
+                            VStack(alignment: .center, spacing: 1) {
+                                Text(f.label).font(.caption2).foregroundStyle(.secondary)
+                                FieldValue(field: f, context: context, large: false)
+                            }
+                            .multilineTextAlignment(.center)
+                            .fixedSize()
                         }
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text(context.attributes.title).font(.caption).foregroundStyle(.secondary)
+                    Text(context.state.workoutSport ?? context.attributes.title)
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             } compactLeading: {
-                Image(systemName: "heart.fill").foregroundStyle(StrandPalette.statusCritical)
+                Image(systemName: fields.first?.symbol ?? "heart.fill")
+                    .foregroundStyle(fields.first == .heartRate ? StrandPalette.statusCritical : StrandPalette.accent)
             } compactTrailing: {
-                Text("\(Self.shownBpm(context).map(String.init) ?? "–")")
+                FieldValue(field: fields.first ?? .heartRate, context: context, large: false)
             } minimal: {
-                Image(systemName: "heart.fill").foregroundStyle(StrandPalette.statusCritical)
+                Image(systemName: fields.first?.symbol ?? "heart.fill")
+                    .foregroundStyle(fields.first == .heartRate ? StrandPalette.statusCritical : StrandPalette.accent)
             }
         }
     }
 }
 
-/// Lock-Screen banner stat column (label over value). File-scope because the `ActivityConfiguration`
-/// content closure isn't a method of `NOOPLiveActivity`.
-///
-/// #759 - the label and value are CENTRE-aligned so each value sits directly under its own label. The
-/// old `.trailing` alignment right-pinned both to the column's edge: when the value was narrower than
-/// the label (e.g. "12" under "Effort") it drifted to the label's right edge instead of under it, which
-/// read as "the number doesn't line up with its label". `fixedSize` stops either line truncating so the
-/// pairing is never clipped at narrow widths.
-@ViewBuilder
-private func bannerStat(label: String, value: String) -> some View {
-    VStack(alignment: .center, spacing: 2) {
-        Text(label).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
-        Text(value).font(.headline).foregroundStyle(StrandPalette.textPrimary)
-    }
-    .multilineTextAlignment(.center)
-    .fixedSize()
-}
+/// One field's value. Timers use the system's self-updating timer text, so they count on the Lock Screen
+/// between pushes.
+private struct FieldValue: View {
+    let field: LiveBannerField
+    let context: ActivityViewContext<NOOPActivityAttributes>
+    let large: Bool
 
-/// Dynamic Island expanded-region stat column (label over value). File-scope for the same reason as
-/// `bannerStat`. #759 - centre-aligned + `fixedSize` for the same value-under-its-label fix as the banner.
-@ViewBuilder
-private func statColumn(label: String, value: String) -> some View {
-    VStack(alignment: .center, spacing: 1) {
-        Text(label).font(.caption2).foregroundStyle(.secondary)
-        Text(value).font(.headline)
+    var body: some View {
+        content
+            .font(large ? .system(size: 26, weight: .bold, design: .rounded) : .headline)
+            .foregroundStyle(StrandPalette.textPrimary)
+            .monospacedDigit()
     }
-    .multilineTextAlignment(.center)
-    .fixedSize()
+
+    @ViewBuilder
+    private var content: some View {
+        let s = context.state
+        switch field {
+        case .heartRate:
+            if large {
+                Text("\(NOOPLiveActivity.shownBpm(context).map(String.init) ?? "–") bpm")
+            } else {
+                Text(NOOPLiveActivity.shownBpm(context).map(String.init) ?? "–")
+            }
+        case .charge:
+            Text(s.recovery.map { "\($0)%" } ?? "–")
+        case .effort:
+            Text(s.effort.map(String.init) ?? "–")
+        case .rest:
+            Text(s.rest.map(String.init) ?? "–")
+        case .workoutTime:
+            if let start = s.workoutStart {
+                Text(timerInterval: start...Date.distantFuture, countsDown: false)
+            } else {
+                Text("–")
+            }
+        case .restTimer:
+            if let since = s.restSince {
+                Text(timerInterval: since...Date.distantFuture, countsDown: false)
+            } else if s.workoutStart != nil {
+                Text("Working")
+            } else {
+                Text("–")
+            }
+        case .sets:
+            Text(s.setCount.map(String.init) ?? "–")
+        }
+    }
 }

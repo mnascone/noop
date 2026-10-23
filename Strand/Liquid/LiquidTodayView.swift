@@ -718,7 +718,7 @@ struct LiquidTodayView: View {
                           detailRoute: .metric(HeroRingMetric.effort))
             HeroScoreCell(label: String(localized: "Rest"), score: restScore, tint: StrandPalette.restColor,
                           animated: dataLoaded, onGuide: { guideSection = .rest },
-                          detailRoute: .metric(HeroRingMetric.rest))
+                          detailRoute: .sleepScore(nil))
                 .overlay(alignment: .top) {
                     if let sourceLabel = heroSourceLabel {
                         SourceBadge("\(sourceLabel)", tint: StrandPalette.textSecondary)
@@ -2225,7 +2225,7 @@ private struct LiquidWordmark: View {
 
 /// One of the three hero scores (Charge / Effort / Rest). The vessel fills from empty and the number
 /// COUNTS UP to the value when data lands; tapping the gauge itself splashes (the number is
-/// hit-transparent so the tap reaches the vessel). The label row taps through to the scoring guide.
+/// hit-transparent so the tap reaches the vessel). The label row opens the same detail as the ring.
 private struct HeroScoreCell: View {
     static let vesselDiameter: CGFloat = 96
 
@@ -2243,8 +2243,8 @@ private struct HeroScoreCell: View {
     /// Where the GAUGE taps through to, or nil to keep the ring inert (#1995).
     ///
     /// Same `TabRoute.metric(key)` the Recovery Vitals rows use, so a ring and the Key-Metrics tile for
-    /// the same score land on the identical dossier rather than diverging. The LABEL keeps its own job:
-    /// it opens the scoring guide, which is this screen's only route to that explainer.
+    /// the same score land on the identical dossier rather than diverging. The label goes there too; the
+    /// scoring guide moved to the label's long-press menu.
     var detailRoute: TabRoute? = nil
 
     /// The gauge, linked when there is somewhere to go.
@@ -2283,23 +2283,38 @@ private struct HeroScoreCell: View {
             : String(Int(score.rounded()))
     }
 
+    /// The label row: CHARGE / EFFORT / REST with a chevron.
+    private var labelRow: some View {
+        HStack(spacing: 3) {
+            // #74: one line, shrink-to-fit rather than wrap under large Dynamic Type (mirrors the
+            // score number above) so CHARGE/EFFORT/REST never grow the hero card to two lines.
+            Text(label.uppercased()).font(StrandFont.overline).tracking(1.6)
+                .lineLimit(1).minimumScaleFactor(0.7)
+            Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).opacity(0.6)
+        }
+        // Theme-aware hero label (#1160): normal text token — readable on Dark and Light
+        // panel surfaces alike (was onDark* when the hero fill was pinned dark).
+        .foregroundStyle(StrandPalette.textSecondary)
+    }
+
     var body: some View {
         VStack(spacing: 7) {
             gaugeView
-            Button(action: onGuide) {
-                HStack(spacing: 3) {
-                    // #74: one line, shrink-to-fit rather than wrap under large Dynamic Type (mirrors the
-                    // score number above) so CHARGE/EFFORT/REST never grow the hero card to two lines.
-                    Text(label.uppercased()).font(StrandFont.overline).tracking(1.6)
-                        .lineLimit(1).minimumScaleFactor(0.7)
-                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).opacity(0.6)
-                }
-                // Theme-aware hero label (#1160): normal text token — readable on Dark and Light
-                // panel surfaces alike (was onDark* when the hero fill was pinned dark).
-                .foregroundStyle(StrandPalette.textSecondary)
+            // The label opens the same screen as the ring: people tap the word, and a word with a chevron
+            // that opened an explainer instead read as a wrong turn. A long press still opens the guide.
+            if let detailRoute {
+                NavigationLink(value: detailRoute) { labelRow }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        Button(action: onGuide) { Label("How it's scored", systemImage: "info.circle") }
+                    }
+                    .accessibilityLabel(Text("\(label), \(spokenScore)"))
+                    .accessibilityHint(Text("Opens the details. Long press for how it's scored."))
+            } else {
+                Button(action: onGuide) { labelRow }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Text("\(label), \(spokenScore). See how it is scored."))
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text("\(label), \(spokenScore). See how it is scored."))
         }
         .frame(maxWidth: .infinity)
     }

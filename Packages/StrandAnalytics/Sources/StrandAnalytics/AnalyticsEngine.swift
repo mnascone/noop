@@ -92,8 +92,8 @@ public enum AnalyticsEngine {
         /// Day strain / "Effort" [0,100] or nil (insufficient HR samples / invalid HRR).
         public let strain: Double?
         /// Rest composite [0,100] or nil (no asleep time). This is the value the
-        /// `sleep_performance` metric key carries (duration-vs-need 0.50 + efficiency
-        /// 0.20 + restorative share 0.20 + consistency 0.10). The downstream metric-series
+        /// `sleep_performance` metric key carries (duration-vs-need 0.45 + efficiency
+        /// 0.25 + restorative share 0.20 + consistency 0.10, v2 curves). The downstream metric-series
         /// builder reads it from here; the Charge "Rest quality" term reads it ÷100.
         public let restScore: Double?
         /// Per-score confidence tiers (Charge / Effort / Rest) for the small label under
@@ -627,7 +627,7 @@ public enum AnalyticsEngine {
 
         // ── Rest composite (Charge/Effort/Rest) ───────────────────────────────
         // The 0–100 sleep score the `sleep_performance` metric key now carries:
-        //   duration-vs-personal-need 0.50 + efficiency 0.20 + restorative share 0.20
+        //   duration-vs-personal-need 0.45 + efficiency 0.25 + restorative share 0.20
         //   + consistency 0.10. nil when there is no asleep time. The Charge "Rest
         //   quality" term reads it ÷100 (replacing raw efficiency).
         let hasStagedSleep = (deepS + remS) > 0
@@ -1156,10 +1156,9 @@ public enum AnalyticsEngine {
     // MARK: - Rest composite (Charge/Effort/Rest)
 
     /// The 0–100 Rest score. Composite of four published-sleep-quality components:
-    ///   - duration vs personal need (0.50): hours asleep ÷ need, clamped to 1.0.
-    ///   - efficiency (0.20): asleep / in-bed, already in [0,1].
-    ///   - restorative share (0.20): (deep + REM) ÷ asleep, clamped to a 0.50 target
-    ///     (≈50% deep+REM is "full marks"; healthy adults sit ~40–50%).
+    ///   - duration vs personal need (0.45): zero at half the need, full at the need, curved (v2).
+    ///   - efficiency (0.25): zero at 75%, full at 92% (v2).
+    ///   - restorative share (0.20): (deep + REM) ÷ asleep, zero at 20%, full at 45% (v2).
     ///   - consistency (0.10): sleep/wake regularity in [0,1]; a single day carries no
     ///     regularity signal, so the caller supplies it from history — nil → neutral 0.5.
     /// All sub-scores clamp to [0,1]; the weighted sum scales to [0,100]. Kept
@@ -1176,8 +1175,9 @@ public enum AnalyticsEngine {
     public enum Rest {
         /// Default personal sleep need (hours) before the caller refines it.
         public static let defaultNeedHours: Double = 8.0
-        /// "Full marks" restorative (deep+REM) share of asleep time.
-        public static let restorativeTarget: Double = 0.50
+        /// "Full marks" restorative (deep+REM) share of asleep time. v2: 0.45, the top of the healthy
+        /// adult range, reached on a good night (was 0.50, rarely reached by any wearable estimate).
+        public static let restorativeTarget: Double = 0.45
         /// Deep-sleep share of asleep time that earns FULL restorative credit (~13% is the healthy
         /// floor for adults; below it the restorative term is scaled down toward `deepFloorFactor`).
         public static let deepShareTarget: Double = 0.13
@@ -1187,8 +1187,9 @@ public enum AnalyticsEngine {
         /// Neutral consistency when the caller supplies no regularity signal.
         public static let neutralConsistency: Double = 0.5
 
-        public static let wDuration: Double = 0.50
-        public static let wEfficiency: Double = 0.20
+        /// v2 weights: efficiency up from 0.20 so broken nights cost more; duration down to 0.45.
+        public static let wDuration: Double = 0.45
+        public static let wEfficiency: Double = 0.25
         public static let wRestorative: Double = 0.20
         public static let wConsistency: Double = 0.10
 
@@ -1242,29 +1243,121 @@ public enum AnalyticsEngine {
                                      needHours: Double,
                                      consistency: Double?,
                                      deepSeconds: Double? = nil) -> Double {
-            func clamp01(_ x: Double) -> Double { max(0.0, min(1.0, x)) }
+            breakdown(tstSeconds: tstSeconds, efficiency: efficiency,
+                      restorativeSeconds: restorativeSeconds, needHours: needHours,
+                      consistency: consistency, deepSeconds: deepSeconds).total
+        }
 
-            let needSeconds = max(needHours, 0.1) * 3600.0
-            let durationScore = clamp01(tstSeconds / needSeconds)
-            let efficiencyScore = clamp01(efficiency)
-            // Deep-adequacy factor in [deepFloorFactor, 1]: 1.0 once deep ≥ target share, ramping
-            // down to the floor as deep → 0. nil deep (unknown split) ⇒ 1.0 (no adjustment).
-            let deepFactor: Double = {
-                guard let deep = deepSeconds, tstSeconds > 0, deepShareTarget > 0 else { return 1.0 }
-                let adequacy = clamp01((deep / tstSeconds) / deepShareTarget)
-                return deepFloorFactor + (1.0 - deepFloorFactor) * adequacy
-            }()
-            let restorativeScore = tstSeconds > 0
-                ? clamp01((restorativeSeconds / tstSeconds) / restorativeTarget) * deepFactor
-                : 0.0
-            let consistencyScore = clamp01(consistency ?? neutralConsistency)
+        // MARK: Sub-score curves (v2, stricter)
+        //
+        // v1 scored each factor as a straight line from zero, so a 6 h night against an 8 h need still
+        // banked 75% of the duration points and 85% efficiency banked 85% of its points: ordinary or poor
+        // nights landed in the 70s. v2 starts each curve at a floor where sleep is clearly inadequate and
+        // reaches full marks at a healthy level, so a genuinely good night still scores 95+.
 
-            let weighted = wDuration * durationScore
-                + wEfficiency * efficiencyScore
-                + wRestorative * restorativeScore
-                + wConsistency * consistencyScore
-            // weighted is in [0,1] (weights sum to 1). Scale to [0,100] and round to 2dp.
-            return (weighted * 10000.0).rounded() / 100.0
+        /// Duration ratio (asleep / need) at or below which the duration sub-score is zero.
+        public static let durationFloorRatio: Double = 0.5
+        /// Curve exponent: >1 makes each missing hour cost more the closer you are to the floor.
+        public static let durationExponent: Double = 1.5
+        /// Efficiency at or below which the efficiency sub-score is zero, and where it reaches full marks.
+        public static let efficiencyFloor: Double = 0.75
+        public static let efficiencyFull: Double = 0.92
+        /// Restorative (deep + REM) share at or below which that sub-score is zero.
+        public static let restorativeFloor: Double = 0.20
+
+        public static func durationSubScore(tstSeconds: Double, needHours: Double) -> Double {
+            let need = max(needHours, 0.1) * 3600.0
+            let r = tstSeconds / need
+            if r >= 1 { return 1 }
+            if r <= durationFloorRatio { return 0 }
+            return pow((r - durationFloorRatio) / (1 - durationFloorRatio), durationExponent)
+        }
+
+        public static func efficiencySubScore(_ efficiency: Double) -> Double {
+            max(0, min(1, (efficiency - efficiencyFloor) / (efficiencyFull - efficiencyFloor)))
+        }
+
+        public static func deepAdequacyFactor(tstSeconds: Double, deepSeconds: Double?) -> Double {
+            guard let deep = deepSeconds, tstSeconds > 0, deepShareTarget > 0 else { return 1.0 }
+            let adequacy = max(0, min(1, (deep / tstSeconds) / deepShareTarget))
+            return deepFloorFactor + (1.0 - deepFloorFactor) * adequacy
+        }
+
+        public static func restorativeSubScore(tstSeconds: Double, restorativeSeconds: Double,
+                                               deepSeconds: Double?) -> Double {
+            guard tstSeconds > 0 else { return 0 }
+            let share = restorativeSeconds / tstSeconds
+            let base = max(0, min(1, (share - restorativeFloor) / (restorativeTarget - restorativeFloor)))
+            return base * deepAdequacyFactor(tstSeconds: tstSeconds, deepSeconds: deepSeconds)
+        }
+
+        /// One factor of the sleep score, for the breakdown screen.
+        public struct Factor: Equatable, Sendable {
+            public enum Kind: String, Sendable, CaseIterable { case duration, efficiency, restorative, consistency }
+            public let kind: Kind
+            /// Sub-score in [0, 1].
+            public let subScore: Double
+            public let weight: Double
+            /// Points earned and the most this factor can give, on the 0–100 scale.
+            public var points: Double { subScore * weight * 100 }
+            public var maxPoints: Double { weight * 100 }
+            public var pointsLost: Double { maxPoints - points }
+        }
+
+        public struct Breakdown: Equatable, Sendable {
+            public let factors: [Factor]
+            /// The score, 0–100, rounded to 2 dp. Identical to `composite`.
+            public let total: Double
+            public let asleepHours: Double
+            public let needHours: Double
+            public let efficiency: Double
+            /// (deep + REM) / asleep.
+            public let restorativeShare: Double
+            /// deep / asleep, nil when the split is unknown.
+            public let deepShare: Double?
+            /// The regularity input, nil when none was supplied (scored as neutral).
+            public let consistency: Double?
+
+            public func factor(_ kind: Factor.Kind) -> Factor? { factors.first { $0.kind == kind } }
+        }
+
+        /// The score and every factor behind it. `composite` is defined as `breakdown(...).total`, so the
+        /// breakdown screen can never disagree with the number on Today.
+        public static func breakdown(tstSeconds: Double, efficiency: Double, restorativeSeconds: Double,
+                                     needHours: Double, consistency: Double?,
+                                     deepSeconds: Double? = nil) -> Breakdown {
+            let factors = [
+                Factor(kind: .duration, subScore: durationSubScore(tstSeconds: tstSeconds, needHours: needHours),
+                       weight: wDuration),
+                Factor(kind: .efficiency, subScore: efficiencySubScore(efficiency), weight: wEfficiency),
+                Factor(kind: .restorative,
+                       subScore: restorativeSubScore(tstSeconds: tstSeconds, restorativeSeconds: restorativeSeconds,
+                                                     deepSeconds: deepSeconds),
+                       weight: wRestorative),
+                Factor(kind: .consistency, subScore: max(0, min(1, consistency ?? neutralConsistency)),
+                       weight: wConsistency),
+            ]
+            let weighted = factors.reduce(0) { $0 + $1.subScore * $1.weight }
+            return Breakdown(
+                factors: factors,
+                total: (weighted * 10000.0).rounded() / 100.0,
+                asleepHours: tstSeconds / 3600,
+                needHours: needHours,
+                efficiency: efficiency,
+                restorativeShare: tstSeconds > 0 ? restorativeSeconds / tstSeconds : 0,
+                deepShare: deepSeconds.flatMap { tstSeconds > 0 ? $0 / tstSeconds : nil },
+                consistency: consistency)
+        }
+
+        /// Breakdown from a persisted `DailyMetric` (the display path). nil when there's no sleep.
+        public static func breakdown(daily d: DailyMetric, needHours: Double = defaultNeedHours,
+                                     consistency: Double? = nil) -> Breakdown? {
+            guard let tstMin = d.totalSleepMin, tstMin > 0, let eff = d.efficiency else { return nil }
+            let tstSec = tstMin * 60.0
+            return breakdown(tstSeconds: tstSec, efficiency: eff,
+                             restorativeSeconds: ((d.deepMin ?? 0) + (d.remMin ?? 0)) * 60.0,
+                             needHours: needHours, consistency: consistency,
+                             deepSeconds: (d.deepMin ?? 0) * 60.0)
         }
 
         /// Rest composite [0,100] derived from a persisted `DailyMetric` (the pass-2 / display path —

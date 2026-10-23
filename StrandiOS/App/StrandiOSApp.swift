@@ -86,10 +86,10 @@ struct StrandiOSApp: App {
         NotificationPresenter.shared.onCoachBriefTapped = { [weak router] in router?.openCoach() }
         let model = AppModel()
         _model = StateObject(wrappedValue: model)
-        // Live workout suggestions (gym geofence, walk detection). Attached here, during launch, because a
+        // Automatic workout tracking (place geofences, walk detection). Attached here, during launch, because a
         // geofence crossing can relaunch the app in the background and its delegate must exist before the
         // event is delivered. Inert until a toggle in Settings is on.
-        LiveWorkoutSuggestions.shared.attach(model: model)
+        AutoWorkoutTracker.shared.attach(model: model)
         CoachBriefScheduler.register(generateBrief: { [weak coach = model.coach] in
             await coach?.generateBrief()
         }, log: { [weak model] line in

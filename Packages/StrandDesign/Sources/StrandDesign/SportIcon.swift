@@ -117,6 +117,9 @@ public enum KnownWorkoutType: String, CaseIterable, Sendable {
     case wheelchair = "Wheelchair"
     case gaming = "Gaming"
     case motorRacing = "Motor racing"
+    // Interval modes (personal build): live work/rest tracking keys off these names.
+    case assaultBike = "Assault bike"
+    case sprints = "Sprints"
     case other = "Other"
 
     /// Case-insensitive exact match against a stored/free-typed sport label.
@@ -132,6 +135,9 @@ public enum KnownWorkoutType: String, CaseIterable, Sendable {
         let s = sport.lowercased()
         // Order matters: more specific tokens before broader ones (padel before tennis, treadmill before run).
         switch true {
+        case s.contains("assault") || s.contains("air bike") || s.contains("airbike"):
+                                                            return .assaultBike
+        case s.contains("sprint"):                          return .sprints
         case s.contains("treadmill") && s.contains("walk"): return .treadmillWalk
         case s.contains("treadmill"):                       return .treadmillRun
         case s.contains("open") && s.contains("swim"):      return .openWaterSwim
@@ -389,6 +395,8 @@ public enum WorkoutTypeIconography {
         case .wheelchair:           return .system("figure.roll")
         case .gaming:               return .system("gamecontroller.fill")
         case .motorRacing:          return .system("steeringwheel")
+        case .assaultBike:          return .system("fan.fill")
+        case .sprints:              return .system("hare.fill")
         case .other:
             return .system("figure.mixed.cardio")
         }

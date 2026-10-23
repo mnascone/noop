@@ -38,6 +38,7 @@ struct SleepView: View {
     // their OWN `@EnvironmentObject var live`/`appModel` in a small leaf below (mirrors the Today
     // leaf-scoping pattern and HealthView.swift:17-22), so a tick refreshes only that leaf.
     @EnvironmentObject var intelligence: IntelligenceEngine
+    @EnvironmentObject private var profile: ProfileStore
 
     /// Memoized snapshot of every expensive derivation (latest Night with its intervals
     /// resolved once, the seven metric series, the trend points, the typical means). Rebuilt
@@ -468,7 +469,10 @@ struct SleepView: View {
         let wakeDay = Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(night.session.endTs)))
         if let p = repo.importedSleep[wakeDay]?.performancePct { return p }
         guard let daily = repo.days.last(where: { $0.day == wakeDay }) else { return nil }
-        return AnalyticsEngine.Rest.composite(daily: daily)
+        // Same need and regularity as the scoring pass, so this matches Today and the breakdown.
+        let inputs = SleepScoreInputs.resolve(intelligence: intelligence, days: repo.days, age: profile.age)
+        return AnalyticsEngine.Rest.composite(daily: daily, needHours: inputs.needHours,
+                                              consistency: inputs.consistency)
     }
 
     /// Dispatch a reorderable Sleep section to its card. Naps rides with `.stages` (drawn inside the stages
@@ -539,7 +543,10 @@ struct SleepView: View {
                 .accessibilityAddTraits(.isHeader)
 
             if let score {
-                // Same LiquidVessel gauge as Home (`LiquidTodayView` / `HeroScoreCell`).
+                // Same LiquidVessel gauge as Home (`LiquidTodayView` / `HeroScoreCell`). Tapping it opens
+                // the breakdown for this night.
+                NavigationLink(value: TabRoute.sleepScore(
+                    Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(night.session.endTs))))) {
                 VStack(spacing: 8) {
                     LiquidScoreGauge(
                         score: score,
@@ -548,7 +555,8 @@ struct SleepView: View {
                         animated: true,
                         captionText: String(localized: "of 100"),
                         numberColor: Color.white.opacity(0.98),
-                        captionColor: Color.white.opacity(0.52)
+                        captionColor: Color.white.opacity(0.52),
+                        tapPassesThrough: true
                     )
                     Text(sleepScoreWord(score))
                         .font(StrandFont.subhead.weight(.semibold))
@@ -556,8 +564,12 @@ struct SleepView: View {
                         .shadow(color: .black.opacity(0.30), radius: 2, y: 1)
                 }
                 .padding(.top, 8)
+                .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(String(localized: "Sleep performance \(Int(score.rounded())) of 100, \(sleepScoreWord(score))"))
+                .accessibilityHint(Text("Shows what affected the score"))
             } else {
                 VStack(spacing: NoopMetrics.space1) {
                     CountUpText(

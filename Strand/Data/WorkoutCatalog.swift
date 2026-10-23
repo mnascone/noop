@@ -143,6 +143,9 @@ enum WorkoutCatalog {
         Sport(name: "Parkour", isDistanceSport: false),
         Sport(name: "Polo", isDistanceSport: false),
         Sport(name: "Skydiving", isDistanceSport: false),
+        // Interval modes (personal build): live work/rest tracking keys off these names.
+        Sport(name: "Assault bike", isDistanceSport: false),
+        Sport(name: "Sprints", isDistanceSport: true),
         Sport(name: "Other", isDistanceSport: false),
     ]
 

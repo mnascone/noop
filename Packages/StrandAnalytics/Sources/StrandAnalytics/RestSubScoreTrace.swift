@@ -107,21 +107,17 @@ extension AnalyticsEngine.Rest {
                                     restorativeSeconds: Double, needHours: Double,
                                     consistency: Double?, deepSeconds: Double?,
                                     groupFragments: Int, groupInBedSeconds: Double) -> String {
-        func clamp01(_ x: Double) -> Double { max(0.0, min(1.0, x)) }
         func r2(_ x: Double) -> Double { (x * 100.0).rounded() / 100.0 }
 
-        let needSeconds = max(needHours, 0.1) * 3600.0
-        let durationScore = clamp01(tstSeconds / needSeconds)
-        let efficiencyScore = clamp01(efficiency)
-        let deepFactor: Double = {
-            guard let deep = deepSeconds, tstSeconds > 0, deepShareTarget > 0 else { return 1.0 }
-            let adequacy = clamp01((deep / tstSeconds) / deepShareTarget)
-            return deepFloorFactor + (1.0 - deepFloorFactor) * adequacy
-        }()
-        let restorativeScore = tstSeconds > 0
-            ? clamp01((restorativeSeconds / tstSeconds) / restorativeTarget) * deepFactor
-            : 0.0
-        let consistencyScore = clamp01(consistency ?? neutralConsistency)
+        // The same factor functions the score uses, so this line can never disagree with it.
+        let b = breakdown(tstSeconds: tstSeconds, efficiency: efficiency,
+                          restorativeSeconds: restorativeSeconds, needHours: needHours,
+                          consistency: consistency, deepSeconds: deepSeconds)
+        let durationScore = b.factor(.duration)?.subScore ?? 0
+        let efficiencyScore = b.factor(.efficiency)?.subScore ?? 0
+        let restorativeScore = b.factor(.restorative)?.subScore ?? 0
+        let consistencyScore = b.factor(.consistency)?.subScore ?? 0
+        let deepFactor = deepAdequacyFactor(tstSeconds: tstSeconds, deepSeconds: deepSeconds)
         let composite = AnalyticsEngine.Rest.composite(
             tstSeconds: tstSeconds, inBedSeconds: inBedSeconds, efficiency: efficiency,
             restorativeSeconds: restorativeSeconds, needHours: needHours,

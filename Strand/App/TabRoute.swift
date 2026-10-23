@@ -35,6 +35,8 @@ enum TabRoute: Hashable {
     case health
     case hydration
     case coupled
+    /// The sleep score's factor breakdown for a wake-day (nil = latest scored night).
+    case sleepScore(String?)
 }
 
 extension View {
@@ -68,6 +70,7 @@ extension View {
             case .dataSources: DataSourcesView()
             case .stress: StressView()
             case .sleep: SleepView()
+            case .sleepScore(let day): SleepScoreBreakdownView(dayKey: day)
             case .health: HealthView()
             case .hydration: HydrationView()
             case .coupled: CoupledView()

@@ -9,6 +9,11 @@ name: Testing build (fork)
 
 on:
   workflow_dispatch:
+    inputs:
+      all_platforms:
+        description: "Also build Android and macOS (default: iOS only)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -108,6 +113,7 @@ jobs:
 
   android:
     needs: meta
+    if: ${{ inputs.all_platforms }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -141,6 +147,7 @@ jobs:
 
   macos:
     needs: meta
+    if: ${{ inputs.all_platforms }}
     runs-on: macos-15
     timeout-minutes: 40
     steps:

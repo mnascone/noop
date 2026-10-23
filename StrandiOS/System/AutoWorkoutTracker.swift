@@ -193,16 +193,18 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
     private func syncRegions(enabled: Bool) {
         let monitored = locationManager.monitoredRegions.compactMap { $0 as? CLCircularRegion }
             .filter { $0.identifier.hasPrefix(Self.regionPrefix) || $0.identifier == Self.legacyRegionId }
-        let wanted: [String: CLCircularRegion] = enabled && CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self)
-            ? Dictionary(uniqueKeysWithValues: places.prefix(19).map { p in
-                let r = CLCircularRegion(center: CLLocationCoordinate2D(latitude: p.latitude, longitude: p.longitude),
-                                         radius: min(p.radiusM, locationManager.maximumRegionMonitoringDistance),
-                                         identifier: Self.regionPrefix + p.id)
+        var wanted: [String: CLCircularRegion] = [:]
+        if enabled && CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) {
+            // iOS allows 20 monitored regions per app.
+            for p in places.prefix(19) {
+                let center = CLLocationCoordinate2D(latitude: p.latitude, longitude: p.longitude)
+                let radius = min(p.radiusM, locationManager.maximumRegionMonitoringDistance)
+                let r = CLCircularRegion(center: center, radius: radius, identifier: Self.regionPrefix + p.id)
                 r.notifyOnEntry = true
                 r.notifyOnExit = true
-                return (r.identifier, r)
-            })
-            : [:]
+                wanted[r.identifier] = r
+            }
+        }
         for region in monitored {
             if let w = wanted[region.identifier], Self.same(w, region) {
                 locationManager.requestState(for: region)

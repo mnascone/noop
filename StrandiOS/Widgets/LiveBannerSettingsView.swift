@@ -23,7 +23,7 @@ struct LiveBannerSettingsView: View {
 
             if enabled {
                 fieldSection(String(localized: "Showing"), $fields, allowWorkoutOnly: true,
-                             footer: String(localized: "Drag to reorder. Up to \(LiveBannerPrefs.maxFields). Workout, Rest and Sets only show while a workout runs, and their timers keep counting on the Lock Screen."))
+                             footer: String(localized: "Drag to reorder. Up to \(LiveBannerPrefs.maxFields). Workout fields (timers, sets, distance and so on) only show while a workout runs, and the timers keep counting on the Lock Screen."))
                     { LiveBannerPrefs.save(fields) }
 
                 Section {
@@ -53,8 +53,12 @@ struct LiveBannerSettingsView: View {
                 Section {
                     Picker("Dynamic Island shows", selection: $islandRaw) {
                         Text("Same as the first field").tag("")
-                        ForEach(LiveBannerField.allCases, id: \.rawValue) { f in
-                            Label(LocalizedStringKey(f.label), systemImage: f.symbol).tag(f.rawValue)
+                        ForEach(Self.groups, id: \.self) { group in
+                            Section(LocalizedStringKey(group)) {
+                                ForEach(LiveBannerField.allCases.filter { $0.group == group }, id: \.rawValue) { f in
+                                    Label(LocalizedStringKey(f.label), systemImage: f.symbol).tag(f.rawValue)
+                                }
+                            }
                         }
                     }
                     .pickerStyle(.navigationLink)
@@ -83,6 +87,8 @@ struct LiveBannerSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
+    static let groups = ["Live", "Today", "Last night", "Strap", "Workout"]
+
     @ViewBuilder
     private func fieldSection(_ header: String, _ list: Binding<[LiveBannerField]>, allowWorkoutOnly: Bool,
                               footer: String?, save: @escaping () -> Void) -> some View {
@@ -101,12 +107,18 @@ struct LiveBannerSettingsView: View {
             }
             if list.wrappedValue.count < LiveBannerPrefs.maxFields {
                 Menu {
-                    ForEach(LiveBannerField.allCases.filter { !list.wrappedValue.contains($0) }, id: \.self) { f in
-                        Button {
-                            list.wrappedValue.append(f)
-                            save()
-                        } label: {
-                            Label(LocalizedStringKey(f.label), systemImage: f.symbol)
+                    ForEach(Self.groups, id: \.self) { group in
+                        Section(LocalizedStringKey(group)) {
+                            ForEach(LiveBannerField.allCases.filter {
+                                $0.group == group && !list.wrappedValue.contains($0)
+                            }, id: \.self) { f in
+                                Button {
+                                    list.wrappedValue.append(f)
+                                    save()
+                                } label: {
+                                    Label(LocalizedStringKey(f.label), systemImage: f.symbol)
+                                }
+                            }
                         }
                     }
                 } label: {
@@ -123,7 +135,7 @@ struct LiveBannerSettingsView: View {
     private func row(_ f: LiveBannerField, first: Bool) -> some View {
         HStack(spacing: NoopMetrics.space3) {
             Image(systemName: f.symbol)
-                .foregroundStyle(f == .heartRate || f == .zone ? StrandPalette.statusCritical : StrandPalette.accent)
+                .foregroundStyle([.heartRate, .zone, .avgHr, .peakHr].contains(f) ? StrandPalette.statusCritical : StrandPalette.accent)
                 .frame(width: 24)
             Text(LocalizedStringKey(f.label))
                 .font(StrandFont.subhead)

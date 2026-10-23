@@ -34,13 +34,15 @@ public struct NOOPActivityAttributes: ActivityAttributes {
         public var layout: LiveBannerLayout?
         public var showLabels: Bool?
         public var title: String?
+        /// Pre-formatted values for the later fields, keyed by `LiveBannerField.rawValue`.
+        public var texts: [String: String]?
 
         public init(bpm: Int?, recovery: Int?, bonded: Bool, effort: Int? = nil,
                     fields: [LiveBannerField]? = nil, rest: Int? = nil, workoutStart: Date? = nil,
                     workoutSport: String? = nil, restSince: Date? = nil, setCount: Int? = nil,
                     steps: Int? = nil, calories: Int? = nil, zone: Int? = nil, hrv: Int? = nil,
                     restingHr: Int? = nil, islandField: LiveBannerField? = nil, layout: LiveBannerLayout? = nil,
-                    showLabels: Bool? = nil, title: String? = nil) {
+                    showLabels: Bool? = nil, title: String? = nil, texts: [String: String]? = nil) {
             self.bpm = bpm
             self.recovery = recovery
             self.bonded = bonded
@@ -60,6 +62,7 @@ public struct NOOPActivityAttributes: ActivityAttributes {
             self.layout = layout
             self.showLabels = showLabels
             self.title = title
+            self.texts = texts
         }
     }
 

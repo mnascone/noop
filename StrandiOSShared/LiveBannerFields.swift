@@ -16,6 +16,18 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
     case workoutTime
     case restTimer
     case sets
+    // Added later: values arrive pre-formatted in `ContentState.texts`, keyed by raw value.
+    case battery
+    case batteryTime
+    case sleepTime
+    case skinTemp
+    case respiration
+    case spo2
+    case workoutEffort
+    case avgHr
+    case peakHr
+    case distance
+    case pace
 
     public var label: String {
         switch self {
@@ -31,6 +43,17 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
         case .workoutTime: return "Workout"
         case .restTimer: return "Rest"
         case .sets: return "Sets"
+        case .battery: return "Battery"
+        case .batteryTime: return "Battery left"
+        case .sleepTime: return "Slept"
+        case .skinTemp: return "Skin temp"
+        case .respiration: return "Breathing"
+        case .spo2: return "Blood O₂"
+        case .workoutEffort: return "Workout effort"
+        case .avgHr: return "Avg HR"
+        case .peakHr: return "Peak HR"
+        case .distance: return "Distance"
+        case .pace: return "Pace"
         }
     }
 
@@ -48,12 +71,46 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
         case .workoutTime: return "stopwatch.fill"
         case .restTimer: return "pause.circle.fill"
         case .sets: return "dumbbell.fill"
+        case .battery: return "battery.75percent"
+        case .batteryTime: return "hourglass"
+        case .sleepTime: return "moon.zzz.fill"
+        case .skinTemp: return "thermometer.medium"
+        case .respiration: return "lungs.fill"
+        case .spo2: return "drop.fill"
+        case .workoutEffort: return "flame.circle.fill"
+        case .avgHr: return "heart.circle"
+        case .peakHr: return "arrow.up.heart.fill"
+        case .distance: return "point.topleft.down.to.point.bottomright.curvepath"
+        case .pace: return "speedometer"
         }
     }
 
     /// Fields that only have a value during a workout. Shown only while one is running.
     public var workoutOnly: Bool {
-        self == .workoutTime || self == .restTimer || self == .sets
+        switch self {
+        case .workoutTime, .restTimer, .sets, .workoutEffort, .avgHr, .peakHr, .distance, .pace: return true
+        default: return false
+        }
+    }
+
+    /// Grouping for the picker.
+    public var group: String {
+        switch self {
+        case .heartRate, .zone: return "Live"
+        case .charge, .effort, .rest, .steps, .calories: return "Today"
+        case .hrv, .restingHr, .sleepTime, .skinTemp, .respiration, .spo2: return "Last night"
+        case .battery, .batteryTime: return "Strap"
+        case .workoutTime, .restTimer, .sets, .workoutEffort, .avgHr, .peakHr, .distance, .pace: return "Workout"
+        }
+    }
+
+    /// Value comes pre-formatted in `ContentState.texts`.
+    public var usesText: Bool {
+        switch self {
+        case .battery, .batteryTime, .sleepTime, .skinTemp, .respiration, .spo2, .workoutEffort, .avgHr,
+             .peakHr, .distance, .pace: return true
+        default: return false
+        }
     }
 }
 

@@ -28,7 +28,10 @@ struct NOOPLiveActivity: Widget {
     }
 
     static func tint(_ f: LiveBannerField) -> Color {
-        f == .heartRate || f == .zone ? StrandPalette.statusCritical : StrandPalette.accent
+        switch f {
+        case .heartRate, .zone, .avgHr, .peakHr: return StrandPalette.statusCritical
+        default: return StrandPalette.accent
+        }
     }
 
     var body: some WidgetConfiguration {
@@ -202,6 +205,9 @@ private struct FieldValue: View {
             }
         case .sets:
             Text(s.setCount.map(String.init) ?? "–")
+        case .battery, .batteryTime, .sleepTime, .skinTemp, .respiration, .spo2, .workoutEffort, .avgHr,
+             .peakHr, .distance, .pace:
+            Text(s.texts?[field.rawValue] ?? "–")
         }
     }
 }

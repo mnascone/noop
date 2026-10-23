@@ -133,6 +133,43 @@ final class LiveActivityController {
         var layout: LiveBannerLayout = .featured
         var showLabels = true
         var title: String?
+        var texts: [String: String] = [:]
+    }
+
+    /// Pre-formatted values for the later banner fields, only for the ones on show.
+    private func bannerTexts(_ model: AppModel, day: DailyMetric?, wanted: Set<LiveBannerField>) -> [String: String] {
+        var t: [String: String] = [:]
+        func put(_ f: LiveBannerField, _ v: String?) { if wanted.contains(f), let v { t[f.rawValue] = v } }
+        let system = UnitSystem(rawValue: UserDefaults.standard.string(forKey: UnitPrefs.systemKey) ?? "") ?? .metric
+        let distanceSystem = UnitPrefs.resolveDistance(
+            system: system, override: UserDefaults.standard.string(forKey: UnitPrefs.distanceSystemKey) ?? "")
+
+        if let pct = model.live.batteryPct {
+            put(.battery, "\(Int(pct.rounded()))%" + (model.live.charging == true ? " ⚡︎" : ""))
+        }
+        put(.batteryTime, model.live.batteryEstimate.map { BatteryEstimator.label(hours: $0.remainingHours) })
+        if let mins = day?.totalSleepMin, mins > 0 {
+            let m = Int(mins.rounded())
+            put(.sleepTime, "\(m / 60)h \(m % 60)m")
+        }
+        if let dev = day?.skinTempDevC, abs(dev) < 5 {
+            // Deviation from baseline, in the user's temperature unit.
+            let v = system == .imperial ? dev * 1.8 : dev
+            put(.skinTemp, String(format: "%+.1f°", v))
+        }
+        put(.respiration, day?.respRateBpm.map { String(format: "%.1f", $0) })
+        put(.spo2, day?.spo2Pct.map { "\(Int($0.rounded()))%" })
+        if let w = model.activeWorkout {
+            put(.workoutEffort, String(format: "%.1f", w.liveStrain))
+            if w.avgHr > 0 { put(.avgHr, "\(w.avgHr)") }
+            if w.peakHr > 0 { put(.peakHr, "\(w.peakHr)") }
+            let gps = model.gpsRecorder
+            if gps.isRecording, gps.pointCount > 0 {
+                put(.distance, UnitFormatter.distanceFromMeters(gps.distanceM, system: distanceSystem))
+                put(.pace, UnitFormatter.paceFromSecPerKm(gps.paceSecPerKm, system: distanceSystem))
+            }
+        }
+        return t
     }
 
     private func bannerExtras(_ model: AppModel, day: DailyMetric?) -> BannerExtras {
@@ -155,6 +192,7 @@ final class LiveActivityController {
         if e.fields.contains(.zone) || e.islandField == .zone, let bpm = model.bpm ?? model.live.heartRate {
             e.zone = model.profile.hrZoneSet.zoneNumber(forBPM: Double(bpm))
         }
+        e.texts = bannerTexts(model, day: day, wanted: Set(e.fields + [e.islandField].compactMap { $0 }))
         if e.fields.contains(.rest), let day {
             let inputs = SleepScoreInputs.resolve(intelligence: model.intelligence, days: model.repo.days,
                                                   age: model.profile.age)
@@ -241,7 +279,7 @@ final class LiveActivityController {
             setCount: extras.setCount,
             steps: extras.steps, calories: extras.calories, zone: extras.zone, hrv: extras.hrv,
             restingHr: extras.restingHr, islandField: extras.islandField, layout: extras.layout,
-            showLabels: extras.showLabels, title: extras.title)
+            showLabels: extras.showLabels, title: extras.title, texts: extras.texts)
 
         if step == .renew, activity != nil {
             // The fresh banner first, then the old one goes, so the Lock Screen is never without one; if iOS refuses

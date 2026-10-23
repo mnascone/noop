@@ -5,6 +5,7 @@ import WhoopStore
 
 /// Inputs the sleep score needs beyond the night itself. Resolved once, in one place, so Today, the
 /// Sleep tab and the breakdown all score a night the same way.
+@MainActor
 enum SleepScoreInputs {
     /// Personal need and regularity: the latest scoring pass's values when there is one, else the same
     /// estimate derived from the banked nights.

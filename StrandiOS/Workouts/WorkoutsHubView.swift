@@ -14,7 +14,6 @@ struct WorkoutsHubView: View {
                 LiveIntervalCard()
                 autoTrackingCard
                 historyCard
-                lockScreenCard
             }
         }
     }
@@ -64,36 +63,6 @@ struct WorkoutsHubView: View {
             line += " " + String(localized: "You're at \(here.name).")
         }
         return line
-    }
-
-    private var lockScreenCard: some View {
-        NavigationLink {
-            LiveBannerSettingsView()
-        } label: {
-            NoopCard {
-                HStack(spacing: NoopMetrics.space3) {
-                    Image(systemName: "lock.iphone")
-                        .font(.title2)
-                        .foregroundStyle(StrandPalette.accent)
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: NoopMetrics.spaceHalf) {
-                        Text("Lock Screen")
-                            .font(StrandFont.headline)
-                            .foregroundStyle(StrandPalette.textPrimary)
-                        Text("Pick what the live banner shows: rest timer, sets, workout clock and more.")
-                            .font(StrandFont.footnote)
-                            .foregroundStyle(StrandPalette.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(StrandPalette.textTertiary)
-                        .accessibilityHidden(true)
-                }
-            }
-        }
-        .buttonStyle(.plain)
     }
 
     private var historyCard: some View {

@@ -74,7 +74,11 @@ final class LiveActivityController {
         // A change to the chosen fields shows at once.
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .receive(on: DispatchQueue.main)
-            .map { _ in LiveBannerPrefs.load() }
+            .map { _ in
+                "\(LiveBannerPrefs.load())|\(String(describing: LiveBannerPrefs.loadWorkout()))|"
+                    + "\(String(describing: LiveBannerPrefs.islandField()))|\(LiveBannerPrefs.layout())|"
+                    + "\(LiveBannerPrefs.showLabels())|\(LiveBannerPrefs.title() ?? "")"
+            }
             .removeDuplicates()
             .dropFirst()
             .sink { [weak self] _ in self?.refreshBanner() }
@@ -120,10 +124,37 @@ final class LiveActivityController {
         var workoutSport: String?
         var restSince: Date?
         var setCount: Int?
+        var steps: Int?
+        var calories: Int?
+        var zone: Int?
+        var hrv: Int?
+        var restingHr: Int?
+        var islandField: LiveBannerField?
+        var layout: LiveBannerLayout = .featured
+        var showLabels = true
+        var title: String?
     }
 
     private func bannerExtras(_ model: AppModel, day: DailyMetric?) -> BannerExtras {
         var e = BannerExtras(fields: LiveBannerPrefs.load())
+        // A separate set of fields while a workout runs, when one is chosen.
+        if model.activeWorkout != nil, let workoutFields = LiveBannerPrefs.loadWorkout() {
+            e.fields = workoutFields
+        }
+        e.islandField = LiveBannerPrefs.islandField()
+        e.layout = LiveBannerPrefs.layout()
+        e.showLabels = LiveBannerPrefs.showLabels()
+        e.title = LiveBannerPrefs.title()
+        let today = model.repo.today
+        if e.fields.contains(.steps) { e.steps = today?.steps ?? day?.steps }
+        if e.fields.contains(.calories) {
+            e.calories = (today?.activeKcalEst ?? day?.activeKcalEst).map { Int($0.rounded()) }
+        }
+        if e.fields.contains(.hrv) { e.hrv = day?.avgHrv.map { Int($0.rounded()) } }
+        if e.fields.contains(.restingHr) { e.restingHr = day?.restingHr }
+        if e.fields.contains(.zone) || e.islandField == .zone, let bpm = model.bpm ?? model.live.heartRate {
+            e.zone = model.profile.hrZoneSet.zoneNumber(forBPM: Double(bpm))
+        }
         if e.fields.contains(.rest), let day {
             let inputs = SleepScoreInputs.resolve(intelligence: model.intelligence, days: model.repo.days,
                                                   age: model.profile.age)
@@ -207,7 +238,10 @@ final class LiveActivityController {
             fields: extras.fields, rest: extras.rest, workoutStart: extras.workoutStart,
             workoutSport: extras.workoutSport,
             restSince: extras.restSince,
-            setCount: extras.setCount)
+            setCount: extras.setCount,
+            steps: extras.steps, calories: extras.calories, zone: extras.zone, hrv: extras.hrv,
+            restingHr: extras.restingHr, islandField: extras.islandField, layout: extras.layout,
+            showLabels: extras.showLabels, title: extras.title)
 
         if step == .renew, activity != nil {
             // The fresh banner first, then the old one goes, so the Lock Screen is never without one; if iOS refuses

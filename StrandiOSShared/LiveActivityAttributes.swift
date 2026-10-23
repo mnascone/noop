@@ -24,10 +24,23 @@ public struct NOOPActivityAttributes: ActivityAttributes {
         /// When the current rest began; nil while working or with no tracked workout.
         public var restSince: Date?
         public var setCount: Int?
+        public var steps: Int?
+        public var calories: Int?
+        public var zone: Int?
+        public var hrv: Int?
+        public var restingHr: Int?
+        /// Banner look: Dynamic Island field (nil = first field), layout, labels, title (nil = automatic).
+        public var islandField: LiveBannerField?
+        public var layout: LiveBannerLayout?
+        public var showLabels: Bool?
+        public var title: String?
 
         public init(bpm: Int?, recovery: Int?, bonded: Bool, effort: Int? = nil,
                     fields: [LiveBannerField]? = nil, rest: Int? = nil, workoutStart: Date? = nil,
-                    workoutSport: String? = nil, restSince: Date? = nil, setCount: Int? = nil) {
+                    workoutSport: String? = nil, restSince: Date? = nil, setCount: Int? = nil,
+                    steps: Int? = nil, calories: Int? = nil, zone: Int? = nil, hrv: Int? = nil,
+                    restingHr: Int? = nil, islandField: LiveBannerField? = nil, layout: LiveBannerLayout? = nil,
+                    showLabels: Bool? = nil, title: String? = nil) {
             self.bpm = bpm
             self.recovery = recovery
             self.bonded = bonded
@@ -38,6 +51,15 @@ public struct NOOPActivityAttributes: ActivityAttributes {
             self.workoutSport = workoutSport
             self.restSince = restSince
             self.setCount = setCount
+            self.steps = steps
+            self.calories = calories
+            self.zone = zone
+            self.hrv = hrv
+            self.restingHr = restingHr
+            self.islandField = islandField
+            self.layout = layout
+            self.showLabels = showLabels
+            self.title = title
         }
     }
 

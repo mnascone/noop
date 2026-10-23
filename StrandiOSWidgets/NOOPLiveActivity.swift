@@ -21,31 +21,74 @@ struct NOOPLiveActivity: Widget {
         return shown.isEmpty ? [.heartRate] : shown
     }
 
+    /// The Dynamic Island's own field, when it has one that can show now; else the first field.
+    static func islandField(_ state: NOOPActivityAttributes.ContentState) -> LiveBannerField {
+        if let f = state.islandField, !f.workoutOnly || state.workoutStart != nil { return f }
+        return fields(state).first ?? .heartRate
+    }
+
+    static func tint(_ f: LiveBannerField) -> Color {
+        f == .heartRate || f == .zone ? StrandPalette.statusCritical : StrandPalette.accent
+    }
+
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NOOPActivityAttributes.self) { context in
-            // Lock Screen / banner presentation: the first field large, the rest as small stats.
-            let fields = Self.fields(context.state)
-            HStack(spacing: 14) {
-                if let primary = fields.first {
-                    Image(systemName: primary.symbol)
-                        .font(.title2)
-                        .foregroundStyle(primary == .heartRate ? StrandPalette.statusCritical : StrandPalette.accent)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(context.state.workoutStart != nil
-                             ? (context.state.workoutSport ?? primary.label) : primary.label)
-                            .font(.caption).foregroundStyle(StrandPalette.textSecondary)
-                        FieldValue(field: primary, context: context, large: true)
-                    }
-                }
-                Spacer()
-                HStack(spacing: 12) {
-                    ForEach(Array(fields.dropFirst()), id: \.self) { f in
-                        VStack(alignment: .center, spacing: 2) {
-                            Text(f.label).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
-                            FieldValue(field: f, context: context, large: false)
+            let state = context.state
+            let fields = Self.fields(state)
+            let labels = state.showLabels ?? true
+            Group {
+                if (state.layout ?? .featured) == .equal {
+                    // All fields the same size.
+                    VStack(alignment: .leading, spacing: 6) {
+                        if labels, let title = state.title ?? state.workoutSport {
+                            Text(title).font(.caption).foregroundStyle(StrandPalette.textSecondary)
                         }
-                        .multilineTextAlignment(.center)
-                        .fixedSize()
+                        HStack(spacing: 8) {
+                            ForEach(fields, id: \.self) { f in
+                                VStack(spacing: 3) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: f.symbol).font(.caption).foregroundStyle(Self.tint(f))
+                                        if labels {
+                                            Text(f.label).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
+                                                .lineLimit(1).minimumScaleFactor(0.7)
+                                        }
+                                    }
+                                    FieldValue(field: f, context: context, size: .medium)
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                        }
+                    }
+                } else {
+                    // The first field big, the rest beside it.
+                    HStack(spacing: 14) {
+                        if let primary = fields.first {
+                            Image(systemName: primary.symbol)
+                                .font(.title2)
+                                .foregroundStyle(Self.tint(primary))
+                            VStack(alignment: .leading, spacing: 2) {
+                                if labels {
+                                    Text(state.title ?? state.workoutSport ?? primary.label)
+                                        .font(.caption).foregroundStyle(StrandPalette.textSecondary)
+                                }
+                                FieldValue(field: primary, context: context, size: .large)
+                            }
+                        }
+                        Spacer()
+                        HStack(spacing: 12) {
+                            ForEach(Array(fields.dropFirst()), id: \.self) { f in
+                                VStack(alignment: .center, spacing: 2) {
+                                    if labels {
+                                        Text(f.label).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
+                                    } else {
+                                        Image(systemName: f.symbol).font(.caption2).foregroundStyle(Self.tint(f))
+                                    }
+                                    FieldValue(field: f, context: context, size: .small)
+                                }
+                                .multilineTextAlignment(.center)
+                                .fixedSize()
+                            }
+                        }
                     }
                 }
             }
@@ -53,23 +96,23 @@ struct NOOPLiveActivity: Widget {
             .activityBackgroundTint(StrandPalette.surfaceBase)
             .activitySystemActionForegroundColor(StrandPalette.textPrimary)
         } dynamicIsland: { context in
-            let fields = Self.fields(context.state)
+            let state = context.state
+            let island = Self.islandField(state)
+            let others = Self.fields(state).filter { $0 != island }
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    if let primary = fields.first {
-                        HStack(spacing: 4) {
-                            Image(systemName: primary.symbol)
-                            FieldValue(field: primary, context: context, large: false)
-                        }
-                        .foregroundStyle(primary == .heartRate ? StrandPalette.statusCritical : StrandPalette.accent)
+                    HStack(spacing: 4) {
+                        Image(systemName: island.symbol)
+                        FieldValue(field: island, context: context, size: .small)
                     }
+                    .foregroundStyle(Self.tint(island))
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     HStack(spacing: 10) {
-                        ForEach(Array(fields.dropFirst().prefix(2)), id: \.self) { f in
+                        ForEach(Array(others.prefix(2)), id: \.self) { f in
                             VStack(alignment: .center, spacing: 1) {
                                 Text(f.label).font(.caption2).foregroundStyle(.secondary)
-                                FieldValue(field: f, context: context, large: false)
+                                FieldValue(field: f, context: context, size: .small)
                             }
                             .multilineTextAlignment(.center)
                             .fixedSize()
@@ -77,17 +120,15 @@ struct NOOPLiveActivity: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text(context.state.workoutSport ?? context.attributes.title)
+                    Text(state.title ?? state.workoutSport ?? context.attributes.title)
                         .font(.caption).foregroundStyle(.secondary)
                 }
             } compactLeading: {
-                Image(systemName: fields.first?.symbol ?? "heart.fill")
-                    .foregroundStyle(fields.first == .heartRate ? StrandPalette.statusCritical : StrandPalette.accent)
+                Image(systemName: island.symbol).foregroundStyle(Self.tint(island))
             } compactTrailing: {
-                FieldValue(field: fields.first ?? .heartRate, context: context, large: false)
+                FieldValue(field: island, context: context, size: .small)
             } minimal: {
-                Image(systemName: fields.first?.symbol ?? "heart.fill")
-                    .foregroundStyle(fields.first == .heartRate ? StrandPalette.statusCritical : StrandPalette.accent)
+                Image(systemName: island.symbol).foregroundStyle(Self.tint(island))
             }
         }
     }
@@ -96,15 +137,27 @@ struct NOOPLiveActivity: Widget {
 /// One field's value. Timers use the system's self-updating timer text, so they count on the Lock Screen
 /// between pushes.
 private struct FieldValue: View {
+    enum Size { case small, medium, large }
+
     let field: LiveBannerField
     let context: ActivityViewContext<NOOPActivityAttributes>
-    let large: Bool
+    let size: Size
 
     var body: some View {
         content
-            .font(large ? .system(size: 26, weight: .bold, design: .rounded) : .headline)
+            .font(font)
             .foregroundStyle(StrandPalette.textPrimary)
             .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+    }
+
+    private var font: Font {
+        switch size {
+        case .large: return .system(size: 26, weight: .bold, design: .rounded)
+        case .medium: return .system(size: 20, weight: .bold, design: .rounded)
+        case .small: return .headline
+        }
     }
 
     @ViewBuilder
@@ -112,17 +165,27 @@ private struct FieldValue: View {
         let s = context.state
         switch field {
         case .heartRate:
-            if large {
+            if size == .large {
                 Text("\(NOOPLiveActivity.shownBpm(context).map(String.init) ?? "–") bpm")
             } else {
                 Text(NOOPLiveActivity.shownBpm(context).map(String.init) ?? "–")
             }
+        case .zone:
+            Text(s.zone.map { "Z\($0)" } ?? "–")
         case .charge:
             Text(s.recovery.map { "\($0)%" } ?? "–")
         case .effort:
             Text(s.effort.map(String.init) ?? "–")
         case .rest:
             Text(s.rest.map(String.init) ?? "–")
+        case .steps:
+            Text(s.steps.map { $0.formatted(.number) } ?? "–")
+        case .calories:
+            Text(s.calories.map(String.init) ?? "–")
+        case .hrv:
+            Text(s.hrv.map(String.init) ?? "–")
+        case .restingHr:
+            Text(s.restingHr.map(String.init) ?? "–")
         case .workoutTime:
             if let start = s.workoutStart {
                 Text(timerInterval: start...Date.distantFuture, countsDown: false)

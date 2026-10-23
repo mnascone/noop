@@ -70,8 +70,13 @@ final class DayCacheConfigFieldTests: XCTestCase {
 
     /// The two platforms must describe the same fields in the same order, or the same drop is reported
     /// as two different causes depending on which phone the reporter happens to hold.
+    ///
+    /// Personal build: the strap-scored wake fields are iOS-only (appended LAST so every shared index is
+    /// unchanged), so the shared prefix is what must match Kotlin.
     func testTheFieldListMatchesTheKotlinTwin() {
-        XCTAssertEqual(IntelligenceEngine.dayCacheConfigFields, [
+        let iosOnly = ["bandWake", "bandQuietWake"]
+        XCTAssertEqual(Array(IntelligenceEngine.dayCacheConfigFields.suffix(iosOnly.count)), iosOnly)
+        XCTAssertEqual(Array(IntelligenceEngine.dayCacheConfigFields.dropLast(iosOnly.count)), [
             "hrvBaseline", "rhrBaseline", "age", "sex", "stepTicksPerStep", "maxHROverride",
             "tzOffset", "sleepNeedHours", "sleepConsistency", "habitualMidsleep",
             "experimentalSleepV2", "motionAwareWake", "deepHrvWindow", "spo2CandidateDisplay",

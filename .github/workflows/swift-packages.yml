@@ -60,11 +60,11 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Build ${{ matrix.package }}
-        run: swift build
+        run: ../../Tools/ci-annotate-errors.sh swift build
         working-directory: Packages/${{ matrix.package }}
 
       - name: Test ${{ matrix.package }}
-        run: swift test
+        run: ../../Tools/ci-annotate-errors.sh swift test
         working-directory: Packages/${{ matrix.package }}
 
   # The Tools/ SwiftPM packages, which path-depend on Packages/ above and were built by nothing.

@@ -126,6 +126,7 @@ jobs:
 
       - name: Build ${{ matrix.scheme }}
         run: >-
+          Tools/ci-annotate-errors.sh
           xcodebuild -scheme '${{ matrix.scheme }}' -configuration Debug
           -destination '${{ matrix.destination }}' ${{ matrix.extra_args }}
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
@@ -139,6 +140,7 @@ jobs:
       - name: Test ${{ matrix.scheme }}
         if: matrix.scheme == 'Strand'
         run: >-
+          Tools/ci-annotate-errors.sh
           xcodebuild -scheme Strand -configuration Debug
           -destination 'platform=macOS'
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO

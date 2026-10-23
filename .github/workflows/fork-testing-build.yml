@@ -202,6 +202,7 @@ jobs:
         # re-signed sideload fail "integrity could not be verified" on modern iOS; Release (the correct config
         # for a distributed app) installs clean — confirmed by the reporter's own Release build.
         run: >-
+          Tools/ci-annotate-errors.sh
           xcodebuild -scheme NOOPiOS -configuration Release -destination 'generic/platform=iOS'
           -derivedDataPath build/dd
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""

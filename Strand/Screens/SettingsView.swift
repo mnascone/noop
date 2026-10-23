@@ -94,6 +94,10 @@ struct SettingsView: View {
     /// minutes. Self-gates on OBSERVED gravity + step density (#345) — a no-op on a sparse night (e.g.
     /// WHOOP 4.0) regardless of this switch. See [PuffinExperiment.motionAwareWakeKey].
     @AppStorage(PuffinExperiment.motionAwareWakeKey) private var motionAwareWakeEnabled = false
+    /// Strap-scored wake (personal build). Default ON, matching `PuffinExperiment.bandWakeEnabled`.
+    @AppStorage(PuffinExperiment.bandWakeKey) private var bandWakeEnabled = true
+    /// Lying-awake-still rule (personal build). Default OFF.
+    @AppStorage(PuffinExperiment.bandQuietWakeKey) private var bandQuietWakeEnabled = false
 
     // Display preferences. `units.system` remains the body-measurement choice for compatibility;
     // exercise distance/pace can override it independently. Stored data is always SI.
@@ -1985,6 +1989,41 @@ struct SettingsView: View {
 
                 rowDivider
 
+                // Strap-scored wake (personal build): the fix for NOOP missing time awake.
+                Toggle(isOn: $bandWakeEnabled) {
+                    Text("Use the strap's own awake readings")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch)
+                .tint(StrandPalette.accent)
+                .onChangeCompat(of: bandWakeEnabled) { _ in
+                    Task { await model.intelligence.analyzeRecent(); await model.repo.refresh() }
+                }
+                Text("NOOP mostly spots being awake from wrist movement, so lying awake and still gets counted as sleep. A WHOOP 5.0/MG also scores your sleep itself. With this on, any 3+ minutes it calls awake or up counts as awake. Never turns awake into asleep. Does nothing on a WHOOP 4.0.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if bandWakeEnabled {
+                    Toggle(isOn: $bandQuietWakeEnabled) {
+                        Text("Also count lying awake (experimental)")
+                            .font(StrandFont.subhead)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                    }
+                    .toggleStyle(.switch)
+                    .tint(StrandPalette.accent)
+                    .onChangeCompat(of: bandQuietWakeEnabled) { _ in
+                        Task { await model.intelligence.analyzeRecent(); await model.repo.refresh() }
+                    }
+                    Text("Counts 10+ minutes the strap calls \"still\" (not \"asleep\") as awake when your heart rate is clearly above your sleeping level. Not proven yet. The strap log shows how many minutes it would add each night (\"bandWake:\" lines with Test Centre's Sleep mode on), so you can check it against nights you remember.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                rowDivider
+
                 // MARK: Motion-aware wake refinement (#364 follow-up) — default OFF.
                 Toggle(isOn: $motionAwareWakeEnabled) {
                     Text("Motion-aware wake refinement")
@@ -1993,7 +2032,7 @@ struct SettingsView: View {
                 }
                 .toggleStyle(.switch)
                 .tint(StrandPalette.accent)
-                Text("Reviews each scored wake block for real evidence of getting up (walking cadence, a change in body position) instead of just a heart-rate rise. A wake block with no locomotion and a stable posture — a hot night, a brief turn-over — is folded back into light sleep; a real get-up is left alone. Self-checks how much motion detail your strap actually recorded and stays off on a night that's too sparse to trust (older WHOOP 4.0 firmware, mainly). Off by default; takes effect on the next nights staged.")
+                Text("The opposite direction: turns awake time with no walking back into sleep. Meant for hot nights where heart rate alone says awake. If NOOP already misses time you're awake, leave this off.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -106,7 +106,7 @@ final class IntelligenceEngine: ObservableObject {
         "hrvBaseline", "rhrBaseline", "age", "sex", "stepTicksPerStep", "maxHROverride",
         "tzOffset", "sleepNeedHours", "sleepConsistency", "habitualMidsleep",
         "experimentalSleepV2", "motionAwareWake", "deepHrvWindow", "spo2CandidateDisplay",
-        "effortMethod", "dayCycleMode",
+        "effortMethod", "dayCycleMode", "bandWake", "bandQuietWake",
     ]
 
     /// Which config field(s) moved between two signatures, for the `configDropped` tally.
@@ -681,7 +681,7 @@ final class IntelligenceEngine: ObservableObject {
 
     /// Personal build: the stricter v2 sleep score needs every banked night rescored once, so history and
     /// new nights sit on one scale. Rides the same full-history pass.
-    static let restScoreV2RescoreFlagKey = "intelligence.restScoreV2Rescore.done"
+    static let restScoreV2RescoreFlagKey = "intelligence.restScoreV2Rescore.v2.done"
 
     static func historyRepairIsPending(effortDone: Bool, sleepWearDone: Bool, restV2Done: Bool = true) -> Bool {
         !effortDone || !sleepWearDone || !restV2Done
@@ -1119,6 +1119,8 @@ final class IntelligenceEngine: ObservableObject {
             // window of days scored by a recipe the user just turned off, with nothing to explain it.
             "\(effortMethodGlobal)",
             dayCycleMode.rawValue,
+            // Strap-scored wake changes every banded night's stages, so a toggle must re-score.
+            "\(PuffinExperiment.bandWakeEnabled)", "\(PuffinExperiment.bandQuietWakeEnabled)",
         ].joined(separator: "|")
         // Drop the whole cache on a config change, then snapshot it into a Sendable `let` for the detached
         // loop (the engine is @MainActor; the loop can't touch `self`). The loop returns the updated cache
@@ -1453,6 +1455,8 @@ final class IntelligenceEngine: ObservableObject {
                 // ever runs AFTER whichever stager above just ran, and self-gates on the night's observed
                 // gravity + step density, so flipping it on is a no-op for any night too sparse to trust.
                 let useMotionAwareWake = PuffinExperiment.motionAwareWakeEnabled
+                let useBandWake = PuffinExperiment.bandWakeEnabled
+                let useBandQuietWake = PuffinExperiment.bandQuietWakeEnabled
 
                 // Already OFF the main actor , score directly (the prior nested `Task.detached` here only
                 // existed to hop off the main actor; the whole loop now runs off it, so the score is computed
@@ -1545,6 +1549,8 @@ final class IntelligenceEngine: ObservableObject {
                                                      // #364 follow-up: same threading for the motion-aware wake
                                                      // refinement post-pass.
                                                      useMotionAwareWake: useMotionAwareWake,
+                                                     useBandWake: useBandWake,
+                                                     useBandQuietWake: useBandQuietWake,
                                                      // #804 Fix A: the owner's own device-provided hypnogram
                                                      // (empty for WHOOP / non-ring days → default path).
                                                      providedSleep: providedSleep,

@@ -275,6 +275,19 @@ enum PuffinExperiment {
     /// invents wake time; detection and the V1/V2 staging engines are untouched either way. Read at the
     /// staging call sites (`Repository.restageFromRaw`, `IntelligenceEngine`, threaded through
     /// `AnalyticsEngine.analyzeDay`). Mirrors the Android `PuffinExperiment.KEY_MOTION_AWARE_WAKE`.
+    /// Personal build: count time the WHOOP 5.0/MG's own sleep state calls awake or up (3+ min) as wake, where
+    /// NOOP's stager called it sleep (`BandWakePromotion`). Default ON: the PSG harness says the shipped recipe
+    /// under-calls wake (about 4% against about 9% true), so this moves toward truth. No-op on a WHOOP 4.0.
+    static let bandWakeKey = "noopBandWake"
+    static var bandWakeEnabled: Bool {
+        UserDefaults.standard.object(forKey: bandWakeKey) == nil ? true : UserDefaults.standard.bool(forKey: bandWakeKey)
+    }
+
+    /// Personal build, opt-in: also count long "still" stretches with raised heart rate as wake (lying awake).
+    /// Unvalidated, so default OFF; its would-be effect is always traced (`bandWake:` lines).
+    static let bandQuietWakeKey = "noopBandQuietWake"
+    static var bandQuietWakeEnabled: Bool { UserDefaults.standard.bool(forKey: bandQuietWakeKey) }
+
     static let motionAwareWakeKey = "noopMotionAwareWake"
 
     static var motionAwareWakeEnabled: Bool { UserDefaults.standard.bool(forKey: motionAwareWakeKey) }

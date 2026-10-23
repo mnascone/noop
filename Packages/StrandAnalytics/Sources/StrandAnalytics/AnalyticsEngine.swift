@@ -443,6 +443,13 @@ public enum AnalyticsEngine {
                                   // caller/test byte-identical; IntelligenceEngine threads
                                   // `PuffinExperiment.motionAwareWakeEnabled`.
                                   useMotionAwareWake: Bool = false,
+                                  // Strap-scored wake (personal build): turn sleep into wake where the WHOOP
+                                  // 5.0/MG band says wake/up for 3+ min (`BandWakePromotion`). Default false
+                                  // keeps pure-function callers byte-identical; IntelligenceEngine threads
+                                  // `PuffinExperiment.bandWakeEnabled` (default ON in this build).
+                                  useBandWake: Bool = false,
+                                  // The opt-in "lying awake, still" rule of the same pass.
+                                  useBandQuietWake: Bool = false,
                                   // Caller-supplied, already-staged sleep sessions to fold in ALONGSIDE the
                                   // motion detector's — the day owner's OWN device-provided hypnogram (an
                                   // Oura ring's SleepNet night, #773), reconstructed from its persisted
@@ -514,9 +521,24 @@ public enum AnalyticsEngine {
         // night-window stream the caller passed for the rest of this analysis; the pass self-gates on its
         // observed density, so an empty/sparse `steps` (e.g. a WHOOP 4.0, which never emits StepSample at
         // all) is a no-op regardless of `useMotionAwareWake`.
-        let refinedSessions = useMotionAwareWake
+        let motionRefined = useMotionAwareWake
             ? detectedSessions.map { WakeMotionRefinement.refine($0, grav: gravity, steps: steps) }
             : detectedSessions
+        // Strap-scored wake runs LAST, so it can restore wake the motion pass removed where the strap disagrees.
+        // Traced on every banded night while a trace is collecting, including what the opt-in quiet rule would
+        // move, so the effect can be judged on real nights.
+        let refinedSessions: [SleepSession]
+        if (useBandWake || traceSink != nil) && !bandSleepState.isEmpty {
+            refinedSessions = motionRefined.map { session in
+                let (corrected, r) = BandWakePromotion.apply(session, band: bandSleepState, hr: hr,
+                                                             includeQuiet: useBandQuietWake)
+                traceSink?(BandWakePromotion.traceLine(startTs: session.start, result: r, quietOn: useBandQuietWake)
+                           + " applied=\(useBandWake)")
+                return useBandWake ? corrected : session
+            }
+        } else {
+            refinedSessions = motionRefined
+        }
         // #804 Fix A: fold in the caller's device-provided hypnogram (see `providedSleep`). Empty = the
         // byte-identical motion-only path. Otherwise enrich each provided session's nightly restingHR/avgHRV
         // from THIS day's hr/rr over its window (the stored ring row carries neither), using the SAME helpers

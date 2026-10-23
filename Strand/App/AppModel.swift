@@ -823,13 +823,33 @@ final class AppModel: ObservableObject {
     /// name; callers that don't pick a sport get the catalogue default "Other", parity with Android's
     /// `startWorkout(sport:)`). The active card on Live then shows elapsed time, live HR and strain
     /// building; End scores + saves it under this sport. Confirms with a single buzz. (#519)
-    func startWorkout(sport: String = WorkoutCatalog.defaultSportName) {
+    ///
+    /// `startedAt` backdates the session (a tapped auto-start suggestion begins when the activity began,
+    /// not when the notification was tapped). It is clamped to at most 2 hours ago and never later than
+    /// now. `seedSamples` are live HR samples already captured inside that backdated span, so Effort and
+    /// average HR cover the whole session; samples outside `[startedAt, now]` are dropped.
+    func startWorkout(sport: String = WorkoutCatalog.defaultSportName,
+                      startedAt: Date? = nil,
+                      seedSamples: [HRSample] = []) {
         guard activeWorkout == nil else { return }
         lastWorkout = nil
         let name = sport.trimmingCharacters(in: .whitespaces)
         let resolved = name.isEmpty ? WorkoutCatalog.defaultSportName : name
-        let started = Date()
-        activeWorkout = ActiveWorkout(start: started, sport: resolved)
+        let now = Date()
+        let started = startedAt.map { min(now, max($0, now.addingTimeInterval(-2 * 60 * 60))) } ?? now
+        var fresh = ActiveWorkout(start: started, sport: resolved)
+        let fromTs = Int(started.timeIntervalSince1970), toTs = Int(now.timeIntervalSince1970)
+        for s in seedSamples.sorted(by: { $0.ts < $1.ts }) where s.ts >= fromTs && s.ts <= toTs {
+            _ = fresh.recordSample(s)
+        }
+        if !fresh.samples.isEmpty {
+            fresh.peakHr = max(fresh.peakHr, fresh.samples.map(\.bpm).max() ?? 0)
+            fresh.avgHr = Int((Double(fresh.samples.map(\.bpm).reduce(0, +))
+                               / Double(fresh.samples.count)).rounded())
+            fresh.liveStrain = StrainScorer.strain(fresh.samples, maxHR: Double(profile.hrMax),
+                                                   method: PuffinExperiment.effortMethod, sex: profile.sex) ?? 0
+        }
+        activeWorkout = fresh
         // #524: arm GPS route recording for a distance-type sport (run / ride / walk / hike), mirroring
         // Android, which defaults GPS on for `isDistanceSport`. Manual-first / opt-in: only these sports
         // record a route, and the recorder still captures nothing unless the user grants When-In-Use
@@ -973,8 +993,18 @@ final class AppModel: ObservableObject {
         elapsedSeconds < minimumWorkoutSeconds
     }
 
-    func endWorkout() {
-        guard let w = activeWorkout else { return }
+    /// `endedAt` backdates the end (a tapped auto-end suggestion ends when the activity stopped, not when the
+    /// notification was tapped). Clamped to `[start, now]`; HR samples after it are dropped from the save.
+    func endWorkout(endedAt: Date? = nil) {
+        guard var w = activeWorkout else { return }
+        let endCut = endedAt.map { min(Date(), max(w.start, $0)) }
+        if let endCut {
+            let cutTs = Int(endCut.timeIntervalSince1970)
+            w.samples.removeAll { $0.ts > cutTs }
+            w.peakHr = w.samples.map(\.bpm).max() ?? 0
+            // A pause opened after the cut would otherwise subtract a negative span and lengthen the session.
+            if let p = w.pausedAt, p > endCut { w.pausedAt = nil }
+        }
         activeWorkout = nil
         let wasGps = activeWorkoutIsGps
         activeWorkoutIsGps = false
@@ -1001,7 +1031,7 @@ final class AppModel: ObservableObject {
             lastWorkout = nil
             return
         }
-        let end = Date()
+        let end = endCut ?? Date()
         // A session under a minute is a start/stop the wearer did not mean to keep, and it was the thing
         // that made deletion feel broken: the list filled with 5-30 second entries (#2278). Discarded HERE,
         // at save, rather than retained and pruned later, which is the whole difference between dropping

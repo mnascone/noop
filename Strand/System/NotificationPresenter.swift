@@ -23,6 +23,11 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
     /// root has wired it.
     var onCoachBriefTapped: (() -> Void)?
 
+    /// iOS live workout suggestions: wired by `StrandiOSApp` to `LiveWorkoutSuggestions.handle(response:)`.
+    /// Returns true when it handled the response (an auto start/end category), so other routing is skipped.
+    /// Called on the main thread; the completion handler is invoked after it returns.
+    var onWorkoutSuggestionResponse: ((UNNotificationResponse) -> Bool)?
+
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
@@ -39,6 +44,10 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        if onWorkoutSuggestionResponse?(response) == true {
+            completionHandler()
+            return
+        }
         if response.notification.request.content.categoryIdentifier == CoachBriefScheduler.notificationCategoryId {
             onCoachBriefTapped?()
         }

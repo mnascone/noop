@@ -1719,6 +1719,13 @@ struct SettingsView: View {
 
                 rowDivider
 
+                #if os(iOS)
+                // Live start/end notifications (gym geofence, walk detection). iOS-only file.
+                LiveWorkoutSuggestionsSettings()
+
+                rowDivider
+                #endif
+
                 Toggle(isOn: $journalReminderEnabled) {
                     Text("Journal reminder")
                         .font(StrandFont.subhead)

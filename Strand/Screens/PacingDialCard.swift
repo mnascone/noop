@@ -237,7 +237,7 @@ struct LiveStressGauge: View {
     /// The result of the last measurement, shown for half an hour after it ends.
     @State private var measured: (value: Double, at: Date)?
 
-    static let measureSeconds: TimeInterval = 90
+    static let measureSeconds: TimeInterval = 60
 
     /// The newest scored hour of today's stress curve, rescaled from the shared 0-3 axis to 0-100.
     private func loadStored() async {
@@ -249,16 +249,18 @@ struct LiveStressGauge: View {
         stored = (min(100, max(0, l / 3 * 100)), Date(timeIntervalSince1970: TimeInterval(h.startTs)))
     }
 
-    /// Stress from the most recent beats (up to the last 120, about two minutes).
-    static func level(rr: [Int], hrvBaseline: Double) -> Double? {
+    /// Stress from the most recent beats (up to the last 120, about two minutes). `minBeats` is lower
+    /// while a tap-started measurement is running, so a first reading comes within about 10 seconds and
+    /// then firms up as beats arrive.
+    static func level(rr: [Int], hrvBaseline: Double, minBeats: Int = 20) -> Double? {
         let clean = rr.suffix(120).filter { $0 >= 300 && $0 <= 2000 }
-        guard clean.count >= 20 else { return nil }
+        guard clean.count >= minBeats else { return nil }
         var diffs: [Double] = []
         for i in 1..<clean.count {
             let d = Double(clean[clean.startIndex + i] - clean[clean.startIndex + i - 1])
             if abs(d) < 200 { diffs.append(d * d) }
         }
-        guard diffs.count >= 15 else { return nil }
+        guard diffs.count >= max(8, minBeats - 5) else { return nil }
         let rmssd = sqrt(diffs.reduce(0, +) / Double(diffs.count))
         // Awake and still, RMSSD near your overnight value is calm; half of it is high stress.
         let ratio = rmssd / max(hrvBaseline, 1)
@@ -266,6 +268,13 @@ struct LiveStressGauge: View {
     }
 
     private var measuring: Bool { measureEnd.map { $0 > Date() } ?? false }
+
+    /// An instant first read from heart rate alone, while beats for the HRV reading are still arriving:
+    /// at resting heart rate about 20 (rest), rising ~1.8 per bpm above it. Rough, and replaced as soon
+    /// as there are enough beats.
+    static func heartRateEstimate(hr: Double, restingHR: Double) -> Double {
+        min(100, max(0, 20 + (hr - restingHR) * 1.8))
+    }
 
     private func toggleMeasure() {
         if measureEnd != nil {
@@ -278,7 +287,7 @@ struct LiveStressGauge: View {
 
     private func finishMeasure(keep: Bool) {
         guard measureEnd != nil else { return }
-        if keep, let b = hrvBaseline, let v = Self.level(rr: live.rrRecent, hrvBaseline: b) {
+        if keep, let b = hrvBaseline, let v = Self.level(rr: live.rrRecent, hrvBaseline: b, minBeats: 12) {
             measured = (v, Date())
         }
         measureEnd = nil
@@ -288,10 +297,15 @@ struct LiveStressGauge: View {
     var body: some View {
         let hr = live.heartRate.map(Double.init)
         let active = hr.map { h in restingHR.map { h > $0 + 35 } ?? (h > 110) } ?? false
-        let liveValue = hrvBaseline.flatMap { Self.level(rr: live.rrRecent, hrvBaseline: $0) }
+        let liveValue = hrvBaseline.flatMap {
+            Self.level(rr: live.rrRecent, hrvBaseline: $0, minBeats: measureEnd != nil ? 12 : 20)
+        }
+        // Measuring but no HRV reading yet: heart rate gives a first number at once.
+        let hrGuess: Double? = (measureEnd != nil && liveValue == nil)
+            ? hr.flatMap { h in restingHR.map { Self.heartRateEstimate(hr: h, restingHR: $0) } } : nil
         let recent = measured.flatMap { Date().timeIntervalSince($0.at) < 1800 ? $0 : nil }
         // Live while measuring (or whenever beats stream), then the last measurement, then the stored hour.
-        let value = liveValue ?? recent?.value ?? stored?.value
+        let value = liveValue ?? hrGuess ?? recent?.value ?? stored?.value
         Button(action: toggleMeasure) {
             VStack(spacing: 4) {
                 StressArc(value: active ? nil : value.map { $0 / 100 })
@@ -309,14 +323,14 @@ struct LiveStressGauge: View {
                         .foregroundStyle(value.map(Self.color) ?? StrandPalette.textTertiary)
                         .lineLimit(1)
                 }
-                caption(liveValue: liveValue, recent: recent, active: active)
+                caption(liveValue: liveValue, estimating: hrGuess != nil, recent: recent, active: active)
             }
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
-        .accessibilityHint(Text(measureEnd != nil ? "Stops the live measurement" : "Measures stress live for 90 seconds"))
+        .accessibilityHint(Text(measureEnd != nil ? "Stops the live measurement" : "Measures stress live for a minute"))
         // Re-read when new data lands (a sync), so the stored value moves on without forcing one.
         .task(id: repo.refreshSeq) { await loadStored() }
         // End the measurement on its own after 90 seconds.
@@ -330,13 +344,16 @@ struct LiveStressGauge: View {
     }
 
     @ViewBuilder
-    private func caption(liveValue: Double?, recent: (value: Double, at: Date)?, active: Bool) -> some View {
+    private func caption(liveValue: Double?, estimating: Bool, recent: (value: Double, at: Date)?,
+                         active: Bool) -> some View {
         if let end = measureEnd {
             TimelineView(.periodic(from: .now, by: 1)) { ctx in
                 let left = max(0, Int(end.timeIntervalSince(ctx.date).rounded()))
-                Text(liveValue == nil
-                     ? String(localized: "Reading beats… \(left)s")
-                     : String(localized: "Live · \(left)s left"))
+                Text(liveValue != nil
+                     ? String(localized: "Live HRV · refining \(left)s")
+                     : estimating
+                     ? String(localized: "From heart rate · HRV in a moment")
+                     : String(localized: "Waiting for heart rate…"))
                     .font(StrandFont.caption.weight(.semibold))
                     .foregroundStyle(StrandPalette.accent)
                     .monospacedDigit()

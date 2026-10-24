@@ -15,7 +15,16 @@ struct LiveIntervalCard: View {
 
     var body: some View {
         if !showPanel {
-            EmptyView()
+            // Hidden in settings: keep one small way back while a workout runs.
+            if model.activeWorkout != nil {
+                Button { showPanel = true } label: {
+                    Label("Show sets and rest", systemImage: "eye")
+                        .font(StrandFont.footnote.weight(.semibold))
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+            }
         } else if tracker.mode == nil, model.activeWorkout != nil {
             // A sport that isn't tracked by default: offer it, rather than showing nothing.
             Button { tracker.trackAsLifting() } label: {
@@ -32,10 +41,18 @@ struct LiveIntervalCard: View {
             NoopCard(tint: StrandPalette.accent) {
                 VStack(alignment: .leading, spacing: NoopMetrics.space3) {
                     HStack {
-                        Text(phaseTitle(mode, s))
-                            .font(StrandFont.overline)
-                            .tracking(1.4)
-                            .foregroundStyle(StrandPalette.textSecondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            // What the workout is, so it's never just "a workout".
+                            if let sport = model.activeWorkout?.sport {
+                                Text(sport)
+                                    .font(StrandFont.subhead.weight(.semibold))
+                                    .foregroundStyle(StrandPalette.textPrimary)
+                            }
+                            Text(phaseTitle(mode, s))
+                                .font(StrandFont.overline)
+                                .tracking(1.4)
+                                .foregroundStyle(StrandPalette.textSecondary)
+                        }
                         Spacer()
                         Text("\(s.count) \(LiveIntervalModes.unitName(mode, count: s.count))")
                             .font(StrandFont.captionNumber)
@@ -84,7 +101,10 @@ struct LiveIntervalCard: View {
                         stat(String(localized: "Avg rest"), s.avgRestS)
                         stat(String(localized: "Longest"), s.longestRestS)
                     }
-                    Text(mode == .lifting
+                    if !tracker.recoveries.isEmpty { recoveryRow }
+                    Text(tracker.setsFromMotion
+                         ? "Sets from steady, rhythmic wrist motion that raised your heart rate. Moving around between sets counts as rest."
+                         : mode == .lifting
                          ? "From heart rate. Rests under a minute can merge two sets into one."
                          : "From heart rate. Very short recoveries can merge two intervals.")
                         .font(StrandFont.caption)
@@ -126,7 +146,8 @@ struct LiveIntervalCard: View {
         }
     }
 
-    /// The light between readings: grey while a set is on, or before the first one.
+    /// The light between readings: grey while a set is on, or before the first one. The word sits under
+    /// the light, like the coloured one, so it never has to squeeze inside the circle.
     private func idleLight(_ s: WorkRestSegmenter.Summary) -> some View {
         let word: String = {
             switch s.phase {
@@ -139,15 +160,68 @@ struct LiveIntervalCard: View {
             ZStack {
                 Circle().fill(StrandPalette.surfaceInset).frame(width: 64, height: 64)
                 Circle().fill(StrandPalette.textTertiary.opacity(0.5)).frame(width: 40, height: 40)
-                Text(word)
-                    .font(.system(size: 10, weight: .bold))
+                Image(systemName: s.phase == .warmingUp ? "light.beacon.min" : "figure.strengthtraining.traditional")
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(StrandPalette.textPrimary)
-                    .minimumScaleFactor(0.7)
-                    .frame(width: 38)
             }
-            Text(s.phase == .warmingUp ? "Next set light" : " ")
-                .font(StrandFont.caption)
-                .foregroundStyle(StrandPalette.textTertiary)
+            Text(word)
+                .font(StrandFont.caption.weight(.semibold))
+                .foregroundStyle(StrandPalette.textSecondary)
+                .lineLimit(1)
+                .fixedSize()
+        }
+    }
+
+    /// Heart-rate recovery after each set: the drop 60 seconds after its peak (30 s while the rest is
+    /// young), the last one against this workout's average, and a note when recovery is slowing.
+    private var recoveryRow: some View {
+        let recs = tracker.recoveries
+        let drops60 = recs.compactMap(\.drop60)
+        let last = recs.last
+        let lastValue: (Int, String)? = last.flatMap { r in
+            if let d = r.drop60 { return (d, "60 s") }
+            if let d = r.drop30 { return (d, "30 s") }
+            return nil
+        }
+        let avg: Int? = drops60.count >= 2 ? drops60.reduce(0, +) / drops60.count : nil
+        let slowing: Bool = {
+            guard let a = avg, a > 0, let d = last?.drop60 else { return false }
+            return Double(d) < Double(a) * 0.7
+        }()
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "heart.circle")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.metricRose)
+                Text("Recovery").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                Spacer()
+            }
+            HStack(spacing: NoopMetrics.space4) {
+                VStack(alignment: .leading, spacing: NoopMetrics.spaceHalf) {
+                    Text("Last set").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                    Text(lastValue.map { "-\($0.0) bpm / \($0.1)" } ?? "–")
+                        .font(StrandFont.captionNumber)
+                        .foregroundStyle(slowing ? StrandPalette.recovery030 : StrandPalette.textPrimary)
+                }
+                VStack(alignment: .leading, spacing: NoopMetrics.spaceHalf) {
+                    Text("Avg 60 s").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                    Text(avg.map { "-\($0) bpm" } ?? "–")
+                        .font(StrandFont.captionNumber)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                }
+                VStack(alignment: .leading, spacing: NoopMetrics.spaceHalf) {
+                    Text("Peak").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                    Text(last.map { "\($0.peak) bpm" } ?? "–")
+                        .font(StrandFont.captionNumber)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                }
+            }
+            if slowing {
+                Text("Recovery is slowing compared with your earlier sets. A longer rest helps the next set.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -157,18 +231,26 @@ struct LiveIntervalCard: View {
             : (r.light == .yellow ? StrandPalette.recovery055 : StrandPalette.recovery000)
         let word: String = r.light == .green ? String(localized: "Go")
             : (r.light == .yellow ? String(localized: "Almost") : String(localized: "Rest"))
-        return VStack(spacing: 4) {
+        let icon = r.light == .green ? "checkmark" : (r.light == .yellow ? "hourglass" : "pause.fill")
+        return VStack(spacing: 3) {
             ZStack {
                 Circle().fill(color.opacity(0.2)).frame(width: 64, height: 64)
                 Circle().fill(color).frame(width: 40, height: 40)
                     .shadow(color: color.opacity(0.6), radius: 8)
-                Text(word)
-                    .font(StrandFont.caption.weight(.bold))
-                    .foregroundStyle(Color.black.opacity(0.75))
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(Color.black.opacity(0.7))
             }
+            Text(word)
+                .font(StrandFont.caption.weight(.bold))
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .fixedSize()
             Text(String(localized: "Go under \(r.thresholds.greenBpm)"))
-                .font(StrandFont.caption)
+                .font(.system(size: 10))
                 .foregroundStyle(StrandPalette.textTertiary)
+                .lineLimit(1)
+                .fixedSize()
         }
         .animation(.easeInOut(duration: 0.3), value: r.light)
         .accessibilityElement(children: .ignore)

@@ -85,4 +85,56 @@ final class RepCounterTests: XCTestCase {
         let sets = run(session([(reps: 1, period: 2.0, amp: 0.3, axis: (0, 0, 1))]))
         XCTAssertTrue(sets.isEmpty)
     }
+
+    /// Irregular motion (racking weights, walking between machines, adjusting a seat): swings of mixed
+    /// lengths and sizes with the wrist rotating. Not a set.
+    func testIrregularMotionIsNotASet() {
+        var out: [RepCounter.Sample] = []
+        var t = 0.0
+        var rng = LCG(state: 7)
+        let dt = 0.01
+        for _ in 0..<2000 {
+            out.append(.init(t: t, ax: 0.02 * rng.next(), ay: 0.02 * rng.next(), az: 1, gx: 2, gy: 2, gz: 2))
+            t += dt
+        }
+        // Single swings with uneven pauses between them (the wrist still turning a little), at mixed sizes.
+        let pauses = [0.2, 4.5, 0.4, 5.0, 1.8, 0.3, 4.8, 0.5, 3.9, 0.2]
+        let amps = [0.5, 0.15, 0.6, 0.2, 0.45, 0.1, 0.55, 0.25, 0.4, 0.12]
+        for (pause, a) in zip(pauses, amps) {
+            var u = 0.0
+            while u < 1.0 {
+                let m = a * sin(2 * Double.pi * u)
+                out.append(.init(t: t, ax: m + 0.03 * rng.next(), ay: 0.5 * m, az: 1 + 0.03 * rng.next(),
+                                 gx: 80 + 10 * rng.next(), gy: 60, gz: 40))
+                t += dt
+                u += dt
+            }
+            var q = 0.0
+            while q < pause {
+                out.append(.init(t: t, ax: 0.02 * rng.next(), ay: 0.02 * rng.next(), az: 1,
+                                 gx: 30 + 5 * rng.next(), gy: 20, gz: 10))
+                t += dt
+                q += dt
+            }
+        }
+        for _ in 0..<3000 {
+            out.append(.init(t: t, ax: 0.02 * rng.next(), ay: 0.02 * rng.next(), az: 1, gx: 2, gy: 2, gz: 2))
+            t += dt
+        }
+        let sets = run(out)
+        XCTAssertTrue(sets.allSatisfy { $0.reps < RepCounter.minReps }, "got \(sets.map(\.reps))")
+        XCTAssertTrue(sets.isEmpty)
+    }
+
+    /// The rhythm filter keeps the steady run and drops the odd swings around it.
+    func testRhythmicRunIgnoresOddSwings() {
+        // Fidget, fidget, then 8 reps at 2 s, then a racking swing 5 s later.
+        var reps: [(t: Double, amp: Double)] = [(0, 0.3), (0.9, 0.1)]
+        for i in 0..<8 { reps.append((5 + Double(i) * 2.0, 0.5)) }
+        reps.append((24, 0.2))
+        let r = RepCounter.rhythmicRun(reps)
+        XCTAssertEqual(r.reps, 8)
+        XCTAssertEqual(r.tempo ?? 0, 2.0, accuracy: 0.01)
+        XCTAssertEqual(r.end ?? 0, 19, accuracy: 0.01)
+    }
 }

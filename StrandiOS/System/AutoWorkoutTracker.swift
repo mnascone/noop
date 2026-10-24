@@ -295,6 +295,25 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         }
         if currentPlaceId != engine.currentPlace { currentPlaceId = engine.currentPlace }
         syncRealtime()
+        syncLocationUpdates()
+    }
+
+    /// GPS speed, only in the window after leaving a place, so a walk away can start without waiting
+    /// for a long motion bout. Off the rest of the time: continuous location costs phone battery.
+    private var watchingSpeed = false
+    private func syncLocationUpdates() {
+        let want = engine.wantsLocationUpdates && AutoTrackingPrefs.walkEnabled
+            && (locationAuth == .authorizedAlways || locationAuth == .authorizedWhenInUse)
+        if want, !watchingSpeed {
+            watchingSpeed = true
+            if locationAuth == .authorizedAlways { locationManager.allowsBackgroundLocationUpdates = true }
+            locationManager.startUpdatingLocation()
+            log("auto: watching walking pace after leaving")
+        } else if !want, watchingSpeed {
+            watchingSpeed = false
+            locationManager.stopUpdatingLocation()
+            locationManager.allowsBackgroundLocationUpdates = false
+        }
     }
 
     private func syncRealtime() {
@@ -447,6 +466,7 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         case .heartRateRecovered: body += " " + String(localized: "Ended when your heart rate settled.")
         case .stoppedMoving: body += " " + String(localized: "Ended when you stopped moving.")
         case .startedDriving: body += " " + String(localized: "Ended when you got in a car.")
+        case .arrivedAtPlace: body += " " + String(localized: "Ended when you arrived. The next workout starts when your heart rate climbs past your walking level.")
         }
         if let notes = row.notes, !notes.isEmpty { body += "\n" + notes }
         content.body = body
@@ -480,6 +500,7 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         case .stoppedMoving: content.body = String(localized: "You stopped moving at \(at). End it there?")
         case .startedDriving: content.body = String(localized: "Looks like you're in a car. End it at \(at)?")
         case .heartRateRecovered: content.body = String(localized: "Heart rate's been low since \(at). End it there?")
+        case .arrivedAtPlace: content.body = String(localized: "You arrived at \(at). End the walk there?")
         }
         content.categoryIdentifier = Self.askEndCategory
         content.userInfo = [Self.kEndTs: endTs]
@@ -674,6 +695,11 @@ extension AutoWorkoutTracker: @preconcurrency CLLocationManagerDelegate {
             if let best { lastKnownLocation = best.coordinate }
             done(best)
             return
+        }
+        if watchingSpeed {
+            for loc in locations where loc.speed >= 0 && loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy < 50 {
+                feed(.speed(loc.speed), at: loc.timestamp)
+            }
         }
         wake()
     }

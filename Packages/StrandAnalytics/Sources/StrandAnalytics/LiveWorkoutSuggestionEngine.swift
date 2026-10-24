@@ -24,6 +24,16 @@ import Foundation
 //     rate at all a bout of `walkNoHRMinBoutS` still qualifies. Start is the beginning of the bout. A walk
 //     inside a place is left to the place rule.
 //
+// Hand-offs between a walk and a place:
+//   - Arriving at a place during a walk or run ends it at the arrival (`arrivedAtPlace`). The place start
+//     then needs heart rate above BOTH resting + the place's margin AND the walk's own level (its median in
+//     the last 3 minutes before arrival + `liftOverWalkBPM`), so walking in doesn't start the lift: the
+//     first sets do.
+//   - Leaving a place ends its workout as below. For `postExitWindowS` after leaving, GPS speed (`speed`)
+//     in walking range for `postExitWalkS` starts a walk from the moment you left (or from when walking
+//     pace began, if later). Driving speed means no walk. The app layer feeds speed only in that window
+//     (`wantsLocationUpdates`).
+//
 // End rules (active workout, one end until activity resumes):
 //   - Place: leaving it ends the workout at the LAST elevated sample (when heart rate dropped for the last
 //     time), not at the exit. Staying put with heart rate under resting + `quietMarginBPM` for the place's
@@ -80,7 +90,7 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     }
 
     public enum EndReason: String, Sendable, Equatable {
-        case leftPlace, stoppedMoving, startedDriving, heartRateRecovered
+        case leftPlace, stoppedMoving, startedDriving, heartRateRecovered, arrivedAtPlace
     }
 
     /// Per-place thresholds. Defaults suit lifting. Team sports use `sport`.
@@ -103,6 +113,8 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         case placeEntered(id: String, params: PlaceParams)
         case placeExited(id: String)
         case motion(Motion)
+        /// GPS ground speed in metres per second (negative = unknown, ignored).
+        case speed(Double)
         case heartRate(Int)
         /// A workout became active. `context` is what started it, nil when started by hand.
         case workoutStarted(context: Context?)
@@ -162,6 +174,16 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     public static let pendingStartTimeoutS = 30 * 60
     /// Heart-rate history kept in memory: enough to backdate an end across a long session's tail.
     public static let hrHistoryS = 4 * 60 * 60
+    /// After a walk into a place, a lift needs heart rate this far above the walk's own level.
+    public static let liftOverWalkBPM = 10
+    /// How long after leaving a place GPS speed is watched for a walk away.
+    public static let postExitWindowS = 20 * 60
+    /// Walking pace held this long after leaving a place starts a walk.
+    public static let postExitWalkS = 2 * 60
+    /// GPS walking pace, metres per second (about 2 to 9 km/h). Above `gpsRunMaxMps` reads as a vehicle.
+    public static let gpsWalkMinMps = 0.6
+    public static let gpsWalkMaxMps = 2.6
+    public static let gpsRunMaxMps = 6.0
 
     // MARK: - State
 
@@ -172,6 +194,11 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     private var placeParams = PlaceParams.lifting
     private var placeEnteredAt: Int?
     private var placeStartRaised = false
+    /// The walk's heart-rate level at arrival, when a walk led into this place.
+    private var walkHRAtArrival: Int?
+    private var lastPlaceExitTs: Int?
+    private var gpsOnFootSince: Int?
+    private var gpsRunning = false
 
     private var motion: Motion = .unknown
     private var walkBoutStart: Int?
@@ -188,6 +215,7 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     private var workoutStartedAt: Int?
     private var workoutParams: PlaceParams?
     private var endRaised = false
+    private var raisedEndReason: EndReason?
 
     public private(set) var pendingStart: (context: Context, startTs: Int)?
     private var pendingStartRaisedAt: Int?
@@ -197,6 +225,13 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     }
 
     public var inPlace: Bool { currentPlace != nil }
+
+    /// Watch GPS speed: only in the window after leaving a place, while no workout has taken over.
+    public var wantsLocationUpdates: Bool {
+        guard config.walkEnabled, currentPlace == nil, let exit = lastPlaceExitTs,
+              now - exit < Self.postExitWindowS else { return false }
+        return !(workoutActive && (workoutContext == .walk || workoutContext == .run))
+    }
 
     // MARK: - Public API
 
@@ -225,15 +260,33 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         switch event {
         case let .placeEntered(id, params):
             if currentPlace != id {
+                let walkingIn = (workoutActive && (workoutContext == .walk || workoutContext == .run))
+                    || walkBoutStart != nil
+                walkHRAtArrival = walkingIn ? windowMedian(seconds: 180) : nil
                 currentPlace = id
                 placeParams = params
                 placeEnteredAt = ts
                 placeStartRaised = false
+                lastPlaceExitTs = nil
+                gpsOnFootSince = nil
+                // A walk or run that brought you here ends at the door, and is saved as its own workout.
+                if workoutActive, !endRaised, workoutContext == .walk || workoutContext == .run {
+                    endRaised = true
+                    raisedEndReason = .arrivedAtPlace
+                    out.append(.end(context: workoutContext, endTs: ts, reason: .arrivedAtPlace))
+                }
             }
         case .placeExited(let id):
             if currentPlace == id {
                 currentPlace = nil
                 placeEnteredAt = nil
+                walkHRAtArrival = nil
+                lastPlaceExitTs = ts
+                gpsOnFootSince = nil
+                // A fresh walk can start from here: whatever bout ran inside the place is over.
+                walkBoutStart = motion.isOnFoot ? ts : nil
+                runSecondsInBout = 0
+                walkStartRaisedForBout = false
                 if pendingStart?.context == .place(id) { clearPending(&out) }
                 if workoutActive, !endRaised, workoutContext == .place(id) || workoutContext == nil {
                     endRaised = true
@@ -243,6 +296,8 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
             }
         case .motion(let m):
             applyMotion(m, at: ts)
+        case .speed(let mps):
+            applySpeed(mps, at: ts)
         case .heartRate(let bpm):
             if bpm >= 30, bpm <= 230 {
                 if let last = hr.last, last.ts >= ts {
@@ -268,6 +323,7 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
             workoutContext = nil
             workoutStartedAt = nil
             workoutParams = nil
+            raisedEndReason = nil
             if endRaised {
                 endRaised = false
                 out.append(.withdrawEnd)
@@ -304,8 +360,29 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         lastMotionTs = ts
     }
 
+    private mutating func applySpeed(_ mps: Double, at ts: Int) {
+        guard mps >= 0 else { return }
+        if mps > Self.gpsRunMaxMps {
+            gpsOnFootSince = nil
+            drivingSince = drivingSince ?? ts
+            return
+        }
+        if mps >= Self.gpsWalkMinMps {
+            gpsOnFootSince = gpsOnFootSince ?? ts
+            gpsRunning = mps > Self.gpsWalkMaxMps
+            lastOnFootTs = ts
+            if walkBoutStart == nil, currentPlace == nil {
+                walkBoutStart = ts
+                runSecondsInBout = 0
+                walkStartRaisedForBout = false
+            }
+        } else {
+            gpsOnFootSince = nil
+        }
+    }
+
     private func stoppedFor() -> Int? {
-        if motion.isOnFoot { return 0 }
+        if motion.isOnFoot || gpsOnFootSince != nil { return 0 }
         guard let last = lastOnFootTs else { return nil }
         return now - last
     }
@@ -362,7 +439,8 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
            now - entered >= Self.placeMinDwellS {
             let window = recent(seconds: Self.startWindowS).filter { $0.ts >= entered }
             if window.count >= Self.minHRCoverageSamples {
-                let floor = config.restingBpm + placeParams.marginBPM
+                let floor = max(config.restingBpm + placeParams.marginBPM,
+                                (walkHRAtArrival ?? 0) + Self.liftOverWalkBPM)
                 let elevated = window.filter { $0.bpm >= floor }.count
                 if Double(elevated) / Double(window.count) >= Self.elevatedFraction {
                     let start = max(entered, elevatedStretchStart(floor: floor) ?? window[0].ts)
@@ -373,8 +451,21 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
             }
         }
 
-        if config.walkEnabled, currentPlace == nil, let bout = walkBoutStart, !walkStartRaisedForBout,
+        // Walking away from a place, by GPS pace: start from when you left (or began walking, if later).
+        if config.walkEnabled, currentPlace == nil, !walkStartRaisedForBout, let exit = lastPlaceExitTs,
+           now - exit < Self.postExitWindowS, let since = gpsOnFootSince, drivingSince == nil {
+            let from = max(exit, since)
+            if now - from >= Self.postExitWalkS {
+                raise(gpsRunning ? .run : .walk, startTs: from, &out)
+                walkStartRaisedForBout = true
+                return
+            }
+        }
+
+        if config.walkEnabled, currentPlace == nil, let bout0 = walkBoutStart, !walkStartRaisedForBout,
            motion.isOnFoot {
+            // A bout that began inside a place counts only from when you left it.
+            let bout = max(bout0, lastPlaceExitTs ?? bout0)
             let dur = now - bout
             let isRun = boutIsRun()
             let window = recent(seconds: Self.startWindowS)
@@ -394,6 +485,15 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
 
     private mutating func evaluateEnd(_ out: inout [Action]) {
         let quietLine = config.restingBpm + Self.quietMarginBPM
+        if endRaised, raisedEndReason == .arrivedAtPlace {
+            // Walking around the place doesn't undo the hand-off; only leaving it again does.
+            if currentPlace == nil {
+                endRaised = false
+                raisedEndReason = nil
+                out.append(.withdrawEnd)
+            }
+            return
+        }
         if endRaised {
             let resumedByHR = sustainedElevated(seconds: Self.resumeElevatedS, floor: quietLine + 5)
             let onFootContext = workoutContext == .walk || workoutContext == .run
@@ -409,6 +509,7 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
             }
             if resumed {
                 endRaised = false
+                raisedEndReason = nil
                 out.append(.withdrawEnd)
             }
             return

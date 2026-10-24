@@ -298,6 +298,22 @@ final class AICoachEngine: ObservableObject {
         return Self.defaultSystemPrompt
     }
 
+    /// What goes to the provider: the prompt (default or edited) plus `loadPrinciples`.
+    var sentSystemPrompt: String { systemPrompt + "\n\n" + Self.loadPrinciples }
+
+    /// How to weigh cardio against lifting. Added to every prompt sent, the user's own included, so an
+    /// edited prompt can't drop it (and the editor still shows only what the user wrote).
+    static let loadPrinciples = """
+    Cardio and lifting: judge them as two loads, separately and together. The context gives a 7- and \
+    28-day split of each. Lifting mostly loads muscles and joints; cardio loads the heart and lungs. A \
+    long or hard lift does NOT by itself mean no cardio: easy Zone 2 cardio usually helps recovery from \
+    lifting. Promote cardio: aim for about 150+ minutes a week, mostly Zone 2, with 1 or 2 harder \
+    sessions when charge allows, alongside 2 to 4 lifting sessions. Only tell me to cut or skip cardio \
+    when my vitals say so, and name the number: charge 0-33, HRV clearly under my usual, resting heart \
+    rate clearly over my usual, or a short or poor night. If cardio has been light or missing for \
+    several days, say so and make it part of today's plan unless a vital argues against it.
+    """
+
     /// The user's stored prompt override, or the default when nothing custom is set. The UI binds its
     /// editor to this: writing persists the override; writing a blank string clears it (back to default).
     var customSystemPrompt: String {
@@ -958,7 +974,9 @@ final class AICoachEngine: ObservableObject {
 
     private static let recommendationInstruction = """
     Using the data above, tell me what to do today in two or three short sentences. \
-    Weigh today's charge against how many rest days I've had this week and what I trained recently. \
+    Weigh today's charge against how many rest days I've had this week and what I trained recently, \
+    with cardio and lifting load judged separately: a big lift is not a reason to skip cardio unless \
+    a vital (charge, HRV, resting heart rate, sleep) says so, and then name it. \
     Name the session (or rest) and one thing to watch. Talk like a friend who coaches: plain, direct, \
     no headings, no lists, no greeting, no sign-off, no exclamation marks.
     """
@@ -1072,7 +1090,7 @@ final class AICoachEngine: ObservableObject {
         try await provider.client.send(
             key: key,
             model: model,
-            systemPrompt: systemPrompt,
+            systemPrompt: sentSystemPrompt,
             messages: messages,
             session: session
         )
@@ -1089,7 +1107,7 @@ final class AICoachEngine: ObservableObject {
         try await provider.client.streamWithImage(
             key: key,
             model: model,
-            systemPrompt: systemPrompt,
+            systemPrompt: sentSystemPrompt,
             messages: messages,
             inlineImage: inlineImage,
             session: session,
@@ -1264,7 +1282,7 @@ final class AICoachEngine: ObservableObject {
         let distanceSystem = UnitPrefs.resolveDistance(
             system: bodySystem,
             override: UserDefaults.standard.string(forKey: UnitPrefs.distanceSystemKey) ?? "")
-        var lines = ["Recent workouts (newest first):"]
+        var lines = [Self.loadSplit(rows, now: Int(Date().timeIntervalSince1970)), "Recent workouts (newest first):"]
         for w in rows.prefix(limit) {
             var parts = ["  \(dateString(w.startTs)) \(w.sport)"]
             if let dur = w.durationS { parts.append("\(Int((dur / 60).rounded())) min") }
@@ -1277,6 +1295,39 @@ final class AICoachEngine: ObservableObject {
             lines.append(parts.joined(separator: ", "))
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Strength sports by name (lower-cased). Everything else that raises heart rate counts as cardio.
+    static let strengthSports: Set<String> = ["strength", "weightlifting", "bodybuilding", "powerlifting",
+                                              "calisthenics", "strength training", "functional fitness"]
+    static let nonCardioSports: Set<String> = ["yoga", "stretching", "pilates", "meditation", "golf", "bowling"]
+
+    /// "Load split, last 7 days: cardio 95 min over 3 sessions (effort 31), lifting 140 min over 3 (effort
+    /// 28). Last 28 days: ... Last cardio 4 days ago, last lift yesterday." Lets the coach weigh the two
+    /// separately instead of reading one long lift as a reason for no cardio.
+    static func loadSplit(_ rows: [WorkoutRow], now: Int) -> String {
+        func kind(_ w: WorkoutRow) -> String? {
+            let s = w.sport.trimmingCharacters(in: .whitespaces).lowercased()
+            if strengthSports.contains(s) { return "lift" }
+            if nonCardioSports.contains(s) { return nil }
+            return "cardio"
+        }
+        func sum(_ days: Int, _ k: String) -> (min: Int, n: Int, effort: Double) {
+            let from = now - days * 86_400
+            let sel = rows.filter { $0.startTs >= from && kind($0) == k }
+            let mins = sel.compactMap(\.durationS).reduce(0, +) / 60
+            return (Int(mins.rounded()), sel.count, sel.compactMap(\.strain).reduce(0, +))
+        }
+        func ago(_ k: String) -> String {
+            guard let last = rows.first(where: { kind($0) == k }) else { return "none in 30 days" }
+            let d = (now - last.startTs) / 86_400
+            return d == 0 ? "today" : (d == 1 ? "yesterday" : "\(d) days ago")
+        }
+        let c7 = sum(7, "cardio"), l7 = sum(7, "lift"), c28 = sum(28, "cardio"), l28 = sum(28, "lift")
+        return "Load split, last 7 days: cardio \(c7.min) min over \(c7.n) sessions (effort \(String(format: "%.0f", c7.effort))), "
+            + "lifting \(l7.min) min over \(l7.n) (effort \(String(format: "%.0f", l7.effort))). "
+            + "Last 28 days: cardio \(c28.min) min over \(c28.n), lifting \(l28.min) min over \(l28.n). "
+            + "Last cardio \(ago("cardio")), last lift \(ago("lift"))."
     }
 
     // MARK: Formatting helpers

@@ -360,4 +360,67 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
         XCTAssertNil(E.Context(key: "place:"))
         XCTAssertNil(E.Context(key: "bogus"))
     }
+
+    // MARK: - Walk to place hand-off
+
+    /// A walk that arrives at the gym ends at the door; the lift waits for heart rate above the walk's
+    /// level rather than starting from walking heart rate.
+    func testWalkIntoGymEndsWalkAndLiftWaitsForSpike() {
+        var e = engine(resting: 60)
+        _ = e.handle(.motion(.walking), at: 0)
+        // Walking at ~95 bpm (resting + 35, above the place's resting + 20 floor).
+        feedHR(&e, from: 0, to: 600) { _ in 95 }
+        _ = e.handle(.workoutStarted(context: .walk), at: 600)
+        feedHR(&e, from: 600, to: 900) { _ in 95 }
+        let arrive = e.handle(.placeEntered(id: "gym", params: .lifting), at: 900)
+        XCTAssertEqual(ends(arrive).first?.0, 900)
+        XCTAssertEqual(ends(arrive).first?.1, .arrivedAtPlace)
+        // Walking around the gym does not withdraw the hand-off.
+        let around = feedHR(&e, from: 900, to: 1_100) { _ in 95 }
+        XCTAssertFalse(around.contains(.withdrawEnd))
+        _ = e.handle(.workoutEnded, at: 1_100)
+        // Still at walking heart rate for 10 minutes: no lift.
+        let still = feedHR(&e, from: 1_100, to: 1_700) { _ in 96 }
+        XCTAssertTrue(starts(still).isEmpty)
+        // Sets push heart rate past the walk's level + 10: the lift starts.
+        let lift = feedHR(&e, from: 1_700, to: 2_000) { _ in 118 }
+        let s = starts(lift)
+        XCTAssertEqual(s.first?.0, .place("gym"))
+        XCTAssertGreaterThanOrEqual(s.first?.1 ?? 0, 1_700)
+    }
+
+    /// Leaving the gym and walking away at walking pace starts a walk from the moment you left.
+    func testLeavingGymAtWalkingPaceStartsWalkFromExit() {
+        var e = engine(resting: 60)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
+        _ = e.handle(.workoutStarted(context: .place("gym")), at: 300)
+        feedHR(&e, from: 300, to: 3_600) { t in t % 180 < 60 ? 125 : 100 }
+        let leave = e.handle(.placeExited(id: "gym"), at: 3_600)
+        XCTAssertEqual(ends(leave).first?.1, .leftPlace)
+        _ = e.handle(.workoutEnded, at: 3_601)
+        XCTAssertTrue(e.wantsLocationUpdates)
+        var got: [E.Action] = []
+        var t = 3_610
+        while t < 3_610 + E.postExitWalkS + 20 {
+            got += e.handle(.speed(1.3), at: t)
+            t += 5
+        }
+        let s = starts(got)
+        XCTAssertEqual(s.first?.0, .walk)
+        XCTAssertEqual(s.first?.1, 3_610)
+    }
+
+    /// Driving speed after leaving is not a walk.
+    func testLeavingGymByCarStartsNothing() {
+        var e = engine(resting: 60)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 0)
+        _ = e.handle(.placeExited(id: "gym"), at: 3_600)
+        var got: [E.Action] = []
+        var t = 3_610
+        while t < 3_610 + 600 {
+            got += e.handle(.speed(14), at: t)
+            t += 5
+        }
+        XCTAssertTrue(starts(got).isEmpty)
+    }
 }

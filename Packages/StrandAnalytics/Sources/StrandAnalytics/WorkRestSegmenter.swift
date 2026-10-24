@@ -74,6 +74,14 @@ public struct WorkRestSegmenter: Sendable {
         public var longestRestS: Int?
         public var avgWorkS: Int?
         public var totalWorkS: Int
+
+        public init(count: Int, phase: Phase, currentRestS: Int? = nil, currentWorkS: Int? = nil,
+                    lastRestS: Int? = nil, avgRestS: Int? = nil, longestRestS: Int? = nil,
+                    avgWorkS: Int? = nil, totalWorkS: Int = 0) {
+            self.count = count; self.phase = phase; self.currentRestS = currentRestS
+            self.currentWorkS = currentWorkS; self.lastRestS = lastRestS; self.avgRestS = avgRestS
+            self.longestRestS = longestRestS; self.avgWorkS = avgWorkS; self.totalWorkS = totalWorkS
+        }
     }
 
     /// Within this much of the rest low counts as still sitting at it (smoothed noise is about 1 bpm).

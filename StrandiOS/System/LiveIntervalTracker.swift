@@ -42,6 +42,20 @@ final class LiveIntervalTracker: ObservableObject {
     /// The inputs that don't change during a workout: resting heart rate, age, today's HRV against baseline.
     private(set) var readyBasis: (resting: Int, age: Int?, hrvRatio: Double?)?
     private var buzzedForRest: Int?
+    /// Heart rate since the workout began (unix seconds), for recovery after each set.
+    private var hrHistory: [(ts: Int, bpm: Int)] = []
+    /// Where sets come from: the strap's motion (confirmed by heart rate) when rep counting streams it,
+    /// else heart rate alone.
+    @Published private(set) var setsFromMotion = false
+
+    /// How fast heart rate came down after one set: the drop from its peak 30 and 60 seconds later.
+    struct Recovery: Equatable {
+        let set: Int
+        let peak: Int
+        let drop30: Int?
+        let drop60: Int?
+    }
+    @Published private(set) var recoveries: [Recovery] = []
 
     private var segmenter: WorkRestSegmenter?
     private weak var model: AppModel?
@@ -67,7 +81,10 @@ final class LiveIntervalTracker: ObservableObject {
             .sink { [weak self] hr in
                 guard let self, let hr, self.segmenter != nil else { return }
                 guard self.model?.activeWorkout?.isPaused != true else { return }
-                self.segmenter?.ingest(ts: Int(Date().timeIntervalSince1970), bpm: hr)
+                let now = Int(Date().timeIntervalSince1970)
+                self.segmenter?.ingest(ts: now, bpm: hr)
+                self.hrHistory.append((now, hr))
+                if let f = self.hrHistory.first, now - f.ts > 4 * 3600 { self.hrHistory.removeAll { now - $0.ts > 4 * 3600 } }
                 self.refresh()
             }
             .store(in: &cancellables)
@@ -99,6 +116,8 @@ final class LiveIntervalTracker: ObservableObject {
         var seg = WorkRestSegmenter(mode: m, sensitivity: AutoTrackingPrefs.intervalSensitivity)
         // A backdated start carries the heart rate since then: count those sets too.
         for s in w.samples { seg.ingest(ts: s.ts, bpm: s.bpm) }
+        hrHistory = w.samples.map { ($0.ts, $0.bpm) }
+        recoveries = []
         segmenter = seg
         mode = m
         readyBasis = m == .lifting ? Self.basis(model) : nil
@@ -114,6 +133,8 @@ final class LiveIntervalTracker: ObservableObject {
         guard let w = model?.activeWorkout, mode == nil else { return }
         var seg = WorkRestSegmenter(mode: .lifting, sensitivity: AutoTrackingPrefs.intervalSensitivity)
         for s in w.samples { seg.ingest(ts: s.ts, bpm: s.bpm) }
+        hrHistory = w.samples.map { ($0.ts, $0.bpm) }
+        recoveries = []
         segmenter = seg
         mode = .lifting
         readyBasis = Self.basis(model)
@@ -130,6 +151,9 @@ final class LiveIntervalTracker: ObservableObject {
         summary = nil
         readiness = nil
         readyBasis = nil
+        hrHistory = []
+        recoveries = []
+        setsFromMotion = false
         trackedStart = nil
         trackedSport = nil
         ticker?.invalidate()
@@ -138,8 +162,13 @@ final class LiveIntervalTracker: ObservableObject {
 
     private func refresh() {
         guard let seg = segmenter else { return }
-        let next = seg.summary(now: Int(Date().timeIntervalSince1970))
+        let now = Int(Date().timeIntervalSince1970)
+        let motion = mode == .lifting ? motionSummary(now: now) : nil
+        if (motion != nil) != setsFromMotion { setsFromMotion = motion != nil }
+        let next = motion ?? seg.summary(now: now)
         if next != summary { summary = next }
+        let rec = recoveryList(setEnds: setEnds(seg), now: now)
+        if rec != recoveries { recoveries = rec }
         let ready = readingNow(seg, next)
         if ready != readiness {
             if ready?.light == .green, readiness?.light != .green, SetReadyPrefs.buzz,
@@ -154,9 +183,73 @@ final class LiveIntervalTracker: ObservableObject {
     private func readingNow(_ seg: WorkRestSegmenter, _ s: WorkRestSegmenter.Summary) -> SetReadiness.Reading? {
         guard mode == .lifting, SetReadyPrefs.enabled, let basis = readyBasis,
               let rest = s.currentRestS, let hr = model?.live.heartRate, hr > 0 else { return nil }
+        let reps = LiveRepTracker.shared
+        let peak = setsFromMotion ? reps.sets.last.flatMap { reps.peakHR($0) } : seg.intervals.last?.peakBpm
         return SetReadiness.read(config: SetReadyPrefs.config, currentBpm: hr, restS: rest,
-                                 restingBpm: basis.resting, setPeakBpm: seg.intervals.last?.peakBpm,
+                                 restingBpm: basis.resting, setPeakBpm: peak,
                                  age: basis.age, hrvRatio: basis.hrvRatio)
+    }
+
+    /// Sets and rests from the strap's motion, when rep counting is streaming it: a set is a steady run
+    /// of reps whose heart rate rose with it; everything between is rest, however much you move.
+    private func motionSummary(now: Int) -> WorkRestSegmenter.Summary? {
+        let reps = LiveRepTracker.shared
+        guard reps.active else { return nil }
+        let sets = reps.sets
+        let rests: [Int] = sets.count > 1
+            ? (1..<sets.count).map { Int(sets[$0].start - sets[$0 - 1].end) } : []
+        let works = sets.map { Int($0.end - $0.start) }
+        let phase: WorkRestSegmenter.Phase
+        var restNow: Int?, workNow: Int?
+        if let start = reps.currentSetStart {
+            phase = .working(since: Int(start))
+            workNow = max(0, now - Int(start))
+        } else if let last = sets.last {
+            phase = .resting(since: Int(last.end))
+            restNow = max(0, now - Int(last.end))
+        } else {
+            phase = .warmingUp
+        }
+        return WorkRestSegmenter.Summary(
+            count: sets.count, phase: phase, currentRestS: restNow, currentWorkS: workNow,
+            lastRestS: rests.last, avgRestS: rests.isEmpty ? nil : rests.reduce(0, +) / rests.count,
+            longestRestS: rests.max(), avgWorkS: works.isEmpty ? nil : works.reduce(0, +) / works.count,
+            totalWorkS: works.reduce(0, +))
+    }
+
+    /// When each finished set ended, from whichever source is counting sets.
+    private func setEnds(_ seg: WorkRestSegmenter) -> [Int] {
+        setsFromMotion ? LiveRepTracker.shared.sets.map { Int($0.end) } : seg.intervals.map(\.endTs)
+    }
+
+    /// For each set: its peak heart rate (up to 20 s after it ends, where it usually lands) and the drop
+    /// 30 and 60 seconds after that peak. A drop is left out until that much rest has passed.
+    private func recoveryList(setEnds: [Int], now: Int) -> [Recovery] {
+        guard !hrHistory.isEmpty else { return [] }
+        var out: [Recovery] = []
+        // Only the newest set's numbers can still change; earlier ones are kept as computed.
+        for (i, end) in setEnds.enumerated() {
+            if i < recoveries.count - 1, recoveries[i].set == i + 1, recoveries[i].drop60 != nil {
+                out.append(recoveries[i])
+                continue
+            }
+            // The stretch from just before the set ended to 90 s after: everything this set's numbers need.
+            let lo = hrHistory.firstIndex { $0.ts >= end - 15 } ?? hrHistory.count
+            var hi = lo
+            while hi < hrHistory.count, hrHistory[hi].ts <= end + 90 { hi += 1 }
+            let window = hrHistory[lo..<hi]
+            guard let top = window.filter({ $0.ts <= end + 20 }).max(by: { $0.bpm < $1.bpm }) else { continue }
+            let nextStart = i + 1 < setEnds.count ? setEnds[i + 1] : Int.max
+            func drop(_ secs: Int) -> Int? {
+                let t = top.ts + secs
+                guard t <= now, t < nextStart,
+                      let v = window.filter({ abs($0.ts - t) <= 5 }).min(by: { abs($0.ts - t) < abs($1.ts - t) })
+                else { return nil }
+                return top.bpm - v.bpm
+            }
+            out.append(Recovery(set: i + 1, peak: top.bpm, drop30: drop(30), drop60: drop(60)))
+        }
+        return out
     }
 
     /// Resting heart rate (latest night), age, and last night's HRV against the 30-night median.
@@ -198,7 +291,12 @@ final class LiveIntervalTracker: ObservableObject {
         }
         let work = inWorkout.map(\.durationS).reduce(0, +)
         parts.append(String(localized: "\(Self.clock(work)) working"))
-        let line = parts.joined(separator: " · ") + " " + String(localized: "(estimated from heart rate)")
+        var line = parts.joined(separator: " · ") + " " + String(localized: "(estimated from heart rate)")
+        let drops = recoveries.compactMap(\.drop60)
+        if drops.count >= 2, let first = drops.first, let last = drops.last {
+            let avg = drops.reduce(0, +) / drops.count
+            line += "\n" + String(localized: "HR recovery in 60 s: avg -\(avg) bpm over \(drops.count) rests (first -\(first), last -\(last))")
+        }
         return reps.map { line + "\n" + $0 } ?? line
     }
 

@@ -148,10 +148,18 @@ struct LiveWorkoutView: View {
             .padding(.vertical, NoopMetrics.space1)
             .background(NoopPanelSurface(tint: StrandPalette.metricRose, cornerRadius: 14))
             .clipShape(Capsule())
+            // What's being recorded, by name.
+            if let sport = model.activeWorkout?.sport {
+                Text(sport)
+                    .font(StrandFont.headline)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
             Spacer(minLength: 0)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text("Recording workout"))
+        .accessibilityLabel(Text("Recording \(model.activeWorkout?.sport ?? String(localized: "workout"))"))
     }
 
     /// Sets / intervals and rests from heart rate. iOS only; nothing for untracked sports.

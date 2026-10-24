@@ -7,6 +7,8 @@ enum NutritionKeys {
     static let protein = "nutrition_protein_g"
     static let carbs = "nutrition_carbs_g"
     static let fat = "nutrition_fat_g"
+    /// Posted when nutrition was written outside a normal data refresh (Shortcut, Shortcuts action).
+    static let changed = Notification.Name("noop.nutritionChanged")
 }
 
 /// How the food log reaches NOOP on this install. The iOS app fills these in from its Apple Health bridge;

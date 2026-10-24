@@ -2670,6 +2670,23 @@ final class AppModel: ObservableObject {
         pendingShortcutHealthImport = nil
     }
 
+    /// Save one day's food totals under the Apple Health import source (the same place the HealthKit read
+    /// and the Shortcut link write), then tell the Fueling card. Returns false when nothing was saved.
+    func logNutrition(day: String, kcal: Double?, proteinG: Double?, carbsG: Double?, fatG: Double?) async -> Bool {
+        let row = ShortcutHealthImport.ParsedNutrition(
+            day: day, kcal: kcal.flatMap { $0 >= 0 ? $0 : nil }, proteinG: proteinG.flatMap { $0 >= 0 ? $0 : nil },
+            carbsG: carbsG.flatMap { $0 >= 0 ? $0 : nil }, fatG: fatG.flatMap { $0 >= 0 ? $0 : nil })
+        guard row.hasAny, let store = await repo.storeHandle() else { return false }
+        do {
+            try await store.upsertMetricSeries(ShortcutHealthImport.nutritionPointRows([row]),
+                                               deviceId: ShortcutHealthImport.targetSource)
+        } catch {
+            return false
+        }
+        NotificationCenter.default.post(name: NutritionKeys.changed, object: nil)
+        return true
+    }
+
     func confirmPendingHealthImport() {
         guard let pending = pendingShortcutHealthImport else { return }
         pendingShortcutHealthImport = nil
@@ -2688,6 +2705,7 @@ final class AppModel: ObservableObject {
         switch outcome {
         case .imported(let days, let workouts):
             await repo.refresh()
+            NotificationCenter.default.post(name: NutritionKeys.changed, object: nil)
             // #833/v7.7.2: the Shortcuts import writes body-composition series (e.g. weight) into
             // metricSeries, which sits OUTSIDE refresh()'s diff, so refresh() may leave `refreshSeq`
             // unchanged and AppleHealthView's re-mount cache would serve stale data. Drop the cache so the

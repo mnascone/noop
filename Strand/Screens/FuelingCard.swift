@@ -54,6 +54,9 @@ struct FuelingCard: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NutritionKeys.changed)) { _ in
+            Task { await load() }
+        }
         .task(id: repo.refreshSeq) {
             link = NutritionHealthLink.status()
             await load()
@@ -128,10 +131,9 @@ struct FuelingCard: View {
     }
 
     static let shortcutLines: [LocalizedStringKey] = [
-        "In Shortcuts, add Find Health Samples: Dietary Energy, start date is today. Then Calculate Statistics: Sum.",
+        "In Shortcuts, add Find Health Samples: Dietary Energy, Start Date is today. Then Calculate Statistics: Sum.",
         "Do the same for Protein, Carbohydrates and Total Fat.",
-        "Add a Text action: N,(Current Date as yyyy-MM-dd),(energy),(protein),(carbs),(fat).",
-        "Base64 Encode the text, then Open URL: noop://import-health?v=1&payload=(Base64 result).",
+        "Add NOOP's Log Nutrition in NOOP action and set each field to its Statistics result.",
         "Make it a personal automation each evening so it runs on its own.",
     ]
 

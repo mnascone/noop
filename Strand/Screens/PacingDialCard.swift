@@ -236,8 +236,24 @@ struct LiveStressGauge: View {
     @State private var measureEnd: Date?
     /// The result of the last measurement, shown for half an hour after it ends.
     @State private var measured: (value: Double, at: Date)?
+    /// Beats as they arrive, each with its time, so only recent ones are read. The strap-side buffer keeps
+    /// old beats until the link drops, which is how an hours-old "live" number used to stay up.
+    @State private var beats: [(t: Date, ms: Int)] = []
+
+    /// Beats from the last two minutes (since the tap, while measuring).
+    private var freshBeats: [Int] {
+        let from = max(Date().addingTimeInterval(-120), measureStartedAt ?? .distantPast)
+        return beats.filter { $0.t >= from }.map(\.ms)
+    }
+
+    private var measureStartedAt: Date? { measureEnd.map { $0.addingTimeInterval(-Self.measureSeconds) } }
+
+    /// The last beat arrived in the last 15 seconds.
+    private var streaming: Bool { beats.last.map { Date().timeIntervalSince($0.t) < 15 } ?? false }
 
     static let measureSeconds: TimeInterval = 60
+    /// Awake, still RMSSD as a share of the nightly average: the calm reference for live stress.
+    static let awakeShare = 0.65
 
     /// The newest scored hour of today's stress curve, rescaled from the shared 0-3 axis to 0-100.
     private func loadStored() async {
@@ -262,9 +278,11 @@ struct LiveStressGauge: View {
         }
         guard diffs.count >= max(8, minBeats - 5) else { return nil }
         let rmssd = sqrt(diffs.reduce(0, +) / Double(diffs.count))
-        // Awake and still, RMSSD near your overnight value is calm; half of it is high stress.
-        let ratio = rmssd / max(hrvBaseline, 1)
-        return min(100, max(0, (1.05 - ratio) / 0.75 * 100))
+        // Awake HRV runs well below the overnight value even when calm, so the reference is an awake
+        // level: about 65% of your nightly HRV. At that level stress reads about 12 (rest); at 40% of the
+        // nightly value it reads about 60 (medium).
+        let ratio = rmssd / max(hrvBaseline * Self.awakeShare, 1)
+        return min(100, max(0, (1.1 - ratio) / 0.8 * 100))
     }
 
     private var measuring: Bool { measureEnd.map { $0 > Date() } ?? false }
@@ -280,6 +298,8 @@ struct LiveStressGauge: View {
         if measureEnd != nil {
             finishMeasure(keep: true)
         } else {
+            // Start clean: only beats from now on count.
+            beats = []
             model.startRealtimeHR()
             measureEnd = Date().addingTimeInterval(Self.measureSeconds)
         }
@@ -287,7 +307,7 @@ struct LiveStressGauge: View {
 
     private func finishMeasure(keep: Bool) {
         guard measureEnd != nil else { return }
-        if keep, let b = hrvBaseline, let v = Self.level(rr: live.rrRecent, hrvBaseline: b, minBeats: 12) {
+        if keep, let b = hrvBaseline, let v = Self.level(rr: freshBeats, hrvBaseline: b, minBeats: 12) {
             measured = (v, Date())
         }
         measureEnd = nil
@@ -296,20 +316,26 @@ struct LiveStressGauge: View {
 
     var body: some View {
         let hr = live.heartRate.map(Double.init)
-        let active = hr.map { h in restingHR.map { h > $0 + 35 } ?? (h > 110) } ?? false
-        let liveValue = hrvBaseline.flatMap {
-            Self.level(rr: live.rrRecent, hrvBaseline: $0, minBeats: measureEnd != nil ? 12 : 20)
-        }
+        let active = (streaming || measureEnd != nil)
+            && (hr.map { h in restingHR.map { h > $0 + 35 } ?? (h > 110) } ?? false)
+        // Live only from beats that are actually arriving now.
+        let liveValue: Double? = streaming ? hrvBaseline.flatMap {
+            Self.level(rr: freshBeats, hrvBaseline: $0, minBeats: measureEnd != nil ? 12 : 20)
+        } : nil
         // Measuring but no HRV reading yet: heart rate gives a first number at once.
         let hrGuess: Double? = (measureEnd != nil && liveValue == nil)
             ? hr.flatMap { h in restingHR.map { Self.heartRateEstimate(hr: h, restingHR: $0) } } : nil
         let recent = measured.flatMap { Date().timeIntervalSince($0.at) < 1800 ? $0 : nil }
         // Live while measuring (or whenever beats stream), then the last measurement, then the stored hour.
         let value = liveValue ?? hrGuess ?? recent?.value ?? stored?.value
+        // Showing a stored hour from more than 90 minutes ago: dim it, so an old number never passes as now.
+        let stale = liveValue == nil && hrGuess == nil && recent == nil
+            && (stored.map { Date().timeIntervalSince($0.at) > 90 * 60 } ?? false)
         Button(action: toggleMeasure) {
             VStack(spacing: 4) {
                 StressArc(value: active ? nil : value.map { $0 / 100 })
                     .frame(width: 96, height: 54)
+                    .opacity(stale ? 0.4 : 1)
                     .overlay(alignment: .bottom) {
                         Text(active ? "–" : value.map { "\(Int($0.rounded()))" } ?? "–")
                             .font(StrandFont.number(18))
@@ -333,6 +359,12 @@ struct LiveStressGauge: View {
         .accessibilityHint(Text(measureEnd != nil ? "Stops the live measurement" : "Measures stress live for a minute"))
         // Re-read when new data lands (a sync), so the stored value moves on without forcing one.
         .task(id: repo.refreshSeq) { await loadStored() }
+        // Collect each packet's beats with the time they arrived; keep two and a half minutes.
+        .onChangeCompat(of: live.rrSeq) { _ in
+            let now = Date()
+            for ms in live.rr where ms >= 300 && ms <= 2000 { beats.append((now, ms)) }
+            if let f = beats.first, now.timeIntervalSince(f.t) > 150 { beats.removeAll { now.timeIntervalSince($0.t) > 150 } }
+        }
         // End the measurement on its own after 90 seconds.
         .task(id: measureEnd) {
             guard let end = measureEnd else { return }
@@ -364,7 +396,8 @@ struct LiveStressGauge: View {
             (Text("measured ") + Text(r.at, style: .time) + Text(" · tap to redo"))
                 .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
         } else if let at = stored?.at {
-            (Text("as of ") + Text(at, style: .time) + Text(" · tap to measure"))
+            (Text(Date().timeIntervalSince(at) > 90 * 60 ? "last scored " : "as of ") + Text(at, style: .time)
+                + Text(" · tap to measure"))
                 .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
         } else {
             Text("Tap to measure").font(StrandFont.caption).foregroundStyle(StrandPalette.accent)

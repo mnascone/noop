@@ -177,13 +177,17 @@ final class LiveActivityController {
         let days = model.repo.days
         let hrvs = days.suffix(30).compactMap(\.avgHrv).filter { $0 > 0 }.sorted()
         let resting = days.last(where: { ($0.restingHr ?? 0) > 0 })?.restingHr
-        if model.live.connected, let hr = model.live.heartRate {
+        // Live only when beats are arriving now: the R-R buffer keeps old beats until the link drops.
+        let beatsFresh = model.live.rrUpdatedAt.map { Date().timeIntervalSince($0) < 15 } ?? false
+        if model.live.connected, beatsFresh, let hr = model.live.heartRate {
             if let r = resting, hr > r + 35 { return (String(localized: "Active"), "8E8E93") }
             if hrvs.count >= 5, let v = LiveStressGauge.level(rr: model.live.rrRecent, hrvBaseline: hrvs[hrvs.count / 2]) {
                 return ("\(Int(v.rounded()))", Self.stressHex(v))
             }
         }
-        guard let last = storedGlance(Date())?.latestStress() else { return nil }
+        // Today's stored hour, only while it's recent: an hours-old number on the Lock Screen reads as now.
+        guard let last = storedGlance(Date())?.latestStress(),
+              Date().timeIntervalSince(last.at) < 3 * 3600 else { return nil }
         let v = min(100, max(0, last.level / 3 * 100))
         return ("\(Int(v.rounded()))", Self.stressHex(v))
     }

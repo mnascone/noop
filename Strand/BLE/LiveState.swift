@@ -67,6 +67,10 @@ public final class LiveState: ObservableObject {
     /// packets via `onRRPackets` (keyed on this), never by watching `rr` — see RRPacketObserver.swift.
     /// Twin of Android LiveState.rrSeq.
     @Published public private(set) var rrSeq: Int = 0
+    /// When the last valid R-R interval arrived. `rrRecent` keeps its beats until the link drops, so a
+    /// reader that wants LIVE beats checks this rather than trusting the buffer. Not published: `rrSeq`
+    /// already announces each packet.
+    public private(set) var rrUpdatedAt: Date?
     /// Rolling UI buffer of recent R-R intervals (capped, oldest dropped first). Standard BLE HR
     /// notifications usually carry only one or two intervals per packet, so the Live console needs a
     /// separate short history to render an actually-moving R-R strip / rolling RMSSD. Appended (never
@@ -702,6 +706,7 @@ public final class LiveState: ObservableObject {
         rrSeq += 1
         let valid = intervals.filter { $0 > 0 }
         guard !valid.isEmpty else { return }
+        rrUpdatedAt = Date()
         rrRecent.append(contentsOf: valid)
         if rrRecent.count > recentLimit {
             rrRecent.removeFirst(rrRecent.count - recentLimit)
@@ -762,6 +767,7 @@ public final class LiveState: ObservableObject {
         heartRate = nil
         rr.removeAll()
         rrRecent.removeAll()
+        rrUpdatedAt = nil
         clearBatterySamples()   // a stale runtime estimate must not outlive the link either (#713)
         recentHrSamples.removeAll()       // Sleep readout buffers must not outlive the link (Group E)
         recentGravitySamples.removeAll()

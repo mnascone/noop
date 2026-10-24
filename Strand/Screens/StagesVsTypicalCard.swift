@@ -96,7 +96,7 @@ struct StagesVsTypicalCard: View {
                         RoundedRectangle(cornerRadius: 1, style: .continuous)
                             .fill(StrandPalette.textPrimary.opacity(0.85))
                             .frame(width: 2.5, height: 12)
-                            .position(x: min(w - 2, max(2, w * CGFloat(min(1, typical / max)))), y: 6)
+                            .position(x: Swift.min(w - 2, Swift.max(2, w * CGFloat(Swift.min(1, typical / max)))), y: 6)
                     }
                 }
                 .clipShape(Capsule(style: .continuous))

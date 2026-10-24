@@ -45,7 +45,11 @@ struct BatteryCenterView: View {
     @AppStorage(SetReadyPrefs.buzzKey) private var setBuzz = false
 
     @State private var range = 7
+    /// The strap's stored readings for the range, thinned for drawing.
+    @State private var history: [BatteryPoint] = []
+    @State private var expanded = false
 
+    /// Drain per feature needs the features that were on, which only NOOP's own log records.
     private var analysis: BatteryDrainAnalysis.Result {
         let cutoff = Date().timeIntervalSince1970 - Double(range) * 86_400
         return BatteryDrainAnalysis.analyze(log.samples.filter { $0.ts >= cutoff }) {
@@ -53,16 +57,64 @@ struct BatteryCenterView: View {
         }
     }
 
+    /// Use per day and the average rate from the stored history, which covers time NOOP wasn't open.
+    private var historyUse: BatteryDrainAnalysis.Result {
+        let samples = history.map { BatteryDrainAnalysis.Sample(ts: $0.ts, pct: $0.pct, charging: false, features: 0) }
+        return BatteryDrainAnalysis.analyze(samples) { Repository.localDayKey(Date(timeIntervalSince1970: $0)) }
+    }
+
+    private func loadHistory() async {
+        let now = Int(Date().timeIntervalSince1970)
+        let rows = await model.repo.batteryHistory(from: now - range * 86_400, to: now)
+        var merged: [(ts: Int, soc: Double)] = rows
+        // Readings NOOP logged itself fill in anything the strap's own log hasn't synced yet.
+        let newest = rows.last?.ts ?? 0
+        merged += log.samples.filter { Int($0.ts) > newest && Int($0.ts) >= now - range * 86_400 }
+            .map { (ts: Int($0.ts), soc: $0.pct) }
+        history = BatteryPoint.thin(merged, maxPoints: 500)
+    }
+
     var body: some View {
         let a = analysis
+        let use = historyUse
         ScreenScaffold(title: "Battery", topBackground: liquidScaffoldSky()) {
             VStack(alignment: .leading, spacing: NoopMetrics.space4) {
-                nowCard(a)
-                historyCard(a)
+                nowCard(use.ratePerHour != nil ? use : a)
+                historyCard(use)
                 effectorsCard(a)
                 conserveCard
             }
         }
+        .task(id: range) { await loadHistory() }
+        .sheet(isPresented: $expanded) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+                        rangePicker
+                        BatteryHistoryChart(points: history, rangeDays: range, height: 320)
+                        Text("From the strap's own battery log. Gaps are times it didn't report.")
+                            .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                    }
+                    .padding(NoopMetrics.space4)
+                }
+                .background(StrandPalette.surfaceBase)
+                .navigationTitle("Battery over time")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { expanded = false } }
+                }
+            }
+            .presentationDetents([.large])
+        }
+    }
+
+    private var rangePicker: some View {
+        Picker("Range", selection: $range) {
+            Text("2D").tag(2)
+            Text("7D").tag(7)
+            Text("14D").tag(14)
+        }
+        .pickerStyle(.segmented)
     }
 
     // MARK: Now
@@ -99,41 +151,24 @@ struct BatteryCenterView: View {
     // MARK: History
 
     private func historyCard(_ a: BatteryDrainAnalysis.Result) -> some View {
-        let cutoff = Date().timeIntervalSince1970 - Double(range) * 86_400
-        let points = log.samples.filter { $0.ts >= cutoff }
-        return NoopCard {
+        NoopCard {
             VStack(alignment: .leading, spacing: NoopMetrics.space3) {
                 HStack {
                     Text("Battery over time").strandOverline()
                     Spacer()
-                    Picker("Range", selection: $range) {
-                        Text("2D").tag(2)
-                        Text("7D").tag(7)
-                        Text("14D").tag(14)
+                    Button { expanded = true } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(StrandFont.footnote.weight(.semibold))
+                            .foregroundStyle(StrandPalette.accent)
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 140)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Expand chart")
                 }
-                if points.count >= 2 {
-                    Chart(points, id: \.ts) { p in
-                        AreaMark(x: .value("Time", Date(timeIntervalSince1970: p.ts)), y: .value("Battery", p.pct))
-                            .foregroundStyle(LinearGradient(colors: [StrandPalette.statusPositive.opacity(0.35), .clear],
-                                                            startPoint: .top, endPoint: .bottom))
-                            .interpolationMethod(.monotone)
-                        LineMark(x: .value("Time", Date(timeIntervalSince1970: p.ts)), y: .value("Battery", p.pct))
-                            .foregroundStyle(StrandPalette.statusPositive)
-                            .interpolationMethod(.monotone)
-                    }
-                    .chartYScale(domain: 0...100)
-                    .chartYAxis {
-                        AxisMarks(values: [0, 50, 100]) { v in
-                            AxisGridLine()
-                            AxisValueLabel { Text("\(v.as(Int.self) ?? 0)%") }
-                        }
-                    }
-                    .frame(height: 140)
+                rangePicker
+                if history.count >= 2 {
+                    BatteryHistoryChart(points: history, rangeDays: range, height: 150)
                 } else {
-                    Text("NOOP starts logging the strap's battery now. The chart fills in over the next few hours.")
+                    Text("No battery readings stored for this range yet. They fill in as the strap syncs.")
                         .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -145,7 +180,7 @@ struct BatteryCenterView: View {
                             .foregroundStyle(StrandPalette.accent.gradient)
                             .cornerRadius(3)
                             .annotation(position: .top) {
-                                Text("\(Int(d.pct.rounded()))").font(.system(size: 9)).foregroundStyle(StrandPalette.textTertiary)
+                                Text("\(Int(d.pct.rounded()))%").font(.system(size: 9)).foregroundStyle(StrandPalette.textTertiary)
                             }
                     }
                     .chartYAxis(.hidden)
@@ -274,5 +309,100 @@ private struct BigBattery: View {
                 .frame(width: 4, height: 14)
         }
         .accessibilityHidden(true)
+    }
+}
+
+/// One battery reading for the chart. `segment` changes across a gap, so the line breaks there.
+struct BatteryPoint: Identifiable, Equatable {
+    let ts: Double
+    let pct: Double
+    let segment: Int
+    var id: Double { ts }
+    var date: Date { Date(timeIntervalSince1970: ts) }
+
+    /// Sorted, de-duplicated, thinned to at most `maxPoints` (keeping each bucket's last reading, so a
+    /// charge or a drop is never smoothed away), with a new segment after any gap over 90 minutes.
+    static func thin(_ rows: [(ts: Int, soc: Double)], maxPoints: Int) -> [BatteryPoint] {
+        let sorted = rows.sorted { $0.ts < $1.ts }
+        guard let first = sorted.first, let last = sorted.last else { return [] }
+        let bucket = max(60, (last.ts - first.ts) / max(1, maxPoints))
+        var kept: [(ts: Int, soc: Double)] = []
+        for r in sorted {
+            if let k = kept.last, r.ts / bucket == k.ts / bucket {
+                kept[kept.count - 1] = r
+            } else {
+                kept.append(r)
+            }
+        }
+        var out: [BatteryPoint] = []
+        var seg = 0
+        for (i, r) in kept.enumerated() {
+            if i > 0, r.ts - kept[i - 1].ts > 90 * 60 { seg += 1 }
+            out.append(BatteryPoint(ts: Double(r.ts), pct: r.soc, segment: seg))
+        }
+        return out
+    }
+}
+
+/// Battery level across the chosen range, the time axis fixed to that range so a short history isn't
+/// stretched to fill it. Drag across it to read the level at any moment.
+struct BatteryHistoryChart: View {
+    let points: [BatteryPoint]
+    let rangeDays: Int
+    let height: CGFloat
+    @State private var picked: Date?
+
+    private var nearest: BatteryPoint? {
+        guard let picked else { return nil }
+        return points.min { abs($0.date.timeIntervalSince(picked)) < abs($1.date.timeIntervalSince(picked)) }
+    }
+
+    var body: some View {
+        let end = Date()
+        let start = end.addingTimeInterval(-Double(rangeDays) * 86_400)
+        Chart {
+            ForEach(points) { p in
+                AreaMark(x: .value("Time", p.date), y: .value("Battery", p.pct),
+                         series: .value("Part", p.segment))
+                    .foregroundStyle(LinearGradient(colors: [StrandPalette.statusPositive.opacity(0.30), .clear],
+                                                    startPoint: .top, endPoint: .bottom))
+                LineMark(x: .value("Time", p.date), y: .value("Battery", p.pct),
+                         series: .value("Part", p.segment))
+                    .foregroundStyle(StrandPalette.statusPositive)
+                    .lineStyle(StrokeStyle(lineWidth: 2))
+            }
+            if let n = nearest {
+                RuleMark(x: .value("Time", n.date))
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .annotation(position: .top, overflowResolution: .init(x: .fit, y: .disabled)) {
+                        VStack(spacing: 0) {
+                            Text("\(Int(n.pct.rounded()))%").font(StrandFont.captionNumber.weight(.bold))
+                            Text(n.date, format: .dateTime.weekday(.abbreviated).hour().minute())
+                                .font(.system(size: 9))
+                        }
+                        .foregroundStyle(StrandPalette.textPrimary)
+                        .padding(4)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(StrandPalette.surfaceInset))
+                    }
+                PointMark(x: .value("Time", n.date), y: .value("Battery", n.pct))
+                    .foregroundStyle(StrandPalette.statusPositive)
+            }
+        }
+        .chartXScale(domain: start...end)
+        .chartYScale(domain: 0...100)
+        .chartYAxis {
+            AxisMarks(values: [0, 25, 50, 75, 100]) { v in
+                AxisGridLine()
+                AxisValueLabel { Text("\(v.as(Int.self) ?? 0)%") }
+            }
+        }
+        .chartXAxis {
+            AxisMarks(values: .stride(by: .day, count: rangeDays > 7 ? 2 : 1)) { _ in
+                AxisGridLine()
+                AxisValueLabel(format: rangeDays > 2 ? .dateTime.weekday(.narrow) : .dateTime.hour())
+            }
+        }
+        .chartXSelection(value: $picked)
+        .frame(height: height)
     }
 }

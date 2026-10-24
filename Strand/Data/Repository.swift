@@ -1201,6 +1201,18 @@ final class Repository: ObservableObject {
         return byTs.values.sorted { $0.ts < $1.ts }
     }
 
+    /// Stored battery readings for the active strap, oldest first, with readings that carry no charge
+    /// (or an impossible one) left out. The strap logs one every few minutes, so this is the real history
+    /// whether or not NOOP was open at the time.
+    func batteryHistory(from: Int, to: Int) async -> [(ts: Int, soc: Double)] {
+        guard let store = await ensureStore() else { return [] }
+        let rows = (try? await store.batterySamples(deviceId: deviceId, from: from, to: to, limit: 60_000)) ?? []
+        return rows.compactMap { r in
+            guard let soc = r.soc, soc > 0, soc <= 100 else { return nil }
+            return (ts: r.ts, soc: soc)
+        }
+    }
+
     /// The most recent banked battery reading, for the stale-battery warning (#2556).
     ///
     /// Reads the ACTIVE device id rather than the union: a battery reading belongs to the strap that sent

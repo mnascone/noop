@@ -137,4 +137,24 @@ final class RepCounterTests: XCTestCase {
         XCTAssertEqual(r.tempo ?? 0, 2.0, accuracy: 0.01)
         XCTAssertEqual(r.end ?? 0, 19, accuracy: 0.01)
     }
+
+    /// A press straight up and down reads as vertical; a row across the body as horizontal.
+    func testMovementLabelFollowsGravity() {
+        let up = run(session([(reps: 8, period: 2.0, amp: 0.4, axis: (0, 0, 1))]))
+        XCTAssertEqual(up.first?.movement, .vertical)
+        let across = run(session([(reps: 8, period: 2.0, amp: 0.4, axis: (1, 0, 0))]))
+        XCTAssertEqual(across.first?.movement, .horizontal)
+    }
+
+    /// The analysis behind a set: counted swings match the set's reps, and odd ones are listed apart.
+    func testAnalysisSeparatesCountedFromRejected() {
+        var c = RepCounter()
+        let samples = session([(reps: 10, period: 2.0, amp: 0.35, axis: (0, 0, 1))])
+        var i = 0
+        while i < samples.count { c.feed(Array(samples[i..<min(samples.count, i + 100)])); i += 100 }
+        c.finish()
+        let a = try! XCTUnwrap(c.currentAnalysis)
+        XCTAssertEqual(a.counted.count, c.sets.first?.reps)
+        XCTAssertFalse(a.trace.isEmpty)
+    }
 }

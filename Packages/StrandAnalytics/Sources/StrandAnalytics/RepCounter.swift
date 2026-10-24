@@ -14,8 +14,18 @@ import Foundation
 /// fewer than `minReps` is no set at all. Heart rate is the app layer's second check (a set should push
 /// it up), since motion alone can't tell a light warm-up swing from a working set.
 ///
-/// Works for movements where the wrist travels with the weight (presses, curls, rows, pull-ups, squats
-/// and deadlifts holding a bar). It can't see reps when the hands stay still (leg press, leg extension).
+/// WHAT COUNTS AS A REP: one full there-and-back excursion of the wrist along the set's main line of
+/// movement (out past +`hysteresis` x its spread and back past the opposite side), taking `minRepS` to
+/// `maxRepS`, at least `minAmpShare` of the set's typical size, and in step with the reps either side.
+/// That covers the movements where the wrist travels with the weight: presses (bench, overhead, push-ups,
+/// dips), curls, rows, pull-ups and pulldowns, raises, and squats, lunges and deadlifts holding the
+/// weight. Each set is labelled `vertical` (its line of movement within ~45 degrees of gravity: presses,
+/// curls, squats, pull-ups) or `horizontal` (rows, flyes, cable work across the body).
+///
+/// WHAT DOESN'T: walking between stations (steps come faster than `minRepS` and the arm barely moves
+/// along one line), racking, unracking, loading plates and adjusting a seat (single swings, out of step),
+/// small fidgets (under `minAmpShare`), holds and carries (no excursion), and machines where the hands
+/// stay still (leg press, leg extension, leg curl, calf raise), which the wrist can't see.
 /// Experimental: the thresholds are first guesses to tune against real sessions.
 public struct RepCounter: Sendable {
     public struct Sample: Sendable, Equatable {
@@ -33,6 +43,38 @@ public struct RepCounter: Sendable {
         public let reps: Int
         /// Average seconds per rep.
         public let tempoS: Double?
+        public var movement: Movement = .unknown
+        /// Typical size of one rep's swing, in g (peak to trough of the filtered signal).
+        public var rangeG: Double?
+
+        public init(start: Double, end: Double, reps: Int, tempoS: Double?,
+                    movement: Movement = .unknown, rangeG: Double? = nil) {
+            self.start = start; self.end = end; self.reps = reps; self.tempoS = tempoS
+            self.movement = movement; self.rangeG = rangeG
+        }
+    }
+
+    /// The set's main line of movement against gravity.
+    public enum Movement: String, Sendable, Equatable {
+        /// Within about 45 degrees of vertical: presses, curls, squats, deadlifts, pull-ups, dips.
+        case vertical
+        /// Across: rows, flyes, cable work, lateral swings.
+        case horizontal
+        case unknown
+    }
+
+    /// What the counter saw in a stretch of motion, for drawing it: the filtered signal along the main
+    /// axis (`rateHz` samples from `t0`), each swing it judged, and which it counted.
+    public struct Analysis: Sendable, Equatable {
+        public let t0: Double
+        public let trace: [Double]
+        /// Times of swings that counted as reps.
+        public let counted: [Double]
+        /// Times of swings left out (out of step, too small, or outside the steady run).
+        public let rejected: [Double]
+        public let movement: Movement
+        public let tempoS: Double?
+        public let rangeG: Double?
     }
 
     public static let rateHz = 25.0
@@ -59,13 +101,14 @@ public struct RepCounter: Sendable {
     private var setStartIndex = 0
     private var quietSince: Double?
     public private(set) var sets: [RepSet] = []
+    private var lastAnalysis: Analysis?
 
     public init() {}
 
     /// Reps in the set happening now, nil between sets.
     public var currentReps: Int? {
         guard inSet else { return nil }
-        return Self.countReps(Array(points[setStartIndex...]))?.reps ?? 0
+        return Self.analyze(Array(points[setStartIndex...]))?.counted.count ?? 0
     }
 
     public var inProgressStart: Double? { inSet ? points[setStartIndex].t : nil }
@@ -127,14 +170,23 @@ public struct RepCounter: Sendable {
         guard endIndex > setStartIndex else { return }
         let seg = Array(points[setStartIndex...endIndex])
         guard let first = seg.first, let last = seg.last, last.t - first.t >= Self.minSetS,
-              let counted = Self.countReps(seg), counted.reps >= Self.minReps else { return }
-        sets.append(RepSet(start: counted.start ?? first.t, end: counted.end ?? last.t,
-                           reps: counted.reps, tempoS: counted.tempo))
+              let a = Self.analyze(seg) else { return }
+        lastAnalysis = a
+        guard a.counted.count >= Self.minReps else { return }
+        let tempo = a.tempoS ?? 0
+        sets.append(RepSet(start: (a.counted.first ?? first.t) - tempo, end: a.counted.last ?? last.t,
+                           reps: a.counted.count, tempoS: a.tempoS, movement: a.movement, rangeG: a.rangeG))
+    }
+
+    /// The analysis of the set in progress, or of the last stretch of motion when between sets.
+    public var currentAnalysis: Analysis? {
+        if inSet { return Self.analyze(Array(points[setStartIndex...])) }
+        return lastAnalysis
     }
 
     /// Full swings along the segment's main axis, keeping only the longest rhythmic run of them.
-    private static func countReps(_ seg: [Point]) -> (reps: Int, tempo: Double?, start: Double?, end: Double?)? {
-        guard seg.count >= Int(2 * rateHz) else { return nil }
+    private static func analyze(_ seg: [Point]) -> Analysis? {
+        guard seg.count >= Int(2 * rateHz), let t0 = seg.first?.t else { return nil }
         // High-pass: subtract a 4 s moving mean (gravity and slow drift), then smooth over 0.2 s.
         let longW = Int(4 * rateHz), shortW = max(1, Int(0.2 * rateHz))
         func movingMean(_ x: [Double], _ w: Int) -> [Double] {
@@ -149,7 +201,9 @@ public struct RepCounter: Sendable {
             }
             return out
         }
-        let axes = [seg.map { $0.a.0 }, seg.map { $0.a.1 }, seg.map { $0.a.2 }].map { x -> [Double] in
+        let raw = [seg.map { $0.a.0 }, seg.map { $0.a.1 }, seg.map { $0.a.2 }]
+        let gravity = raw.map { $0.reduce(0, +) / Double($0.count) }
+        let axes = raw.map { x -> [Double] in
             let base = movingMean(x, longW)
             let hp = zip(x, base).map { $0 - $1 }
             return movingMean(hp, shortW)
@@ -167,40 +221,59 @@ public struct RepCounter: Sendable {
             guard n > 0 else { return nil }
             v = nv.map { $0 / n }
         }
+        let movement = movementOf(axis: v, gravity: gravity)
         let proj = (0..<seg.count).map { i in axes[0][i] * v[0] + axes[1][i] * v[1] + axes[2][i] * v[2] }
         let mean = proj.reduce(0, +) / Double(proj.count)
-        let sd = sqrt(proj.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(proj.count))
-        guard sd > 0.01 else { return (0, nil, nil, nil) }
+        let centred = proj.map { $0 - mean }
+        let sd = sqrt(centred.reduce(0) { $0 + $1 * $1 } / Double(centred.count))
+        guard sd > 0.01 else {
+            return Analysis(t0: t0, trace: centred, counted: [], rejected: [], movement: movement,
+                            tempoS: nil, rangeG: nil)
+        }
         let h = hysteresis * sd
-        // A rep = a swing above +h followed by one below -h. Each carries its time and its size.
-        var reps: [(t: Double, amp: Double)] = []
+        // A swing = out past +h then back past -h. Each carries its time and its size.
+        var swings: [(t: Double, amp: Double)] = []
         var high = false
         var hi = -Double.infinity, lo = Double.infinity
-        for (i, x) in proj.enumerated() {
+        for (i, x) in centred.enumerated() {
             let t = seg[i].t
             hi = max(hi, x); lo = min(lo, x)
-            if !high, x - mean > h {
+            if !high, x > h {
                 high = true
-            } else if high, x - mean < -h {
+            } else if high, x < -h {
                 high = false
-                if let last = reps.last, t - last.t < minRepS { continue }
-                reps.append((t, hi - lo))
+                if let last = swings.last, t - last.t < minRepS { continue }
+                swings.append((t, hi - lo))
                 hi = -Double.infinity; lo = Double.infinity
             }
         }
-        return rhythmicRun(reps)
+        let run = rhythmicRun(swings)
+        let counted = run.range.map { Array(swings[$0]).map(\.t) } ?? []
+        let rejected = swings.enumerated().filter { !(run.range?.contains($0.offset) ?? false) }.map(\.element.t)
+        let ranges = run.range.map { swings[$0].map(\.amp).sorted() } ?? []
+        return Analysis(t0: t0, trace: centred, counted: counted, rejected: rejected, movement: movement,
+                        tempoS: run.tempo, rangeG: ranges.isEmpty ? nil : ranges[ranges.count / 2])
+    }
+
+    /// Vertical when the line of movement is within ~45 degrees of gravity (|cos| over 0.7).
+    static func movementOf(axis v: [Double], gravity g: [Double]) -> Movement {
+        let gn = sqrt(g.reduce(0) { $0 + $1 * $1 })
+        guard gn > 0.3 else { return .unknown }
+        let cosine = abs(zip(v, g).reduce(0) { $0 + $1.0 * $1.1 }) / gn
+        return cosine >= 0.7 ? .vertical : .horizontal
     }
 
     /// The longest run of reps at a steady tempo and a similar size. Each rep's gap (time since the one
     /// before) must sit within `gapRatioMax` of the previous gap and of the run's median, and inside
     /// [`minRepS`, `maxRepS`]; each rep's swing must be at least `minAmpShare` of the median swing.
-    static func rhythmicRun(_ reps: [(t: Double, amp: Double)]) -> (reps: Int, tempo: Double?, start: Double?, end: Double?) {
-        guard reps.count >= 2 else { return (reps.count, nil, nil, nil) }
+    static func rhythmicRun(_ reps: [(t: Double, amp: Double)]) -> (reps: Int, tempo: Double?, start: Double?,
+                                                                   end: Double?, range: ClosedRange<Int>?) {
+        guard reps.count >= 2 else { return (reps.count, nil, nil, nil, nil) }
         let amps = reps.map(\.amp).sorted()
         let medAmp = amps[amps.count / 2]
         let gaps = (1..<reps.count).map { reps[$0].t - reps[$0 - 1].t }
         let usable = gaps.filter { $0 >= minRepS && $0 <= maxRepS }.sorted()
-        guard !usable.isEmpty else { return (1, nil, nil, nil) }
+        guard !usable.isEmpty else { return (1, nil, nil, nil, nil) }
         let medGap = usable[usable.count / 2]
         func steady(_ g: Double) -> Bool {
             g >= minRepS && g <= maxRepS && g <= medGap * gapRatioMax && g >= medGap / gapRatioMax
@@ -217,9 +290,9 @@ public struct RepCounter: Sendable {
             if i - from > best.to - best.from { best = (from, i) }
         }
         let count = best.to - best.from + 1
-        guard count >= 2 else { return (1, nil, nil, nil) }
+        guard count >= 2 else { return (1, nil, nil, nil, nil) }
         let runGaps = Array(gaps[best.from..<best.to])
         let tempo = runGaps.reduce(0, +) / Double(runGaps.count)
-        return (count, tempo, reps[best.from].t - tempo, reps[best.to].t)
+        return (count, tempo, reps[best.from].t - tempo, reps[best.to].t, best.from...best.to)
     }
 }

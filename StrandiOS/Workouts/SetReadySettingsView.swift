@@ -14,6 +14,7 @@ struct SetReadySettingsView: View {
     @AppStorage(SetReadyPrefs.buzzKey) private var buzz = false
     @AppStorage(LiveRepTracker.enabledKey) private var repCounting = false
     @AppStorage(SetReadyPrefs.panelKey) private var showPanel = true
+    @State private var showRepRules = false
 
     /// Today's personal thresholds for a typical hard set (75% of heart-rate reserve).
     private var recommended: SetReadiness.Thresholds? {
@@ -86,10 +87,12 @@ struct SetReadySettingsView: View {
 
             Section {
                 Toggle("Count reps from wrist motion", isOn: $repCounting)
+                Button("What counts as a rep") { showRepRules = true }
             } footer: {
                 Text("WHOOP 5.0 and MG only. Uses more strap battery while you lift.")
             }
         }
+        .sheet(isPresented: $showRepRules) { RepRulesSheet() }
         .navigationTitle("Sets and rest")
         .navigationBarTitleDisplayMode(.inline)
     }

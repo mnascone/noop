@@ -89,6 +89,9 @@ struct LiveIntervalCard: View {
                         if reps.active || !reps.sets.isEmpty {
                             repRow
                         }
+                        if reps.active, let a = reps.analysis {
+                            MotionMapView(analysis: a)
+                        }
                         Toggle(isOn: $repCounting) {
                             Text("Count reps from wrist motion")
                                 .font(StrandFont.footnote)

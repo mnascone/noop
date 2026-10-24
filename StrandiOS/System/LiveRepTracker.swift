@@ -23,6 +23,10 @@ final class LiveRepTracker: ObservableObject {
     @Published private(set) var currentReps: Int?
     /// When the set in progress began (unix seconds), while one is counting.
     @Published private(set) var currentSetStart: Double?
+    /// What the counter sees right now (the set in progress, or the last stretch of motion), for the
+    /// motion map. Refreshed about twice a second.
+    @Published private(set) var analysis: RepCounter.Analysis?
+    private var lastAnalysisAt = Date.distantPast
 
     /// Heart rate must climb this far above its level at the set's start.
     static let hrRiseBPM = 6
@@ -87,6 +91,7 @@ final class LiveRepTracker: ObservableObject {
             sets = []
             currentReps = nil
             currentSetStart = nil
+            analysis = nil
             counter = nil
             hr = []
             trackedStart = start
@@ -150,6 +155,11 @@ final class LiveRepTracker: ObservableObject {
         if cur != currentReps { currentReps = cur }
         let start = cur == nil ? nil : c.inProgressStart
         if start != currentSetStart { currentSetStart = start }
+        if Date().timeIntervalSince(lastAnalysisAt) >= 0.5 {
+            lastAnalysisAt = Date()
+            let a = c.currentAnalysis
+            if a != analysis { analysis = a }
+        }
     }
 
     /// How far heart rate climbed from the set's start to its peak during the set or within
@@ -170,6 +180,6 @@ final class LiveRepTracker: ObservableObject {
     /// "Reps 10 · 8 · 12" for the workout's notes, or nil when nothing was counted.
     func notesLine(start: Int) -> String? {
         guard trackedStart == start, !sets.isEmpty else { return nil }
-        return String(localized: "Reps \(sets.map { String($0.reps) }.joined(separator: " · ")) (from wrist motion)")
+        return String(localized: "Reps \(sets.map { String($0.reps) }.joined(separator: " · ")) (from wrist motion, confirmed by heart rate)")
     }
 }

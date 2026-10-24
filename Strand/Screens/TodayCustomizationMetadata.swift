@@ -15,6 +15,7 @@ extension TodaySection {
         case .menstrualCycle: return "drop.degreesign"
         case .journal: return "book.closed"
         case .addedCards: return "rectangle.stack.badge.plus"
+        case .pacing: return "speedometer"
         }
     }
 
@@ -31,6 +32,7 @@ extension TodaySection {
         case .menstrualCycle: return StrandPalette.restColor
         case .journal: return StrandPalette.metricAmber
         case .addedCards: return StrandPalette.accent
+        case .pacing: return StrandPalette.effortColor
         }
     }
 }

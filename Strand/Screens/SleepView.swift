@@ -499,6 +499,7 @@ struct SleepView: View {
         case .sleepDebt:       SleepDebtLedgerCard(model: model)
         case .stagesVsTypical: StagesVsTypicalCard(model: model)
         case .asleepDuration:  durationTrend(model)
+        case .calendar:        SleepCalendarCard()
         }
     }
 
@@ -580,6 +581,9 @@ struct SleepView: View {
                         captionColor: Color.white.opacity(0.52),
                         tapPassesThrough: true
                     )
+                    // The vessel's own splash tap would take touches on the wheel; the whole wheel opens
+                    // the breakdown instead.
+                    .allowsHitTesting(false)
                     Text(sleepScoreWord(score))
                         .font(StrandFont.subhead.weight(.semibold))
                         .foregroundStyle(Color.white.opacity(0.90))

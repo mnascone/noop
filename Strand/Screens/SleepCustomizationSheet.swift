@@ -99,6 +99,7 @@ extension SleepSection {
         case .sleepDebt:       return "arrow.down.right.circle"
         case .stagesVsTypical: return "chart.bar"
         case .asleepDuration:  return "clock"
+        case .calendar:        return "calendar"
         }
     }
 
@@ -113,6 +114,7 @@ extension SleepSection {
         case .sleepDebt:       return StrandPalette.effortColor
         case .stagesVsTypical: return StrandPalette.restColor
         case .asleepDuration:  return StrandPalette.restBright
+        case .calendar:        return StrandPalette.restColor
         }
     }
 }

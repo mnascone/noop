@@ -35,6 +35,22 @@ final class DailyRecommendation: ObservableObject {
 
     private init() {}
 
+    /// The coach writes Markdown. Render **bold** and *italics* inline, and drop heading marks and list
+    /// bullets so the card reads as plain sentences.
+    static func styled(_ text: String) -> AttributedString {
+        let cleaned = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                var l = line.trimmingCharacters(in: .whitespaces)
+                while l.hasPrefix("#") { l.removeFirst() }
+                if l.hasPrefix("- ") || l.hasPrefix("* ") || l.hasPrefix("• ") { l.removeFirst(2) }
+                return l.trimmingCharacters(in: .whitespaces)
+            }
+            .joined(separator: "\n")
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: cleaned, options: options)) ?? AttributedString(cleaned)
+    }
+
     /// Ask the coach once for these inputs. A cached answer for the same inputs is reused.
     func refresh(_ inputs: Inputs, charge: Double?, ruleAdvice: String?, coach: AICoachEngine) async {
         let key = inputs.cacheKey

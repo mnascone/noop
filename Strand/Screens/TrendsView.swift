@@ -44,7 +44,8 @@ struct TrendsView: View {
         }
     }
 
-    @State private var range: Range = .quarter
+    @State private var range: Range = .month
+    @AppStorage("noop.trends.chargeCalendarMode") private var chargeCalendarMode = "year"
     @State private var showingLayoutEditor = false
     @AppStorage(TrendsLayoutPrefs.orderKey) private var trendsOrderRaw = ""
     @AppStorage(TrendsLayoutPrefs.hiddenKey) private var trendsHiddenRaw = ""
@@ -799,19 +800,33 @@ struct TrendsView: View {
             return RecoveryDay(date: dt, score: d.recovery)
         }
         let title = (range == .all && repo.days.count > 365) ? String(localized: "Charge (all history)") : String(localized: "Charge (past year)")
+        #if os(iOS)
+        let shownTitle = chargeCalendarMode == "month" ? String(localized: "Charge by month") : title
+        #else
+        let shownTitle = title
+        #endif
         return NoopCard {
             VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
-                SectionHeader("\(title)", overline: "Calendar", trailing: String(localized: "\(recoveryDays.filter { $0.score != nil }.count) days"))
+                SectionHeader("\(shownTitle)", overline: "Calendar", trailing: String(localized: "\(recoveryDays.filter { $0.score != nil }.count) days"))
                 if recoveryDays.isEmpty {
                     sparsePlaceholder.frame(height: 120)
                 } else {
                     #if os(iOS)
                     // Month calendars read the normal way on a phone; the week-column strip ran days
                     // down the screen.
-                    ChargeYearCalendar(
-                        scores: Dictionary(recent.compactMap { d in d.recovery.map { (d.day, $0) } },
-                                           uniquingKeysWith: { _, last in last }),
-                        months: min(36, max(12, Int((Double(stripDays) / 30.4).rounded(.up)))))
+                    Picker("View", selection: $chargeCalendarMode) {
+                        Text("Year").tag("year")
+                        Text("Month").tag("month")
+                    }
+                    .pickerStyle(.segmented)
+                    let scores = Dictionary(repo.days.compactMap { d in d.recovery.map { (d.day, $0) } },
+                                            uniquingKeysWith: { _, last in last })
+                    if chargeCalendarMode == "month" {
+                        ChargeMonthCalendar(scores: scores)
+                    } else {
+                        ChargeYearCalendar(scores: scores,
+                                           months: min(36, max(12, Int((Double(stripDays) / 30.4).rounded(.up)))))
+                    }
                     #else
                     ScrollView(.horizontal, showsIndicators: false) {
                         YearHeatStrip(days: recoveryDays).padding(.vertical, NoopMetrics.space1 / 2)

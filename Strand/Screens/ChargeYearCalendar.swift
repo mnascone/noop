@@ -62,3 +62,42 @@ struct ChargeYearCalendar: View {
         return String(localized: "\(name), \(vals.count) days, average Charge \(avg)")
     }
 }
+
+/// One month of Charge, a full-size calendar with each day's number.
+struct ChargeMonthCalendar: View {
+    let scores: [String: Double]
+    @State private var monthStart = MonthMath.startOfMonth(Date())
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+            MonthHeader(monthStart: $monthStart)
+            MonthGrid(monthStart: monthStart) { date, key in
+                let score = scores[key]
+                VStack(spacing: 2) {
+                    Text("\(Calendar.current.component(.day, from: date))")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(score == nil ? StrandPalette.textSecondary : Color.black.opacity(0.7))
+                    Text(score.map { "\(Int($0.rounded()))" } ?? " ")
+                        .font(StrandFont.captionNumber)
+                        .foregroundStyle(Color.black.opacity(0.85))
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(score.map { StrandPalette.recoveryColor($0) } ?? StrandPalette.surfaceInset.opacity(0.4))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Calendar.current.isDateInToday(date) ? StrandPalette.accent : Color.clear,
+                                      lineWidth: 1.5)
+                )
+            }
+            let vals = MonthMath.dayKeys(in: monthStart).compactMap { scores[$0] }
+            if !vals.isEmpty {
+                Text(String(localized: "Average \(Int((vals.reduce(0, +) / Double(vals.count)).rounded())) over \(vals.count) days"))
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textSecondary)
+            }
+        }
+    }
+}

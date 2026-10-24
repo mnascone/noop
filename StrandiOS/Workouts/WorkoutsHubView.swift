@@ -7,6 +7,9 @@ import WhoopStore
 /// and the full history.
 struct WorkoutsHubView: View {
     @EnvironmentObject private var repo: Repository
+    @EnvironmentObject private var intelligence: IntelligenceEngine
+    @AppStorage(WorkoutCalendarPrefs.iconCountKey) private var iconCount = WorkoutCalendarPrefs.defaultIconCount
+    @AppStorage(WorkoutCalendarPrefs.priorityKey) private var priorityRaw = ""
     @ObservedObject private var tracker = AutoWorkoutTracker.shared
     @AppStorage(AutoTrackingPrefs.placesEnabledKey) private var placesEnabled = false
     @AppStorage(AutoTrackingPrefs.walkEnabledKey) private var walkEnabled = false
@@ -20,11 +23,14 @@ struct WorkoutsHubView: View {
     @State private var week = RestDayRules.Week(restDays: 0, trainingStreak: 0, trainedToday: false)
     /// Days run from waking to the next sleep, so the log is "since you last slept".
     @State private var wakeDays = RestDayRules.WakeDays.calendar
-    @State private var selectedDay = Repository.localDayKey(Date())
-    /// Whether the user picked a day; until then the log follows the current day.
-    @State private var pickedDay = false
+    /// A calendar day opened in its own sheet.
+    @State private var dayTarget: DayTarget?
+    @State private var addTarget: AddTarget?
     @State private var monthStart = MonthMath.startOfMonth(Date())
     @State private var detail: WorkoutDetailTarget?
+
+    private struct DayTarget: Identifiable { let key: String; var id: String { key } }
+    private struct AddTarget: Identifiable { let id = UUID(); let endingAt: Date? }
 
     private struct WorkoutDetailTarget: Identifiable {
         let row: WorkoutRow
@@ -32,30 +38,50 @@ struct WorkoutsHubView: View {
     }
 
     private var effortScale: EffortScale { UnitPrefs.resolveEffortScale(effortScaleRaw) }
+    private var priorityList: [String] { WorkoutCalendarPrefs.priority(priorityRaw) }
     /// The day you're in now: since your last sleep.
     private var todayKey: String { wakeDays.currentDayKey() }
 
     var body: some View {
         ScreenScaffold(title: "Workouts") {
-            ScrollViewReader { proxy in
-                VStack(alignment: .leading, spacing: NoopMetrics.space4) {
-                    WorkoutStartControl()
-                    LiveSessionCard()
-                    LiveIntervalCard()
-                    dayLog.id("dayLog")
-                    calendarCard { key in
-                        selectedDay = key
-                        pickedDay = true
-                        withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo("dayLog", anchor: .top) }
-                    }
-                    autoTrackingCard
-                    historyCard
-                }
+            VStack(alignment: .leading, spacing: NoopMetrics.space4) {
+                WorkoutStartControl()
+                LiveSessionCard()
+                LiveIntervalCard()
+                dayLog
+                // A tapped day opens in a sheet, so the page never jumps.
+                calendarCard { key in dayTarget = DayTarget(key: key) }
+                autoTrackingCard
+                historyCard
             }
         }
         .task(id: repo.refreshSeq) { await load() }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .debounce(for: .milliseconds(300), scheduler: RunLoop.main)) { _ in reapplyRules() }
+        .sheet(item: $dayTarget) { target in
+            NavigationStack {
+                ScrollView {
+                    dayLogCard(target.key, pushDetail: true)
+                        .padding(NoopMetrics.space4)
+                }
+                .background(StrandPalette.surfaceBase)
+                .navigationTitle(target.key == todayKey ? String(localized: "Today") : Self.dayTitle(target.key))
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { dayTarget = nil }
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { addTarget = AddTarget(endingAt: endTime(forDay: target.key)) } label: {
+                            Label("Add workout", systemImage: "plus")
+                        }
+                    }
+                }
+                .sheet(item: $addTarget) { add in addSheet(add) }
+            }
+            .noopSheetPresentation(largeFirst: false)
+        }
+        .sheet(item: dayTarget == nil ? $addTarget : .constant(nil)) { add in addSheet(add) }
         .sheet(item: $detail) { target in
             NavigationStack {
                 WorkoutDetailView(row: target.row)
@@ -76,7 +102,6 @@ struct WorkoutsHubView: View {
         if sleeps.isEmpty { sleeps = await repo.computedSleepSessions(from: from, to: now, limit: 1000) }
         let wakes = sleeps.filter { $0.endTs - $0.effectiveStartTs >= 3 * 3600 && $0.endTs <= now }.map(\.endTs)
         wakeDays = RestDayRules.WakeDays(wakes: wakes)
-        if !pickedDay { selectedDay = wakeDays.currentDayKey() }
         rows = loaded
         var grouped: [String: [WorkoutRow]] = [:]
         for r in loaded {
@@ -113,21 +138,26 @@ struct WorkoutsHubView: View {
 
     // MARK: - Day log
 
-    private var dayLog: some View {
-        let dayRows = byDay[selectedDay] ?? []
-        let isToday = selectedDay == todayKey
+    private var dayLog: some View { dayLogCard(todayKey, pushDetail: false) }
+
+    /// One day's workouts, inline. In the day sheet rows push their detail, on the page they open a sheet.
+    private func dayLogCard(_ key: String, pushDetail: Bool) -> some View {
+        let dayRows = byDay[key] ?? []
+        let isToday = key == todayKey
         return NoopCard(padding: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(isToday ? String(localized: "Today") : Self.dayTitle(selectedDay))
+                    Text(isToday ? String(localized: "Today") : Self.dayTitle(key))
                         .font(StrandFont.headline)
                         .foregroundStyle(StrandPalette.textPrimary)
                     Spacer()
-                    if !isToday {
-                        Button("Back to today") { selectedDay = todayKey; pickedDay = false }
-                            .font(StrandFont.footnote)
-                            .foregroundStyle(StrandPalette.accent)
-                            .buttonStyle(.plain)
+                    if !pushDetail {
+                        Button { addTarget = AddTarget(endingAt: nil) } label: {
+                            Label("Add", systemImage: "plus")
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.accent)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, NoopMetrics.cardPadding)
@@ -140,12 +170,37 @@ struct WorkoutsHubView: View {
                     .padding(.horizontal, NoopMetrics.cardPadding)
                     .padding(.bottom, dayRows.isEmpty ? NoopMetrics.cardPadding : NoopMetrics.space2)
 
-                ForEach(Array(dayRows.enumerated()), id: \.offset) { idx, row in
+                ForEach(Array(dayRows.enumerated()), id: \.offset) { _, row in
                     Divider().overlay(StrandPalette.hairline.opacity(0.5))
-                    logRow(row)
+                    if pushDetail {
+                        NavigationLink {
+                            WorkoutDetailView(row: row).environmentObject(repo)
+                        } label: { logRowLabel(row) }
+                        .buttonStyle(.plain)
+                    } else {
+                        Button { detail = WorkoutDetailTarget(row: row) } label: { logRowLabel(row) }
+                            .buttonStyle(.plain)
+                    }
                 }
             }
         }
+    }
+
+    /// A fresh manual workout. Saved, rescored from the strap's heart rate, and the log reloaded.
+    private func addSheet(_ add: AddTarget) -> some View {
+        ManualWorkoutSheet(editing: nil, endingAt: add.endingAt) { row, _ in
+            Task {
+                await repo.saveManualWorkout(row, replacing: nil)
+                await intelligence.analyzeRecent()
+                await load()
+            }
+        }
+    }
+
+    /// Default end for a workout added to a past day: 6 pm that day. Today: now.
+    private func endTime(forDay key: String) -> Date? {
+        guard key != todayKey, let d = Self.dayParser.date(from: key) else { return nil }
+        return Calendar.current.date(bySettingHour: 18, minute: 0, second: 0, of: d)
     }
 
     private func daySummary(_ dayRows: [WorkoutRow], isToday: Bool) -> String {
@@ -164,40 +219,37 @@ struct WorkoutsHubView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func logRow(_ row: WorkoutRow) -> some View {
+    private func logRowLabel(_ row: WorkoutRow) -> some View {
         let counts = rules.isTraining(row)
-        return Button { detail = WorkoutDetailTarget(row: row) } label: {
-            HStack(spacing: 12) {
-                WorkoutTypeIcon(workoutType: row.sport, size: 17,
-                                color: counts ? StrandPalette.effortColor : StrandPalette.textTertiary)
-                    .frame(width: 24)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(WorkoutSource.displaySport(row.sport))
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                        .lineLimit(1)
-                    Text(rowSubtitle(row, counts: counts))
-                        .font(StrandFont.footnote)
-                        .foregroundStyle(StrandPalette.textTertiary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                if let s = row.strain {
-                    Text(UnitFormatter.effortDisplay(s, scale: effortScale))
-                        .font(StrandFont.number(15))
-                        .foregroundStyle(StrandPalette.effortColor)
-                }
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
+        return HStack(spacing: 12) {
+            WorkoutTypeIcon(workoutType: row.sport, size: 17,
+                            color: counts ? StrandPalette.effortColor : StrandPalette.textTertiary)
+                .frame(width: 24)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(WorkoutSource.displaySport(row.sport))
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                    .lineLimit(1)
+                Text(rowSubtitle(row, counts: counts))
+                    .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
-                    .accessibilityHidden(true)
+                    .lineLimit(1)
             }
-            .padding(.horizontal, NoopMetrics.cardPadding)
-            .frame(minHeight: 56)
-            .contentShape(Rectangle())
+            Spacer(minLength: 8)
+            if let s = row.strain {
+                Text(UnitFormatter.effortDisplay(s, scale: effortScale))
+                    .font(StrandFont.number(15))
+                    .foregroundStyle(StrandPalette.effortColor)
+            }
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(StrandPalette.textTertiary)
+                .accessibilityHidden(true)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, NoopMetrics.cardPadding)
+        .frame(minHeight: 56)
+        .contentShape(Rectangle())
     }
 
     private func rowSubtitle(_ row: WorkoutRow, counts: Bool) -> String {
@@ -243,22 +295,27 @@ struct WorkoutsHubView: View {
                     Spacer()
                     stat(String(localized: "Rest this month"), "\(restCount)")
                 }
-                NavigationLink {
-                    RestDayRulesView(historySports: historySports)
-                } label: {
-                    HStack {
-                        Text("What counts as a rest day")
-                            .font(StrandFont.subhead)
-                            .foregroundStyle(StrandPalette.accent)
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(StrandPalette.textTertiary)
-                    }
-                }
-                .buttonStyle(.plain)
+                settingsLink("What counts as a rest day") { RestDayRulesView(historySports: historySports) }
+                settingsLink("Calendar logos") { WorkoutCalendarSettingsView(historySports: historySports) }
             }
         }
+    }
+
+    private func settingsLink<D: View>(_ title: LocalizedStringKey, @ViewBuilder _ dest: @escaping () -> D) -> some View {
+        NavigationLink {
+            dest()
+        } label: {
+            HStack {
+                Text(title)
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.accent)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(StrandPalette.textTertiary)
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     /// Sports from the user's own log, most frequent first.
@@ -270,16 +327,21 @@ struct WorkoutsHubView: View {
 
     private func dayCell(date: Date, key: String) -> some View {
         let dayTrained = trained[key]
-        let isSelected = key == selectedDay
         let isToday = key == todayKey
-        let top = dayTrained?.max { ($0.strain ?? 0) < ($1.strain ?? 0) }
+        let logos = WorkoutCalendarPrefs.logoSports(dayTrained ?? [], priority: priorityList,
+                                                    count: max(1, min(3, iconCount)))
         return VStack(spacing: 3) {
             Text("\(Calendar.current.component(.day, from: date))")
                 .font(StrandFont.caption)
                 .foregroundStyle(dayTrained != nil ? StrandPalette.textPrimary
                                  : (isToday ? StrandPalette.accent : StrandPalette.textSecondary))
-            if let top {
-                WorkoutTypeIcon(workoutType: top.sport, size: 12, color: StrandPalette.textPrimary)
+            if !logos.isEmpty {
+                HStack(spacing: 1) {
+                    ForEach(logos, id: \.self) { sport in
+                        WorkoutTypeIcon(workoutType: sport, size: logos.count == 1 ? 12 : 9,
+                                        color: StrandPalette.textPrimary)
+                    }
+                }
             } else if byDay[key] != nil {
                 Circle().fill(StrandPalette.textTertiary).frame(width: 4, height: 4)
             } else {
@@ -294,7 +356,7 @@ struct WorkoutsHubView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(isSelected ? StrandPalette.accent : Color.clear, lineWidth: 2)
+                .strokeBorder(isToday ? StrandPalette.accent : Color.clear, lineWidth: 1.5)
         )
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(Self.dayTitle(key)) + Text(", ")

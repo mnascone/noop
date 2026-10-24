@@ -620,8 +620,11 @@ struct WorkoutsView: View {
     /// so this screen doesn't have to — see the comment on `profile`/`intelligence` above.
     private var workoutActionRow: some View {
         HStack(spacing: NoopMetrics.rowSpacing) {
+            // iPhone starts workouts from the Workouts tab itself, so this list only adds past ones.
+            #if os(macOS)
             WorkoutStartControl()
                 .frame(maxWidth: .infinity)
+            #endif
             addWorkoutButton
                 .frame(maxWidth: .infinity)
         }

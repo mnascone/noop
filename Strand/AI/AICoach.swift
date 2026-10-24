@@ -985,11 +985,51 @@ final class AICoachEngine: ObservableObject {
         // with consent on), so it rides the SAME consent + text-only channel as the HRV/RHR summary, a
         // derived number, never raw R-R egress. Omitted when there aren't enough clean beats yet.
         if let line = await stressIndexLine() { ctx += "\n\n" + line }
+        if let block = await nutritionBlock() { ctx += "\n\n" + block }
         if includeOnDeviceSignals {
             let block = await onDeviceSignalsBlock()
             if !block.isEmpty { ctx += "\n\n" + block }
         }
         return ctx
+    }
+
+    /// Daily food totals from Apple Health (MacroFactor and other food logs write there), so the coach can
+    /// weigh intake against training and recovery. Day sums only, never individual foods. nil when nothing
+    /// was logged in the last two weeks.
+    func nutritionBlock() async -> String? {
+        async let kcalA = repo.series(key: NutritionKeys.kcal, source: "apple-health", days: 15)
+        async let proteinA = repo.series(key: NutritionKeys.protein, source: "apple-health", days: 15)
+        async let carbsA = repo.series(key: NutritionKeys.carbs, source: "apple-health", days: 15)
+        async let fatA = repo.series(key: NutritionKeys.fat, source: "apple-health", days: 15)
+        func byDay(_ s: [(day: String, value: Double)]) -> [String: Double] {
+            Dictionary(s.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
+        }
+        let kcal = byDay(await kcalA), protein = byDay(await proteinA)
+        let carbs = byDay(await carbsA), fat = byDay(await fatA)
+        let days = Set(kcal.keys).union(protein.keys).sorted()
+        guard !days.isEmpty else { return nil }
+        var lines = ["NUTRITION (daily totals from the user's food log via Apple Health, e.g. MacroFactor):"]
+        for day in days.suffix(7) {
+            var parts: [String] = []
+            if let v = kcal[day] { parts.append("\(Int(v.rounded())) kcal") }
+            if let v = protein[day] { parts.append("protein \(Int(v.rounded())) g") }
+            if let v = carbs[day] { parts.append("carbs \(Int(v.rounded())) g") }
+            if let v = fat[day] { parts.append("fat \(Int(v.rounded())) g") }
+            lines.append("  \(day): " + parts.joined(separator: ", "))
+        }
+        func avg(_ d: [String: Double]) -> String? {
+            d.isEmpty ? nil : "\(Int((d.values.reduce(0, +) / Double(d.count)).rounded()))"
+        }
+        var summary: [String] = []
+        if let a = avg(kcal) { summary.append("\(a) kcal") }
+        if let a = avg(protein) { summary.append("protein \(a) g") }
+        if let a = avg(carbs) { summary.append("carbs \(a) g") }
+        if let a = avg(fat) { summary.append("fat \(a) g") }
+        if !summary.isEmpty {
+            lines.append("  Average over \(days.count) logged days: " + summary.joined(separator: ", "))
+        }
+        lines.append("  A day with low kcal may just be a day not fully logged.")
+        return lines.joined(separator: "\n")
     }
 
     /// One derived stress line for the coach context: the Baevsky Stress Index over TODAY's R-R, read

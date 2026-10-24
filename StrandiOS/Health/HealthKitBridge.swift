@@ -135,7 +135,11 @@ final class HealthKitBridge: ObservableObject {
         // its own narrow type; Health Connect has no caffeine-only scope (caffeine is a field on
         // NutritionRecord, behind READ_NUTRITION — the whole food log), which is why Android is not
         // matched here. Never written back.
-        .dietaryCaffeine
+.dietaryCaffeine,
+        // Nutrition — READ-ONLY. Food-logging apps like MacroFactor write their daily totals to Health;
+        // the coach reads the day sums so it can weigh intake against training and recovery. Never
+        // written back.
+        .dietaryEnergyConsumed, .dietaryProtein, .dietaryCarbohydrates, .dietaryFatTotal
     ]
     private static let quantityWriteIds: [HKQuantityTypeIdentifier] = [
         .restingHeartRate, .heartRateVariabilitySDNN, .oxygenSaturation, .respiratoryRate
@@ -598,6 +602,22 @@ final class HealthKitBridge: ObservableObject {
             var a = agg(day); a.waterMl = v; byDay[day] = a
         }
 
+        // Nutrition day totals (MacroFactor and other food logs). Not part of `failedReads`: a missing
+        // permission or a failed read just leaves these days without nutrition, it must not hold the
+        // whole pass.
+        _ = await collect(.dietaryEnergyConsumed, unit: .kilocalorie(), start: start, end: end, op: .cumulativeSum) { day, v in
+            var a = agg(day); a.foodKcal = v; byDay[day] = a
+        }
+        _ = await collect(.dietaryProtein, unit: .gram(), start: start, end: end, op: .cumulativeSum) { day, v in
+            var a = agg(day); a.proteinG = v; byDay[day] = a
+        }
+        _ = await collect(.dietaryCarbohydrates, unit: .gram(), start: start, end: end, op: .cumulativeSum) { day, v in
+            var a = agg(day); a.carbsG = v; byDay[day] = a
+        }
+        _ = await collect(.dietaryFatTotal, unit: .gram(), start: start, end: end, op: .cumulativeSum) { day, v in
+            var a = agg(day); a.fatG = v; byDay[day] = a
+        }
+
         // Sleep minutes per day (asleep stages summed; attributed to wake day).
         await collectSleep(start: start, end: end) { day, asleepMin, deepMin, remMin, coreMin in
             var a = agg(day)
@@ -665,8 +685,14 @@ final class HealthKitBridge: ObservableObject {
                 coreMin: a.coreMin
             )
         }
-        let points = AppleHealthAggregator.metricPoints(aggregates)
+        var points = AppleHealthAggregator.metricPoints(aggregates)
             .map { MetricPoint(day: $0.day, key: $0.key, value: $0.value) }
+        for (day, a) in byDay {
+            for (key, v) in [(NutritionKeys.kcal, a.foodKcal), (NutritionKeys.protein, a.proteinG),
+                             (NutritionKeys.carbs, a.carbsG), (NutritionKeys.fat, a.fatG)] {
+                if let v, v > 0 { points.append(MetricPoint(day: day, key: key, value: v)) }
+            }
+        }
 
         // Workouts the user logged in Apple Health (Apple Watch rings, gym apps, etc.). macOS already
         // imports these from a static Health export and Android reads them from Health Connect; iOS now
@@ -1422,6 +1448,7 @@ final class HealthKitBridge: ObservableObject {
         var weightKg: Double?; var bodyFatPct: Double?; var leanMassKg: Double?; var bmi: Double?
         var asleepMin: Double?; var deepMin: Double?; var remMin: Double?; var coreMin: Double?
         var waterMl: Double?
+        var foodKcal: Double?; var proteinG: Double?; var carbsG: Double?; var fatG: Double?
     }
 
     /// Excludes NOOP's own write-back samples from reads, so the two-way sync never reads its own

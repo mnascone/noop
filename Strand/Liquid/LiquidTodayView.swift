@@ -398,6 +398,14 @@ struct LiquidTodayView: View {
                         // order they arranged. Empty (renders nothing) until they add one in Customise.
                         // Today-only, matching Android's addedCards section gate + the classic TodayView.
                         case .addedCards: if selectedDayOffset == 0 { hostedCardsSection }
+                        case .pacing:
+                            if selectedDayOffset == 0 {
+                                // Opens Performance, where both dials and the long-term read live.
+                                Button { router.requestedDestination = .trends } label: {
+                                    PacingDialCard(days: repo.days, effortScale: effortScale, mode: .short)
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
                     // Opt-in "looks like a workout?" suggestion, dropped in the liquid Home rewrite. Its
@@ -868,6 +876,8 @@ struct LiquidTodayView: View {
                 }
             }
         case .asleepDuration: AsleepDurationCard(data: AsleepDurationData.build(days: repo.days))
+        case .pacingBoth, .chargeCalendar, .trainingLoad, .sleepCalendar, .restWeek:
+            ExtraHostedCardView(card: card, effortScale: effortScale)
         case .stagesVsTypical:
             // Renders from the shared SleepModel built in load() (same inputs as the Sleep tab). Until that
             // async build lands — or on a device with no usable latest night — show the graceful placeholder
@@ -1229,7 +1239,7 @@ struct LiquidTodayView: View {
                         // readiness one-liner here — the same swap classic makes (`calibrationDetail ??
                         // synthesisCardDetail`), so the count the short greeting pill can't carry lands in
                         // the card and both Today screens read identically.
-                        Text(chargeDisplay.calibrationDetail ?? recommendationLine)
+                        Text(DailyRecommendation.styled(chargeDisplay.calibrationDetail ?? recommendationLine))
                             .font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                         if chargeDisplay.calibrationDetail == nil, !recommendationSourceLine.isEmpty {

@@ -52,12 +52,14 @@ final class HostedCardPrefsTests: XCTestCase {
         // The tap-to-log card must NOT navigate: its buttons are its purpose, and a wrapper would put a
         // second meaning behind the same press.
         XCTAssertNil(HostedCard.sleepMarks.route)
-        for card in HostedCard.allCases where card != .sleepMarks {
+        // The calendars and dials are their own tap targets (or have none), so they carry no route.
+        let selfContained: Set<HostedCard> = [.sleepMarks, .pacingBoth, .chargeCalendar, .sleepCalendar]
+        for card in HostedCard.allCases where !selfContained.contains(card) {
             XCTAssertNotNil(card.route, "\(card.rawValue) taps through to nothing")
         }
         // Sleep-origin cards land on the Sleep tab.
         let sleepOrigin = String(localized: "Sleep")
-        for card in HostedCard.allCases where card.origin == sleepOrigin && card != .sleepMarks {
+        for card in HostedCard.allCases where card.origin == sleepOrigin && !selfContained.contains(card) {
             XCTAssertEqual(card.route, .sleep, "\(card.rawValue) should open Sleep")
         }
         // Named explicitly, as the Kotlin twin names it: the generic checks above would still pass if

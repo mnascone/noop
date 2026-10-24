@@ -1967,6 +1967,10 @@ struct TodayView: View {
             if selectedDayOffset == 0 { JournalReminderCard() }
         case .addedCards:
             hostedCardsSection
+        case .pacing:
+            if selectedDayOffset == 0 {
+                PacingDialCard(days: repo.days, effortScale: effortScale, mode: .short)
+            }
         }
     }
 
@@ -2522,6 +2526,8 @@ struct TodayView: View {
                 }
             }
         case .asleepDuration: AsleepDurationCard(data: AsleepDurationData.build(days: repo.days))
+        case .pacingBoth, .chargeCalendar, .trainingLoad, .sleepCalendar, .restWeek:
+            ExtraHostedCardView(card: card, effortScale: effortScale)
         case .stagesVsTypical:
             // Renders from the shared SleepModel built in loadAll() (same inputs as the Sleep tab). Until the
             // async build lands — or on a device with no usable latest night — show the graceful placeholder,

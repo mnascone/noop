@@ -2,22 +2,93 @@ import SwiftUI
 import StrandDesign
 import StrandAnalytics
 import WhoopStore
+#if canImport(UIKit)
+import UIKit
+#else
+import AppKit
+#endif
 
-/// A month of nights: each day shows its sleep score and hours, colored by score. Tap one for its breakdown.
+/// The sleep calendar on its own page (from the Sleep tab's Calendar link).
 struct SleepCalendarView: View {
+    var body: some View {
+        ScrollView {
+            SleepCalendarCard(showsSummary: true)
+                .padding(NoopMetrics.space4)
+        }
+        .background(StrandPalette.surfaceBase)
+        .navigationTitle("Sleep calendar")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+    }
+}
+
+/// The colours the sleep calendar runs between, poor to good. Stored as "r,g,b" (0...1).
+enum SleepCalendarColors {
+    static let poorKey = "noop.sleepCalendar.poorColor"
+    static let goodKey = "noop.sleepCalendar.goodColor"
+    /// Light blue for a poor night, purple for a good one.
+    static let defaultPoor = (r: 0.62, g: 0.84, b: 0.98)
+    static let defaultGood = (r: 0.47, g: 0.24, b: 0.82)
+
+    typealias RGB = (r: Double, g: Double, b: Double)
+
+    static func rgb(_ raw: String, fallback: RGB) -> RGB {
+        let p = raw.split(separator: ",").compactMap { Double($0) }
+        guard p.count == 3 else { return fallback }
+        return (p[0], p[1], p[2])
+    }
+
+    static func encode(_ c: Color) -> String? {
+        #if canImport(UIKit)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard UIColor(c).getRed(&r, green: &g, blue: &b, alpha: &a) else { return nil }
+        #else
+        guard let ns = NSColor(c).usingColorSpace(.sRGB) else { return nil }
+        let r = ns.redComponent, g = ns.greenComponent, b = ns.blueComponent
+        #endif
+        func clamp(_ x: CGFloat) -> Double { min(1, max(0, Double(x))) }
+        return String(format: "%.3f,%.3f,%.3f", clamp(r), clamp(g), clamp(b))
+    }
+
+    /// Where a score sits between poor (40 and under) and good (95 and up).
+    static func fraction(_ score: Int) -> Double { min(1, max(0, (Double(score) - 40) / 55)) }
+
+    static func mix(_ a: RGB, _ b: RGB, _ t: Double) -> RGB {
+        (a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t)
+    }
+
+    static func color(_ c: RGB) -> Color { Color(red: c.r, green: c.g, blue: c.b) }
+
+    /// Readable text on top of a cell of this colour.
+    static func ink(_ c: RGB) -> Color {
+        (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) > 0.6 ? Color.black.opacity(0.85) : Color.white
+    }
+}
+
+/// A month of nights: each day shows its sleep score and hours, coloured from poor to good. Tap one for
+/// its breakdown. A Sleep tab card, a Today card, and the body of the full calendar page.
+struct SleepCalendarCard: View {
+    var showsSummary = false
+
     @EnvironmentObject private var repo: Repository
     @EnvironmentObject private var intelligence: IntelligenceEngine
     @EnvironmentObject private var profile: ProfileStore
+    @AppStorage(SleepCalendarColors.poorKey) private var poorRaw = ""
+    @AppStorage(SleepCalendarColors.goodKey) private var goodRaw = ""
 
     @State private var monthStart: Date = MonthMath.startOfMonth(Date())
 
     private struct Night { let score: Int?; let hours: Double? }
 
-    /// Scores for every banked day, computed once per data change.
-    private var nights: [String: Night] {
+    private var poor: SleepCalendarColors.RGB { SleepCalendarColors.rgb(poorRaw, fallback: SleepCalendarColors.defaultPoor) }
+    private var good: SleepCalendarColors.RGB { SleepCalendarColors.rgb(goodRaw, fallback: SleepCalendarColors.defaultGood) }
+
+    /// Scores for the shown month only.
+    private func nights(_ keys: Set<String>) -> [String: Night] {
         let inputs = SleepScoreInputs.resolve(intelligence: intelligence, days: repo.days, age: profile.age)
         var out: [String: Night] = [:]
-        for d in repo.days where (d.totalSleepMin ?? 0) > 0 {
+        for d in repo.days where keys.contains(d.day) && (d.totalSleepMin ?? 0) > 0 {
             let score = repo.importedSleep[d.day]?.performancePct
                 ?? AnalyticsEngine.Rest.composite(daily: d, needHours: inputs.needHours, consistency: inputs.consistency)
             out[d.day] = Night(score: score.map { Int($0.rounded()) }, hours: d.totalSleepMin.map { $0 / 60 })
@@ -26,9 +97,13 @@ struct SleepCalendarView: View {
     }
 
     var body: some View {
-        let data = nights
-        ScrollView {
-            VStack(alignment: .leading, spacing: NoopMetrics.space4) {
+        let keys = MonthMath.dayKeys(in: monthStart)
+        let data = nights(Set(keys))
+        NoopCard {
+            VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+                if !showsSummary {
+                    Text("Sleep calendar").strandOverline()
+                }
                 MonthHeader(monthStart: $monthStart)
                 MonthGrid(monthStart: monthStart) { date, key in
                     let night = data[key]
@@ -44,81 +119,113 @@ struct SleepCalendarView: View {
                     }
                 }
                 legend
-                monthSummary(data)
+                if showsSummary { monthSummary(keys, data) }
             }
-            .padding(NoopMetrics.space4)
-        }
-        .background(StrandPalette.surfaceBase)
-        .navigationTitle("Sleep calendar")
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
-    }
-
-    private func color(_ score: Int) -> Color {
-        switch score {
-        case 85...: return StrandPalette.restColor
-        case 70..<85: return StrandPalette.restColor.opacity(0.65)
-        case 50..<70: return StrandPalette.restColor.opacity(0.38)
-        default: return StrandPalette.restColor.opacity(0.18)
         }
     }
 
     private func cell(date: Date, night: Night?) -> some View {
         let isToday = Calendar.current.isDateInToday(date)
+        let rgb = night?.score.map { SleepCalendarColors.mix(poor, good, SleepCalendarColors.fraction($0)) }
+        let ink = rgb.map(SleepCalendarColors.ink)
         return VStack(spacing: 2) {
             Text("\(Calendar.current.component(.day, from: date))")
                 .font(StrandFont.caption)
-                .foregroundStyle(isToday ? StrandPalette.accent : StrandPalette.textSecondary)
+                .foregroundStyle(ink?.opacity(0.8) ?? (isToday ? StrandPalette.accent : StrandPalette.textSecondary))
             Text(night?.score.map(String.init) ?? " ")
                 .font(StrandFont.captionNumber)
-                .foregroundStyle(StrandPalette.textPrimary)
+                .foregroundStyle(ink ?? StrandPalette.textPrimary)
             Text(night?.hours.map { String(format: "%.1fh", $0) } ?? " ")
                 .font(.system(size: 9))
-                .foregroundStyle(StrandPalette.textTertiary)
+                .foregroundStyle(ink?.opacity(0.75) ?? StrandPalette.textTertiary)
         }
         .frame(maxWidth: .infinity, minHeight: 52)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(night?.score.map(color) ?? StrandPalette.surfaceInset.opacity(0.4))
+                .fill(rgb.map(SleepCalendarColors.color) ?? StrandPalette.surfaceInset.opacity(0.4))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(isToday ? StrandPalette.accent : Color.clear, lineWidth: 1.5)
         )
     }
 
     private var legend: some View {
-        HStack(spacing: NoopMetrics.space3) {
-            ForEach([(85, "85+"), (70, "70–84"), (50, "50–69"), (0, "under 50")], id: \.0) { s, label in
-                HStack(spacing: 4) {
-                    RoundedRectangle(cornerRadius: 3).fill(color(s)).frame(width: 12, height: 12)
-                    Text(LocalizedStringKey(label)).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                }
+        HStack(spacing: NoopMetrics.space2) {
+            Text("Poor").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+            LinearGradient(colors: [SleepCalendarColors.color(poor), SleepCalendarColors.color(good)],
+                           startPoint: .leading, endPoint: .trailing)
+                .frame(height: 8)
+                .clipShape(Capsule())
+            Text("Good").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+            NavigationLink {
+                SleepCalendarColorsView()
+            } label: {
+                Image(systemName: "paintpalette")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.accent)
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Calendar colours")
         }
     }
 
-    private func monthSummary(_ data: [String: Night]) -> some View {
-        let keys = MonthMath.dayKeys(in: monthStart)
+    private func monthSummary(_ keys: [String], _ data: [String: Night]) -> some View {
         let scores = keys.compactMap { data[$0]?.score }
         let hours = keys.compactMap { data[$0]?.hours }
-        return NoopCard {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Average score").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                    Text(scores.isEmpty ? "–" : "\(scores.reduce(0, +) / scores.count)")
-                        .font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
-                }
-                Spacer()
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Average sleep").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                    Text(hours.isEmpty ? "–" : String(format: "%.1f h", hours.reduce(0, +) / Double(hours.count)))
-                        .font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
-                }
-                Spacer()
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Nights").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                    Text("\(hours.count)").font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+        return HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Average score").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                Text(scores.isEmpty ? "–" : "\(scores.reduce(0, +) / scores.count)")
+                    .font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+            }
+            Spacer()
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Average sleep").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                Text(hours.isEmpty ? "–" : String(format: "%.1f h", hours.reduce(0, +) / Double(hours.count)))
+                    .font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+            }
+            Spacer()
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Nights").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                Text("\(hours.count)").font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+            }
+        }
+    }
+}
+
+/// Pick the two ends of the sleep calendar's colour scale.
+struct SleepCalendarColorsView: View {
+    @AppStorage(SleepCalendarColors.poorKey) private var poorRaw = ""
+    @AppStorage(SleepCalendarColors.goodKey) private var goodRaw = ""
+
+    private func binding(_ raw: Binding<String>, _ fallback: SleepCalendarColors.RGB) -> Binding<Color> {
+        Binding(
+            get: { SleepCalendarColors.color(SleepCalendarColors.rgb(raw.wrappedValue, fallback: fallback)) },
+            set: { if let s = SleepCalendarColors.encode($0) { raw.wrappedValue = s } })
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                ColorPicker("Poor sleep", selection: binding($poorRaw, SleepCalendarColors.defaultPoor),
+                            supportsOpacity: false)
+                ColorPicker("Good sleep", selection: binding($goodRaw, SleepCalendarColors.defaultGood),
+                            supportsOpacity: false)
+            } footer: {
+                Text("Nights in between blend from one to the other. 40 and under is fully poor, 95 and up fully good.")
+            }
+            Section {
+                Button("Reset to light blue and purple") {
+                    poorRaw = ""
+                    goodRaw = ""
                 }
             }
         }
+        .navigationTitle("Calendar colours")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
 }
 

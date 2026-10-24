@@ -34,6 +34,8 @@ enum SleepSection: String, CaseIterable, Identifiable {
     case sleepDebt
     case stagesVsTypical
     case asleepDuration
+    /// A month of nights, each colored by its score. Tap a day for its breakdown.
+    case calendar
 
     var id: String { rawValue }
 
@@ -47,6 +49,7 @@ enum SleepSection: String, CaseIterable, Identifiable {
         case .sleepDebt:       return String(localized: "Sleep-debt ledger")
         case .stagesVsTypical: return String(localized: "Stages vs typical")
         case .asleepDuration:  return String(localized: "Asleep duration")
+        case .calendar:        return String(localized: "Sleep calendar")
         }
     }
 
@@ -56,6 +59,7 @@ enum SleepSection: String, CaseIterable, Identifiable {
     /// card is a follow-up that requires hoisting the hero's edit/delete callbacks.)
     static let defaultOrder: [SleepSection] = [
         .sleepMarks, .stages, .bodyClock, .nightDetail, .sleepDebt, .stagesVsTypical, .asleepDuration,
+        .calendar,
     ]
 }
 

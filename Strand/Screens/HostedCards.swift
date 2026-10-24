@@ -65,6 +65,16 @@ enum HostedCard: String, CaseIterable, Identifiable {
     case trendRestingHR = "trends.restingHr"
     /// Trends tab · "Effort" — the trailing-month Effort trend, on the wearer's chosen scale (#268).
     case trendEffort = "trends.effort"
+    /// Trends · both pacing dials (short and long term) with the overall read.
+    case pacingBoth = "trends.pacing"
+    /// Trends · Charge as a month calendar.
+    case chargeCalendar = "trends.chargeCalendar"
+    /// Trends · chronic vs acute training load.
+    case trainingLoad = "trends.trainingLoad"
+    /// Sleep · the month of nights coloured poor to good.
+    case sleepCalendar = "sleep.calendar"
+    /// Workouts · the last 7 days, trained or rest.
+    case restWeek = "workouts.restWeek"
 
     var id: String { rawValue }
 
@@ -83,6 +93,11 @@ enum HostedCard: String, CaseIterable, Identifiable {
         case .trendHRV: return String(localized: "Heart rate variability")
         case .trendRestingHR: return String(localized: "Resting heart rate")
         case .trendEffort: return String(localized: "Effort")
+        case .pacingBoth: return String(localized: "Charge vs Effort pacing")
+        case .chargeCalendar: return String(localized: "Charge calendar")
+        case .trainingLoad: return String(localized: "Training load")
+        case .sleepCalendar: return String(localized: "Sleep calendar")
+        case .restWeek: return String(localized: "Training and rest days")
         }
     }
 
@@ -92,7 +107,10 @@ enum HostedCard: String, CaseIterable, Identifiable {
         switch self {
         case .sleepMarks, .asleepDuration, .stagesVsTypical, .nightDetail, .sleepDebt, .stages, .hoursVsNeeded, .consistency: return String(localized: "Sleep")
         case .stressToday: return String(localized: "Stress")
-        case .trendHRV, .trendRestingHR, .trendEffort: return String(localized: "Trends")
+        case .trendHRV, .trendRestingHR, .trendEffort, .pacingBoth, .chargeCalendar, .trainingLoad:
+            return String(localized: "Trends")
+        case .sleepCalendar: return String(localized: "Sleep")
+        case .restWeek: return String(localized: "Workouts")
         }
     }
 
@@ -118,6 +136,10 @@ enum HostedCard: String, CaseIterable, Identifiable {
         case .trendHRV: return .metricSourced(key: "hrv", source: "my-whoop")
         case .trendRestingHR: return .metricSourced(key: "rhr", source: "my-whoop")
         case .trendEffort: return .metricSourced(key: "strain", source: "my-whoop")
+        // The calendars are grids of their own links, and the dials explain themselves.
+        case .pacingBoth, .chargeCalendar, .sleepCalendar: return nil
+        case .trainingLoad: return .metricSourced(key: "strain", source: "my-whoop")
+        case .restWeek: return .workouts
         }
     }
 
@@ -136,6 +158,11 @@ enum HostedCard: String, CaseIterable, Identifiable {
         case .trendHRV: return "waveform.path.ecg"
         case .trendRestingHR: return "heart"
         case .trendEffort: return "bolt.fill"
+        case .pacingBoth: return "speedometer"
+        case .chargeCalendar: return "calendar"
+        case .trainingLoad: return "chart.line.uptrend.xyaxis"
+        case .sleepCalendar: return "calendar.badge.clock"
+        case .restWeek: return "figure.run"
         }
     }
 
@@ -147,6 +174,9 @@ enum HostedCard: String, CaseIterable, Identifiable {
         case .trendHRV: return StrandPalette.metricPurple
         case .trendRestingHR: return StrandPalette.metricRose
         case .trendEffort: return StrandPalette.effortColor
+        case .pacingBoth, .trainingLoad, .restWeek: return StrandPalette.effortColor
+        case .chargeCalendar: return StrandPalette.chargeColor
+        case .sleepCalendar: return StrandPalette.restColor
         }
     }
 

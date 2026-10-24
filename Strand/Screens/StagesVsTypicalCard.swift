@@ -91,11 +91,12 @@ struct StagesVsTypicalCard: View {
                             .frame(width: w * CGFloat(min(1, typical / max)))
                             .clipShape(Capsule(style: .continuous))
                     }
-                    // Typical-mean marker: a notch the bar's own height, inside it, so nothing pokes out.
+                    // Typical-mean marker: a thin cut through the bar in the card's own colour, exactly the
+                    // bar's height and clipped to it, so nothing pokes out above or below.
                     if let typical, typical > 0 {
-                        RoundedRectangle(cornerRadius: 1, style: .continuous)
-                            .fill(StrandPalette.textPrimary.opacity(0.85))
-                            .frame(width: 2.5, height: 12)
+                        Rectangle()
+                            .fill(StrandPalette.surfaceBase)
+                            .frame(width: 2, height: 12)
                             .position(x: Swift.min(w - 2, Swift.max(2, w * CGFloat(Swift.min(1, typical / max)))), y: 6)
                     }
                 }

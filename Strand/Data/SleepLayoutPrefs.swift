@@ -36,6 +36,12 @@ enum SleepSection: String, CaseIterable, Identifiable {
     case asleepDuration
     /// A month of nights, each colored by its score. Tap a day for its breakdown.
     case calendar
+    /// The Alarms entry.
+    case alarms
+    /// Naps for the shown day (edit, delete, add).
+    case naps
+    /// Sleep cycles, REM episodes and night structure.
+    case cycles
 
     var id: String { rawValue }
 
@@ -50,6 +56,9 @@ enum SleepSection: String, CaseIterable, Identifiable {
         case .stagesVsTypical: return String(localized: "Stages vs typical")
         case .asleepDuration:  return String(localized: "Asleep duration")
         case .calendar:        return String(localized: "Sleep calendar")
+        case .alarms:          return String(localized: "Alarms")
+        case .naps:            return String(localized: "Naps")
+        case .cycles:          return String(localized: "Cycles and REM")
         }
     }
 
@@ -58,8 +67,8 @@ enum SleepSection: String, CaseIterable, Identifiable {
     /// with Stages for now — it's drawn inside the stages hero; making it an independently arrangeable
     /// card is a follow-up that requires hoisting the hero's edit/delete callbacks.)
     static let defaultOrder: [SleepSection] = [
-        .sleepMarks, .stages, .bodyClock, .nightDetail, .sleepDebt, .stagesVsTypical, .asleepDuration,
-        .calendar,
+        .alarms, .sleepMarks, .stages, .naps, .cycles, .bodyClock, .nightDetail, .sleepDebt, .stagesVsTypical,
+        .asleepDuration, .calendar,
     ]
 }
 

@@ -185,7 +185,6 @@ struct SleepView: View {
                             .padding(.horizontal, -16)
                             .padding(.top, -24)
                             .staggeredAppear(index: 0)
-                        alarmsEntry
                         // #sleep-layout: the analytical cards render in the user's saved order minus the
                         // hidden set, below the pinned Rest hero. Reordered via the Arrange sheet.
                         ForEach(Array(sleepVisibleSections.enumerated()), id: \.element) { idx, section in
@@ -500,6 +499,9 @@ struct SleepView: View {
         case .stagesVsTypical: StagesVsTypicalCard(model: model)
         case .asleepDuration:  durationTrend(model)
         case .calendar:        SleepCalendarCard()
+        case .alarms:          alarmsEntry
+        case .naps:            if let night = shownNight(model) { napSection(night) }
+        case .cycles:          SleepCyclesCard(intervals: shownIntervals(model), staged: shownIsStaged(model))
         }
     }
 
@@ -702,12 +704,10 @@ struct SleepView: View {
                 nightNavHeader(trailing: model.night.spanLabel)
                 sleepWindowRow(model.night)
                 stageCard(model.night, intervals: model.intervals)
-                napSection(model.night)
             } else if let night = navNight {
                 nightNavHeader(trailing: night.spanLabel)
                 sleepWindowRow(night)
                 stageCard(night, intervals: night.intervals)
-                napSection(night)
             } else if let session = sessionRow(at: nightOffset) {
                 // Stage-less stub purely to reuse Night's date/time formatting.
                 let stub = Night(session: session, stages: Stages(awake: 0, light: 0, deep: 0, rem: 0),
@@ -722,12 +722,32 @@ struct SleepView: View {
                     tint: StrandPalette.restColor,
                     chart: { noStagePlaceholder }
                 )
-                napSection(stub)
             }
         }
         // Stale-highlight guard: browsing to another night clears the stage selection. Attached to
         // the always-present hero container (not a branch that gets swapped out mid-navigation).
         .onChange(of: nightOffset) { _ in selectedStage = nil }
+    }
+
+    /// The night the hero is showing (latest, or the one navigated to), for the cards that follow it.
+    private func shownNight(_ model: SleepModel) -> Night? {
+        if nightOffset == 0, !model.isStubNight { return model.night }
+        if let night = navNight { return night }
+        guard let session = sessionRow(at: nightOffset) else { return nil }
+        return Night(session: session, stages: Stages(awake: 0, light: 0, deep: 0, rem: 0),
+                     sourceBlocks: dayBlocks(at: nightOffset), habitualMidsleepSec: habitualMidsleepSec)
+    }
+
+    private func shownIntervals(_ model: SleepModel) -> [SleepInterval] {
+        if nightOffset == 0, !model.isStubNight { return model.intervals }
+        return navNight?.intervals ?? []
+    }
+
+    /// True when the shown night's stages are the strap's own per-epoch staging, not a reconstruction
+    /// from totals (imported nights), which can't carry real cycles.
+    private func shownIsStaged(_ model: SleepModel) -> Bool {
+        if nightOffset == 0, !model.isStubNight { return model.isPersistedHypnogram }
+        return navNight?.realSegments != nil
     }
 
     /// Naps card (#508): each of the day's sleep blocks OTHER than the night's main block, individually

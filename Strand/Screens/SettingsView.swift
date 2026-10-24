@@ -1759,6 +1759,25 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
 
                 rowDivider
+
+                // The Workouts calendar's rest-day rules and logos, also reachable from the calendar.
+                NavigationLink {
+                    WorkoutCalendarSettingsView()
+                } label: {
+                    HStack {
+                        Text("Workout calendar")
+                            .font(StrandFont.subhead)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(StrandPalette.textTertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                rowDivider
                 #endif
 
                 Toggle(isOn: $journalReminderEnabled) {

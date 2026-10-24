@@ -35,8 +35,11 @@ enum WorkoutCalendarPrefs {
     }
 }
 
+/// Workouts calendar settings: what counts as a rest day and which sports' logos show.
 struct WorkoutCalendarSettingsView: View {
-    let historySports: [String]
+    @EnvironmentObject private var repo: Repository
+    /// Sports from the user's own log, most frequent first. Loaded here so Settings can open this too.
+    @State private var historySports: [String] = []
 
     @AppStorage(WorkoutCalendarPrefs.iconCountKey) private var iconCount = WorkoutCalendarPrefs.defaultIconCount
     @AppStorage(WorkoutCalendarPrefs.priorityKey) private var priorityRaw = ""
@@ -60,6 +63,16 @@ struct WorkoutCalendarSettingsView: View {
 
     var body: some View {
         List {
+            Section {
+                NavigationLink {
+                    RestDayRulesView(historySports: historySports)
+                } label: {
+                    Label("What counts as a rest day", systemImage: "bed.double")
+                }
+            } footer: {
+                Text("Sports and the shortest workout that count as training.")
+            }
+
             Section {
                 Picker("Logos per day", selection: $iconCount) {
                     Text("1").tag(1)
@@ -111,7 +124,13 @@ struct WorkoutCalendarSettingsView: View {
             }
         }
         .environment(\.editMode, .constant(.active))
-        .navigationTitle("Calendar logos")
+        .navigationTitle("Calendar settings")
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            let rows = await repo.workoutRows(days: 400)
+            var counts: [String: Int] = [:]
+            for r in rows { counts[WorkoutSource.displaySport(r.sport), default: 0] += 1 }
+            historySports = counts.sorted { $0.value > $1.value }.map(\.key)
+        }
     }
 }

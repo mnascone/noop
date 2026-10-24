@@ -28,6 +28,8 @@ struct ExtraHostedCardView: View {
             SleepCalendarCard()
         case .restWeek:
             RestWeekCard()
+        case .fueling:
+            FuelingCard()
         default:
             EmptyView()
         }

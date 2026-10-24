@@ -295,8 +295,7 @@ struct WorkoutsHubView: View {
                     Spacer()
                     stat(String(localized: "Rest this month"), "\(restCount)")
                 }
-                settingsLink("What counts as a rest day") { RestDayRulesView(historySports: historySports) }
-                settingsLink("Calendar logos") { WorkoutCalendarSettingsView(historySports: historySports) }
+                settingsLink("Calendar settings") { WorkoutCalendarSettingsView() }
             }
         }
     }
@@ -318,13 +317,6 @@ struct WorkoutsHubView: View {
         .buttonStyle(.plain)
     }
 
-    /// Sports from the user's own log, most frequent first.
-    private var historySports: [String] {
-        var counts: [String: Int] = [:]
-        for r in rows { counts[WorkoutSource.displaySport(r.sport), default: 0] += 1 }
-        return counts.sorted { $0.value > $1.value }.map(\.key)
-    }
-
     private func dayCell(date: Date, key: String) -> some View {
         let dayTrained = trained[key]
         let isToday = key == todayKey
@@ -336,19 +328,14 @@ struct WorkoutsHubView: View {
                 .foregroundStyle(dayTrained != nil ? StrandPalette.textPrimary
                                  : (isToday ? StrandPalette.accent : StrandPalette.textSecondary))
             if !logos.isEmpty {
-                HStack(spacing: 1) {
-                    ForEach(logos, id: \.self) { sport in
-                        WorkoutTypeIcon(workoutType: sport, size: logos.count == 1 ? 12 : 9,
-                                        color: StrandPalette.textPrimary)
-                    }
-                }
+                logoCluster(logos)
             } else if byDay[key] != nil {
                 Circle().fill(StrandPalette.textTertiary).frame(width: 4, height: 4)
             } else {
                 Color.clear.frame(width: 4, height: 12)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 44)
+        .frame(maxWidth: .infinity, minHeight: iconCount >= 3 ? 58 : 48)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(dayTrained != nil ? StrandPalette.effortColor.opacity(0.85)
@@ -361,6 +348,36 @@ struct WorkoutsHubView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(Self.dayTitle(key)) + Text(", ")
             + Text(dayTrained != nil ? String(localized: "trained") : String(localized: "rest day")))
+    }
+
+    /// One logo sits alone; two sit side by side; three make a small triangle. Each gets its own disc so
+    /// they stay apart and readable at calendar size.
+    @ViewBuilder
+    private func logoCluster(_ sports: [String]) -> some View {
+        switch sports.count {
+        case 1:
+            WorkoutTypeIcon(workoutType: sports[0], size: 14, color: StrandPalette.textPrimary)
+        case 2:
+            HStack(spacing: 3) {
+                ForEach(sports, id: \.self) { logoDisc($0, size: 17) }
+            }
+        default:
+            VStack(spacing: 1) {
+                HStack(spacing: 2) {
+                    logoDisc(sports[0], size: 15)
+                    logoDisc(sports[1], size: 15)
+                }
+                logoDisc(sports[2], size: 15)
+            }
+        }
+    }
+
+    private func logoDisc(_ sport: String, size: CGFloat) -> some View {
+        ZStack {
+            Circle().fill(Color.black.opacity(0.18))
+            WorkoutTypeIcon(workoutType: sport, size: size * 0.6, color: StrandPalette.textPrimary)
+        }
+        .frame(width: size, height: size)
     }
 
     private func legendSwatch(_ color: Color, _ label: LocalizedStringKey) -> some View {

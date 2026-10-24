@@ -83,24 +83,12 @@ struct PacingDialCard: View {
         let today = Repository.localDayKey(Date())
         let short = PacingMath.pacing(days: days, todayKey: today, window: .short)
         let long = mode == .both ? PacingMath.pacing(days: days, todayKey: today, window: .long) : nil
-        NoopCard {
-            VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
-                switch mode {
-                case .short:
-                    SectionHeader("Pace vs Charge", overline: "Pacing", trailing: String(localized: "Last 3 days"))
-                    if let short {
-                        PacingDial(balance: short.balance, leftLabel: "Under", rightLabel: "Too hard")
-                            .frame(height: 118)
-                            .frame(maxWidth: .infinity)
-                        Text(Self.shortHeadline(short.balance))
-                            .font(StrandFont.subhead.weight(.semibold))
-                            .foregroundStyle(StrandPalette.textPrimary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        figures(short)
-                    } else {
-                        empty("Needs about 2 weeks of Charge and Effort to read your pace.")
-                    }
-                case .both:
+        switch mode {
+        case .short:
+            compactCard(short)
+        case .both:
+            NoopCard {
+                VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
                     SectionHeader("Charge vs Effort", overline: "Pacing")
                     if let overall = PacingMath.overall(short: short, long: long) {
                         Text(long == nil ? Self.shortHeadline(overall) : Self.longHeadline(overall))
@@ -125,8 +113,72 @@ struct PacingDialCard: View {
                     }
                 }
             }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    /// Today's compact row: a small gauge, one status word, one line, one line of numbers.
+    @ViewBuilder
+    private func compactCard(_ p: PacingMath.Pacing?) -> some View {
+        NoopCard {
+            HStack(alignment: .center, spacing: NoopMetrics.space3) {
+                PacingDial(balance: p?.balance ?? 0, compact: true, showsLabels: false)
+                    .frame(width: 72, height: 42)
+                    .opacity(p == nil ? 0.35 : 1)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text("Pace").font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+                        if let p {
+                            Text(Self.stateWord(p.balance))
+                                .font(StrandFont.caption.weight(.semibold))
+                                .foregroundStyle(Self.stateColor(p.balance))
+                                .padding(.horizontal, 7).padding(.vertical, 2)
+                                .background(Capsule().fill(Self.stateColor(p.balance).opacity(0.15)))
+                        }
+                        Spacer(minLength: 0)
+                        Text("3 days").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                    }
+                    if let p {
+                        Text(Self.compactLine(p.balance))
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                        Text(String(localized: "Effort \(UnitFormatter.effortDisplay(p.effortRecent, scale: effortScale)) vs \(UnitFormatter.effortDisplay(p.effortUsual, scale: effortScale)) usual · Charge \(Int(p.chargeRecent.rounded())) vs \(Int(p.chargeUsual.rounded()))"))
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    } else {
+                        Text("Needs about 2 weeks of data.")
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                    }
+                }
+            }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    static func stateWord(_ balance: Double) -> String {
+        switch PacingMath.state(balance) {
+        case .recovering: return String(localized: "Under")
+        case .balanced: return String(localized: "On pace")
+        case .overreaching: return String(localized: "Too hard")
+        }
+    }
+
+    /// Green at the easy end, red at the hard end, on the same ramp as the dial.
+    static func stateColor(_ balance: Double) -> Color {
+        StrandPalette.recoveryColor((1 - (balance + 1) / 2) * 100)
+    }
+
+    static func compactLine(_ balance: Double) -> String {
+        switch PacingMath.state(balance) {
+        case .recovering: return String(localized: "Charge can take more.")
+        case .balanced: return String(localized: "Effort matches your Charge.")
+        case .overreaching: return String(localized: "Ease off for a day or two.")
+        }
     }
 
     private func dialColumn(_ title: String, _ sub: String, _ p: PacingMath.Pacing?,
@@ -201,6 +253,7 @@ struct PacingDial: View {
     var leftLabel: LocalizedStringKey = "Recovering"
     var rightLabel: LocalizedStringKey = "Overreaching"
     var compact = false
+    var showsLabels = true
 
     var body: some View {
         Canvas { ctx, size in
@@ -226,13 +279,15 @@ struct PacingDial: View {
                            style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
             }
             // Speedometer ticks inside the arc, a longer one at the middle.
-            for i in 0...10 {
-                let a = Double.pi + Double.pi * Double(i) / 10
-                let inner = radius - lineWidth / 2 - (i == 5 ? (compact ? 8 : 11) : (compact ? 4 : 6))
+            let tickCount = compact ? 4 : 10
+            for i in 0...tickCount {
+                let a = Double.pi + Double.pi * Double(i) / Double(tickCount)
+                let isMid = i * 2 == tickCount
+                let inner = radius - lineWidth / 2 - (isMid ? (compact ? 6 : 11) : (compact ? 3 : 6))
                 var tick = Path()
                 tick.move(to: point(a, radius - lineWidth / 2 - 1))
                 tick.addLine(to: point(a, inner))
-                ctx.stroke(tick, with: .color(StrandPalette.textTertiary), lineWidth: i == 5 ? 2 : 1)
+                ctx.stroke(tick, with: .color(StrandPalette.textTertiary), lineWidth: isMid ? 2 : 1)
             }
             let angle = Double.pi + Double.pi * (balance + 1) / 2
             var needle = Path()
@@ -245,12 +300,16 @@ struct PacingDial: View {
                      with: .color(StrandPalette.textPrimary))
         }
         .overlay(alignment: .bottomLeading) {
-            Text(leftLabel).font(compact ? .system(size: 9) : StrandFont.caption)
-                .foregroundStyle(StrandPalette.textTertiary)
+            if showsLabels {
+                Text(leftLabel).font(compact ? .system(size: 9) : StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+            }
         }
         .overlay(alignment: .bottomTrailing) {
-            Text(rightLabel).font(compact ? .system(size: 9) : StrandFont.caption)
-                .foregroundStyle(StrandPalette.textTertiary)
+            if showsLabels {
+                Text(rightLabel).font(compact ? .system(size: 9) : StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+            }
         }
         .accessibilityLabel(Text("Pacing dial"))
         .accessibilityValue(Text(PacingMath.state(balance) == .recovering ? leftLabel

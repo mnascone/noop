@@ -100,6 +100,9 @@ extension SleepSection {
         case .stagesVsTypical: return "chart.bar"
         case .asleepDuration:  return "clock"
         case .calendar:        return "calendar"
+        case .alarms:          return "alarm"
+        case .naps:            return "powersleep"
+        case .cycles:          return "waveform.path"
         }
     }
 
@@ -115,6 +118,9 @@ extension SleepSection {
         case .stagesVsTypical: return StrandPalette.restColor
         case .asleepDuration:  return StrandPalette.restBright
         case .calendar:        return StrandPalette.restColor
+        case .alarms:          return StrandPalette.restColor
+        case .naps:            return StrandPalette.restBright
+        case .cycles:          return StrandPalette.metricPurple
         }
     }
 }

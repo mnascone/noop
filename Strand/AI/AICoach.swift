@@ -975,6 +975,24 @@ final class AICoachEngine: ObservableObject {
         return clean.isEmpty ? nil : clean
     }
 
+    private static let fuelingInstruction = """
+    Using the data above, judge my nutrition against my training in two or three short sentences: \
+    whether my carbs refilled glycogen for the load I did, whether protein was enough to recover, and \
+    whether I'm eating above or below what I burn and if that fits my weight trend. Say the one change \
+    that matters most. Plain and direct, no headings, no lists, no greeting.
+    """
+
+    /// The Performance tab's fueling read. Same gates as the other headless requests.
+    func generateFuelingRead(extra: String) async -> String? {
+        guard canRecommend, let key = resolvedKey else { return nil }
+        let context = await buildFullContext()
+        let wire: [(role: ChatMessage.Role, content: String)] =
+            [(.user, context + "\n\n" + extra + "\n\n---\n\n" + Self.fuelingInstruction)]
+        guard let reply = try? await callProvider(key: key, messages: wire) else { return nil }
+        let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? nil : clean
+    }
+
     /// Full data context = the metrics summary + recent workouts (+ an OPT-IN on-device-signals summary
     /// when the second consent is on). Used when the user has granted data access.
     func buildFullContext() async -> String {

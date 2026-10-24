@@ -2526,7 +2526,7 @@ struct TodayView: View {
                 }
             }
         case .asleepDuration: AsleepDurationCard(data: AsleepDurationData.build(days: repo.days))
-        case .pacingBoth, .chargeCalendar, .trainingLoad, .sleepCalendar, .restWeek:
+        case .pacingBoth, .chargeCalendar, .trainingLoad, .sleepCalendar, .restWeek, .fueling:
             ExtraHostedCardView(card: card, effortScale: effortScale)
         case .stagesVsTypical:
             // Renders from the shared SleepModel built in loadAll() (same inputs as the Sleep tab). Until the

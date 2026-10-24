@@ -63,6 +63,8 @@ struct ManualWorkoutSheet: View {
     /// Measured natural height of the floating suggestion panel's content, so the overlay can size
     /// itself (capped at 168) instead of being squeezed to the text field's height. See `suggestionList`.
     @State private var suggestionsHeight: CGFloat = 0
+    /// iPhone: the sport list opens as its own sheet instead of a dropdown under a text field.
+    @State private var showSportList = false
 
     /// `endingAt` seeds a fresh add's end time (a past day picked on the Workouts calendar); nil = now.
     init(editing: WorkoutRow? = nil, endingAt: Date? = nil,
@@ -153,7 +155,11 @@ struct ManualWorkoutSheet: View {
             header
             VStack(alignment: .leading, spacing: NoopMetrics.space4) {
                 field(String(localized: "Sport")) {
+                    #if os(iOS)
+                    sportButton
+                    #else
                     sportPicker
+                    #endif
                 }
                 // Raise the Sport field above the following rows so its floating suggestion dropdown
                 // (an overlay, see `sportPicker`) draws ON TOP of Start / End / Duration, not behind them.
@@ -227,6 +233,33 @@ struct ManualWorkoutSheet: View {
     private var showRecentSports: Bool {
         sport.trimmingCharacters(in: .whitespaces).isEmpty && !recentSports.isEmpty
     }
+
+    #if os(iOS)
+    /// iPhone: the chosen sport as a button. Tapping opens a searchable list with recents first, and a
+    /// row to use whatever was typed when it isn't in the list.
+    private var sportButton: some View {
+        Button { showSportList = true } label: {
+            HStack {
+                Text(sport.isEmpty ? String(localized: "Choose a sport") : sport)
+                    .font(StrandFont.body)
+                    .foregroundStyle(sport.isEmpty ? StrandPalette.textTertiary : StrandPalette.textPrimary)
+                Spacer()
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 11)
+            .background(StrandPalette.surfaceInset, in: inputShape)
+            .overlay(inputShape.strokeBorder(StrandPalette.hairline, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text("Sport, \(sport.isEmpty ? String(localized: "none chosen") : sport)"))
+        .sheet(isPresented: $showSportList) {
+            SportListSheet(selection: $sport, recents: recentSports)
+        }
+    }
+    #endif
 
     private var sportPicker: some View {
         TextField("e.g. Running", text: $sport)
@@ -514,5 +547,67 @@ struct ManualWorkoutSheet: View {
         sport: "Running", source: "manual", durationS: 3600, energyKcal: 540,
         avgHr: 148, maxHr: 172, strain: 12.4, distanceM: nil, zonesJSON: nil, notes: nil, steps: nil)) { _, _ in }
         .preferredColorScheme(.dark)
+}
+#endif
+
+#if os(iOS)
+/// The full sport list as a sheet: search at the top, your recent sports, then every activity, plus a
+/// row to keep what you typed when it isn't in the catalogue.
+private struct SportListSheet: View {
+    @Binding var selection: String
+    let recents: [String]
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    private var matches: [WorkoutCatalog.Sport] { WorkoutCatalog.matching(query) }
+    private var typed: String { query.trimmingCharacters(in: .whitespaces) }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if !typed.isEmpty, WorkoutCatalog.sport(named: typed) == nil {
+                    Section {
+                        row(typed, note: String(localized: "Use as typed"))
+                    }
+                }
+                if typed.isEmpty, !recents.isEmpty {
+                    Section("Recent") {
+                        ForEach(recents, id: \.self) { row($0, note: nil) }
+                    }
+                }
+                Section(typed.isEmpty ? "All activities" : "Matches") {
+                    ForEach(matches) { sp in row(sp.name, note: sp.isDistanceSport ? "GPS" : nil) }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sports")
+            .navigationTitle("Sport")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            }
+        }
+        .presentationDetents([.large])
+    }
+
+    private func row(_ name: String, note: String?) -> some View {
+        Button {
+            selection = name
+            dismiss()
+        } label: {
+            HStack {
+                Text(name).foregroundStyle(StrandPalette.textPrimary)
+                if let note {
+                    Text(note).font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                }
+                Spacer()
+                if name == selection {
+                    Image(systemName: "checkmark").foregroundStyle(StrandPalette.accent)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
 }
 #endif

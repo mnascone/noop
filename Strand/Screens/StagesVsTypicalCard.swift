@@ -87,18 +87,19 @@ struct StagesVsTypicalCard: View {
                     // mean for this stage. "Hatch = the context" — the liquid value sits under it.
                     if let typical, typical > 0 {
                         DiagonalHatch(spacing: 5, lineWidth: 1)
-                            .stroke(color.opacity(0.6), lineWidth: 1)
+                            .stroke(color.opacity(0.35), lineWidth: 1)
                             .frame(width: w * CGFloat(min(1, typical / max)))
                             .clipShape(Capsule(style: .continuous))
                     }
-                    // Crisp typical-mean marker so the exact mean still reads at a glance.
+                    // Typical-mean marker: a notch the bar's own height, inside it, so nothing pokes out.
                     if let typical, typical > 0 {
-                        Rectangle()
-                            .fill(StrandPalette.textPrimary)
-                            .frame(width: 2, height: 18)
-                            .position(x: w * CGFloat(min(1, typical / max)), y: 6)
+                        RoundedRectangle(cornerRadius: 1, style: .continuous)
+                            .fill(StrandPalette.textPrimary.opacity(0.85))
+                            .frame(width: 2.5, height: 12)
+                            .position(x: min(w - 2, max(2, w * CGFloat(min(1, typical / max)))), y: 6)
                     }
                 }
+                .clipShape(Capsule(style: .continuous))
             }
             .frame(height: 12)
             .accessibilityElement(children: .ignore)

@@ -10,9 +10,25 @@ struct LiveIntervalCard: View {
     @AppStorage(LiveRepTracker.enabledKey) private var repCounting = false
     @AppStorage(SetReadyPrefs.targetRestKey) private var targetRest = 120
     @State private var showSettings = false
+    @AppStorage(SetReadyPrefs.panelKey) private var showPanel = true
+    @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        if let mode = tracker.mode, let s = tracker.summary {
+        if !showPanel {
+            EmptyView()
+        } else if tracker.mode == nil, model.activeWorkout != nil {
+            // A sport that isn't tracked by default: offer it, rather than showing nothing.
+            Button { tracker.trackAsLifting() } label: {
+                Label("Track sets and rest", systemImage: "dumbbell")
+                    .font(StrandFont.subhead.weight(.semibold))
+                    .foregroundStyle(StrandPalette.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, NoopMetrics.space3)
+                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(StrandPalette.surfaceInset.opacity(0.7)))
+            }
+            .buttonStyle(.plain)
+        } else if let mode = tracker.mode, let s = tracker.summary {
             NoopCard(tint: StrandPalette.accent) {
                 VStack(alignment: .leading, spacing: NoopMetrics.space3) {
                     HStack {
@@ -48,6 +64,8 @@ struct LiveIntervalCard: View {
                         Spacer(minLength: 0)
                         if let r = tracker.readiness {
                             readyLight(r)
+                        } else if mode == .lifting, SetReadyPrefs.enabled {
+                            idleLight(s)
                         }
                     }
                     if mode == .lifting {
@@ -105,6 +123,31 @@ struct LiveIntervalCard: View {
                 .font(StrandFont.caption)
                 .foregroundStyle(StrandPalette.textTertiary)
                 .monospacedDigit()
+        }
+    }
+
+    /// The light between readings: grey while a set is on, or before the first one.
+    private func idleLight(_ s: WorkRestSegmenter.Summary) -> some View {
+        let word: String = {
+            switch s.phase {
+            case .working: return String(localized: "Lifting")
+            case .warmingUp: return String(localized: "Ready")
+            case .resting: return String(localized: "Resting")
+            }
+        }()
+        return VStack(spacing: 4) {
+            ZStack {
+                Circle().fill(StrandPalette.surfaceInset).frame(width: 64, height: 64)
+                Circle().fill(StrandPalette.textTertiary.opacity(0.5)).frame(width: 40, height: 40)
+                Text(word)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(StrandPalette.textPrimary)
+                    .minimumScaleFactor(0.7)
+                    .frame(width: 38)
+            }
+            Text(s.phase == .warmingUp ? "Next set light" : " ")
+                .font(StrandFont.caption)
+                .foregroundStyle(StrandPalette.textTertiary)
         }
     }
 

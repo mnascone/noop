@@ -71,6 +71,20 @@ final class SleepArchitectureTests: XCTestCase {
         XCTAssertEqual(r.cycleSpans.map(\.interrupted), [true, true, false])
     }
 
+    /// REM that returns after only 20 min of light sleep belongs to the same REM period: one cycle, not a
+    /// 20-minute one squeezed in.
+    func testRemReturningSoonClosesTheSameCycle() throws {
+        let segs = night([
+            (.light, 30), (.deep, 40), (.light, 20), (.rem, 10),
+            (.light, 20), (.rem, 8),
+            (.light, 50), (.deep, 10), (.light, 15), (.rem, 20),
+        ])
+        let r = try XCTUnwrap(SleepArchitecture.analyze(segs))
+        XCTAssertEqual(r.cycles, 2)
+        XCTAssertEqual(r.cycleSpans[0].minutes, 128, accuracy: 0.01)
+        XCTAssertEqual(r.cycleSpans[0].remMinutes, 18, accuracy: 0.01)
+    }
+
     func testTooShortReturnsNil() {
         XCTAssertNil(SleepArchitecture.analyze(night([(.light, 30), (.rem, 10)])))
     }

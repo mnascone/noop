@@ -109,6 +109,21 @@ final class LiveIntervalTracker: ObservableObject {
         startTickerIfNeeded()
     }
 
+    /// Track sets and rest for the running workout even though its sport isn't one tracked by default.
+    func trackAsLifting() {
+        guard let w = model?.activeWorkout, mode == nil else { return }
+        var seg = WorkRestSegmenter(mode: .lifting, sensitivity: AutoTrackingPrefs.intervalSensitivity)
+        for s in w.samples { seg.ingest(ts: s.ts, bpm: s.bpm) }
+        segmenter = seg
+        mode = .lifting
+        readyBasis = Self.basis(model)
+        buzzedForRest = nil
+        trackedStart = Int(w.start.timeIntervalSince1970)
+        trackedSport = w.sport
+        refresh()
+        startTickerIfNeeded()
+    }
+
     private func stop() {
         segmenter = nil
         mode = nil

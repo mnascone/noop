@@ -10,6 +10,8 @@ enum SetReadyPrefs {
     static let minRestKey = "noop.setReady.minRestS"
     static let targetRestKey = "noop.setReady.targetRestS"
     static let buzzKey = "noop.setReady.buzz"
+    /// The sets, rest timer, reps and ready light panel on the workout screens. On unless switched off.
+    static let panelKey = "noop.workoutSetPanel"
 
     private static var d: UserDefaults { .standard }
 

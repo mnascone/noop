@@ -35,8 +35,8 @@ struct SleepCyclesCard: View {
                 if let r = result {
                     HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space4) {
                         bigStat("\(r.cycles)", r.cycles == 1 ? String(localized: "cycle") : String(localized: "cycles"))
-                        bigStat(r.averageCycleMinutes.map { "\(Int($0.rounded()))" } ?? "–", String(localized: "min each"))
-                        bigStat(r.remLatencyMinutes.map { "\(Int($0.rounded()))" } ?? "–", String(localized: "min to REM"))
+                        bigStat(Self.minutes(r.cycleSpans.reduce(0) { $0 + $1.remMinutes }), String(localized: "REM in all"))
+                        bigStat(r.remLatencyMinutes.map(Self.minutes) ?? "–", String(localized: "to first REM"))
                     }
                     cycleStrip(r)
                     if let i = selected, r.cycleSpans.indices.contains(i) {

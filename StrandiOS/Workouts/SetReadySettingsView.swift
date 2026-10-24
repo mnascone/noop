@@ -13,6 +13,7 @@ struct SetReadySettingsView: View {
     @AppStorage(SetReadyPrefs.targetRestKey) private var targetRest = 120
     @AppStorage(SetReadyPrefs.buzzKey) private var buzz = false
     @AppStorage(LiveRepTracker.enabledKey) private var repCounting = false
+    @AppStorage(SetReadyPrefs.panelKey) private var showPanel = true
 
     /// Today's personal thresholds for a typical hard set (75% of heart-rate reserve).
     private var recommended: SetReadiness.Thresholds? {
@@ -32,6 +33,12 @@ struct SetReadySettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                Toggle("Sets and rest on the workout screen", isOn: $showPanel)
+            } footer: {
+                Text("During a workout: sets, the rest timer against your target, reps and the ready light. Off hides the panel on the workout screen and in Workouts. The Lock Screen banner fields are set separately.")
+            }
+
             Section {
                 Toggle("Ready-for-next-set light", isOn: $enabled)
                 Toggle("Buzz the strap when ready", isOn: $buzz).disabled(!enabled)

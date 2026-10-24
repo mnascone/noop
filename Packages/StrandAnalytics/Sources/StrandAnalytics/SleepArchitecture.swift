@@ -4,7 +4,8 @@ import Foundation
 ///
 /// A cycle is a stretch of non-REM sleep followed by a REM episode (the Feinberg-Floyd convention). REM
 /// runs split by less than `remMergeGapS` of other stages count as one episode, and an episode needs at
-/// least `minRemS` of REM to count. Typical adult nights run 4 to 6 cycles of 80 to 110 minutes, with the
+/// least `minRemS` of REM to count. REM that comes back after less than `minNremBeforeCycleS` of other
+/// sleep belongs to the same REM period, so it closes the same cycle rather than opening a 20-minute one. Typical adult nights run 4 to 6 cycles of 80 to 110 minutes, with the
 /// first REM 70 to 120 minutes after falling asleep and REM episodes getting longer toward morning.
 ///
 /// Stages come from heart rate and motion, so these are estimates of the pattern, not polysomnography.
@@ -85,9 +86,9 @@ public enum SleepArchitecture {
         public let trailingMinutes: Double
     }
 
-    public static let remMergeGapS: Double = 5 * 60
+    public static let remMergeGapS: Double = 10 * 60
     public static let minRemS: Double = 3 * 60
-    public static let minNremBeforeCycleS: Double = 15 * 60
+    public static let minNremBeforeCycleS: Double = 30 * 60
     public static let awakeningMinS: Double = 2 * 60
 
     public static func analyze(_ raw: [Segment]) -> Result? {

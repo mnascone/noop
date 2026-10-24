@@ -224,6 +224,19 @@ struct LiveStressGauge: View {
     let hrvBaseline: Double?
     let restingHR: Double?
     @EnvironmentObject private var live: LiveState
+    @EnvironmentObject private var repo: Repository
+    /// Today's latest scored hour (0-100) from the stored heart rate, shown when nothing is streaming live.
+    @State private var stored: (value: Double, at: Date)?
+
+    /// The newest scored hour of today's stress curve, rescaled from the shared 0-3 axis to 0-100.
+    private func loadStored() async {
+        guard let day = await StressDayCurve.today(repo: repo),
+              let h = day.result.hours.last(where: { $0.level != nil }), let l = h.level else {
+            stored = nil
+            return
+        }
+        stored = (min(100, max(0, l / 3 * 100)), Date(timeIntervalSince1970: TimeInterval(h.startTs)))
+    }
 
     static func level(rr: [Int], hrvBaseline: Double) -> Double? {
         let clean = rr.filter { $0 >= 300 && $0 <= 2000 }
@@ -243,7 +256,9 @@ struct LiveStressGauge: View {
     var body: some View {
         let hr = live.heartRate.map(Double.init)
         let active = hr.map { h in restingHR.map { h > $0 + 35 } ?? (h > 110) } ?? false
-        let value = hrvBaseline.flatMap { Self.level(rr: live.rrRecent, hrvBaseline: $0) }
+        let liveValue = hrvBaseline.flatMap { Self.level(rr: live.rrRecent, hrvBaseline: $0) }
+        // Live when the strap is streaming beat-to-beat intervals, else the latest stored hour.
+        let value = liveValue ?? stored?.value
         VStack(spacing: 4) {
             StressArc(value: active ? nil : value.map { $0 / 100 })
                 .frame(width: 96, height: 54)
@@ -255,15 +270,22 @@ struct LiveStressGauge: View {
                 }
             HStack(spacing: 4) {
                 Text("Stress").font(StrandFont.subhead.weight(.semibold)).foregroundStyle(StrandPalette.textPrimary)
-                Text(active ? String(localized: "Active") : value.map(Self.band) ?? String(localized: "No live HR"))
+                Text(active ? String(localized: "Active") : value.map(Self.band) ?? String(localized: "No data yet"))
                     .font(StrandFont.caption.weight(.semibold))
                     .foregroundStyle(value.map(Self.color) ?? StrandPalette.textTertiary)
                     .lineLimit(1)
             }
-            Text("live").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+            if liveValue != nil || active {
+                Text("live").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+            } else if let at = stored?.at {
+                (Text("as of ") + Text(at, style: .time))
+                    .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+            }
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
+        // Re-read when new data lands (a sync), so the stored value moves on without forcing one.
+        .task(id: repo.refreshSeq) { await loadStored() }
     }
 
     static func band(_ v: Double) -> String {

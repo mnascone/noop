@@ -92,7 +92,7 @@ struct BatteryCenterView: View {
                     VStack(alignment: .leading, spacing: NoopMetrics.space3) {
                         rangePicker
                         BatteryHistoryChart(points: history, rangeDays: range, height: 320)
-                        Text("From the strap's own battery log. Gaps are times it didn't report.")
+                        Text("From the strap's own battery log. Where it didn't report for a while, the line joins the readings either side.")
                             .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
                     }
                     .padding(NoopMetrics.space4)
@@ -312,7 +312,8 @@ private struct BigBattery: View {
     }
 }
 
-/// One battery reading for the chart. `segment` changes across a gap, so the line breaks there.
+/// One battery reading for the chart. `segment` changes across a gap over 90 minutes (kept for callers that
+/// want to mark gaps; the chart draws one continuous line).
 struct BatteryPoint: Identifiable, Equatable {
     let ts: Double
     let pct: Double
@@ -362,12 +363,10 @@ struct BatteryHistoryChart: View {
         let start = end.addingTimeInterval(-Double(rangeDays) * 86_400)
         Chart {
             ForEach(points) { p in
-                AreaMark(x: .value("Time", p.date), y: .value("Battery", p.pct),
-                         series: .value("Part", p.segment))
+                AreaMark(x: .value("Time", p.date), y: .value("Battery", p.pct))
                     .foregroundStyle(LinearGradient(colors: [StrandPalette.statusPositive.opacity(0.30), .clear],
                                                     startPoint: .top, endPoint: .bottom))
-                LineMark(x: .value("Time", p.date), y: .value("Battery", p.pct),
-                         series: .value("Part", p.segment))
+                LineMark(x: .value("Time", p.date), y: .value("Battery", p.pct))
                     .foregroundStyle(StrandPalette.statusPositive)
                     .lineStyle(StrokeStyle(lineWidth: 2))
             }

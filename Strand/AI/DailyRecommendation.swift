@@ -27,6 +27,8 @@ final class DailyRecommendation: ObservableObject {
     @Published private(set) var loading = false
     /// Whether the coach can answer at all (on, set up, data sharing allowed).
     @Published private(set) var available = false
+    /// Bumped by `forceRefresh()`; the loader re-asks when it changes.
+    @Published private(set) var refreshToken = 0
 
     private static let cacheKey = "noop.dailyRecommendation.cache"
     private var inFlightKey: String?
@@ -49,6 +51,14 @@ final class DailyRecommendation: ObservableObject {
             .joined(separator: "\n")
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         return (try? AttributedString(markdown: cleaned, options: options)) ?? AttributedString(cleaned)
+    }
+
+    /// Drop today's cached answer and ask the coach again (the refresh button on Today).
+    func forceRefresh() {
+        guard !loading else { return }
+        UserDefaults.standard.removeObject(forKey: Self.cacheKey)
+        aiText = nil
+        refreshToken += 1
     }
 
     /// Ask the coach once for these inputs. A cached answer for the same inputs is reused.
@@ -87,12 +97,13 @@ struct DailyRecommendationLoader: View {
     let charge: Double?
     let ruleAdvice: String?
     @EnvironmentObject private var coach: AICoachEngine
+    @ObservedObject private var rec = DailyRecommendation.shared
 
     var body: some View {
         Color.clear
             .allowsHitTesting(false)
             .accessibilityHidden(true)
-            .task(id: "\(inputs.cacheKey)|\(coach.provider.rawValue)|\(coach.isConfigured)|\(coach.dataConsent)") {
+            .task(id: "\(inputs.cacheKey)|\(coach.provider.rawValue)|\(coach.isConfigured)|\(coach.dataConsent)|\(rec.refreshToken)") {
                 await DailyRecommendation.shared.refresh(inputs, charge: charge, ruleAdvice: ruleAdvice, coach: coach)
             }
     }

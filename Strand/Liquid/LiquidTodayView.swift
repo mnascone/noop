@@ -1245,6 +1245,7 @@ struct LiquidTodayView: View {
                             Text(recommendationSourceLine)
                                 .font(StrandFont.caption)
                                 .foregroundStyle(StrandPalette.textTertiary)
+                                .padding(.trailing, 30)   // room for the refresh button over the corner
                         }
                         // The reason the count is not moving, when nights are arriving empty. Sits under
                         // the progress rather than replacing it: the wearer needs both the number and why.
@@ -1279,6 +1280,27 @@ struct LiquidTodayView: View {
             }
             .buttonStyle(LiquidPressStyle())
             .accessibilityHint(coachEnabled ? Text("Opens the coach") : Text(""))
+            // Ask the coach for a fresh brief. Sits over the card's corner rather than inside the card's
+            // own button, so its tap isn't taken as "open the coach".
+            .overlay(alignment: .bottomTrailing) {
+                if coachEnabled, selectedDayOffset == 0, recommendation.available {
+                    Button { recommendation.forceRefresh() } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(StrandFont.footnote.weight(.semibold))
+                            .foregroundStyle(recommendation.loading ? StrandPalette.textTertiary : StrandPalette.accent)
+                            .rotationEffect(.degrees(recommendation.loading ? 180 : 0))
+                            .animation(recommendation.loading
+                                       ? .linear(duration: 0.8).repeatForever(autoreverses: false) : .default,
+                                       value: recommendation.loading)
+                            .padding(10)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(recommendation.loading)
+                    .padding(.trailing, 6).padding(.bottom, 4)
+                    .accessibilityLabel("Refresh the brief")
+                }
+            }
             .background {
                 if coachEnabled, selectedDayOffset == 0, let week = restWeek {
                     DailyRecommendationLoader(inputs: recommendationInputs(week), charge: chargeDisplay.pct,

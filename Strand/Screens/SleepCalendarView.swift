@@ -239,69 +239,35 @@ struct SleepCalendarCard: View {
     /// This month against the month before: score and sleep, with the direction.
     @ViewBuilder
     private func monthTrend(_ keys: [String], _ data: [String: Night]) -> some View {
-        if let prevStart = Calendar.current.date(byAdding: .month, value: -1, to: monthStart) {
-            let prevKeys = MonthMath.dayKeys(in: MonthMath.startOfMonth(prevStart))
-            let prev = nights(Set(prevKeys))
-            let cur = keys.compactMap { data[$0]?.score }
-            let old = prevKeys.compactMap { prev[$0]?.score }
-            let curH = keys.compactMap { data[$0]?.hours }
-            let oldH = prevKeys.compactMap { prev[$0]?.hours }
-            if cur.count >= 3, old.count >= 3 {
-                let ds = Double(cur.reduce(0, +)) / Double(cur.count) - Double(old.reduce(0, +)) / Double(old.count)
-                let dh = (curH.isEmpty || oldH.isEmpty) ? 0
-                    : (curH.reduce(0, +) / Double(curH.count) - oldH.reduce(0, +) / Double(oldH.count)) * 60
-                HStack(spacing: 6) {
-                    Image(systemName: ds >= 0 ? "arrow.up.right" : "arrow.down.right")
-                        .foregroundStyle(ds >= 0 ? StrandPalette.recovery100 : StrandPalette.recovery030)
-                    Text(String(format: String(localized: "Score %+.0f and sleep %+.0f min a night vs last month"), ds, dh))
-                        .font(StrandFont.caption)
-                        .foregroundStyle(StrandPalette.textSecondary)
-                }
+        if let delta = monthDelta(keys, data) {
+            HStack(spacing: 6) {
+                Image(systemName: delta.score >= 0 ? "arrow.up.right" : "arrow.down.right")
+                    .foregroundStyle(delta.score >= 0 ? StrandPalette.recovery100 : StrandPalette.recovery030)
+                Text(String(format: String(localized: "Score %+.0f and sleep %+.0f min a night vs last month"),
+                            delta.score, delta.sleepMin))
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textSecondary)
             }
         }
     }
 
-    private var legend: some View {
-        HStack(spacing: NoopMetrics.space2) {
-            Text("Poor").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-            LinearGradient(colors: [SleepCalendarColors.color(poor), SleepCalendarColors.color(good)],
-                           startPoint: .leading, endPoint: .trailing)
-                .frame(height: 8)
-                .clipShape(Capsule())
-            Text("Good").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-            NavigationLink {
-                SleepCalendarColorsView()
-            } label: {
-                Image(systemName: "paintpalette")
-                    .font(StrandFont.footnote)
-                    .foregroundStyle(StrandPalette.accent)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Calendar colours")
-        }
+    private static func mean(_ x: [Double]) -> Double? {
+        x.isEmpty ? nil : x.reduce(0, +) / Double(x.count)
     }
 
-    private func monthSummary(_ keys: [String], _ data: [String: Night]) -> some View {
-        let scores = keys.compactMap { data[$0]?.score }
-        let hours = keys.compactMap { data[$0]?.hours }
-        return HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Average score").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                Text(scores.isEmpty ? "–" : "\(scores.reduce(0, +) / scores.count)")
-                    .font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
-            }
-            Spacer()
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Average sleep").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                Text(hours.isEmpty ? "–" : String(format: "%.1f h", hours.reduce(0, +) / Double(hours.count)))
-                    .font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
-            }
-            Spacer()
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Nights").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                Text("\(hours.count)").font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
-            }
-        }
+    /// Average score and minutes asleep against the previous month, nil under 3 scored nights in either.
+    private func monthDelta(_ keys: [String], _ data: [String: Night]) -> (score: Double, sleepMin: Double)? {
+        guard let prevStart = Calendar.current.date(byAdding: .month, value: -1, to: monthStart) else { return nil }
+        let prevKeys: [String] = MonthMath.dayKeys(in: MonthMath.startOfMonth(prevStart))
+        let prev: [String: Night] = nights(Set(prevKeys))
+        let cur: [Double] = keys.compactMap { data[$0]?.score }.map(Double.init)
+        let old: [Double] = prevKeys.compactMap { prev[$0]?.score }.map(Double.init)
+        guard cur.count >= 3, old.count >= 3, let a = Self.mean(cur), let b = Self.mean(old) else { return nil }
+        let curH: [Double] = keys.compactMap { data[$0]?.hours }
+        let oldH: [Double] = prevKeys.compactMap { prev[$0]?.hours }
+        var dh = 0.0
+        if let x = Self.mean(curH), let y = Self.mean(oldH) { dh = (x - y) * 60 }
+        return (a - b, dh)
     }
 }
 

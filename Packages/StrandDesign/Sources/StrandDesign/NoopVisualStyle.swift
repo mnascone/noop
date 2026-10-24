@@ -32,7 +32,7 @@ public enum NoopVisualStyle {
     public static let pagePadding: CGFloat = 16
     public static let cardPadding: CGFloat = 16
     public static let itemGap: CGFloat = 12
-    public static let sectionGap: CGFloat = 26
+    public static let sectionGap: CGFloat = 20
 }
 
 /// Shared card/panel treatment: a solid surface on iOS, gradient and soft elevation elsewhere.

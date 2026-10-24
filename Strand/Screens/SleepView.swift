@@ -144,6 +144,33 @@ struct SleepView: View {
         SleepLayoutPrefs.visibleOrder(orderRaw: sleepSectionOrderRaw, hiddenRaw: sleepHiddenSectionsRaw)
     }
 
+    /// True when the score card is first, so it sits on the night scene at the top of the screen.
+    private var heroLeads: Bool { sleepVisibleSections.first == .lastNight }
+
+    /// The score card. First: edge to edge over the fixed night scene, with Customize at its foot.
+    /// Anywhere else: the same content on its own clipped piece of the scene, so the white type stays
+    /// readable on the plain canvas.
+    @ViewBuilder
+    private func lastNightCard(_ model: SleepModel, leads: Bool) -> some View {
+        if leads {
+            // Bleed past ScreenScaffold's gutters so the hero column is edge-to-edge in the upper band.
+            restHero(model, showsAffordance: true)
+                .padding(.horizontal, -16)
+                .padding(.top, -16)
+        } else {
+            restHero(model, showsAffordance: false)
+                .padding(.vertical, 10)
+                .background(alignment: .top) {
+                    SleepPerformanceNightScene()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 440, alignment: .top)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: NoopMetrics.cardRadius, style: .continuous))
+        }
+    }
+
     var body: some View {
         // Resolve the memoized model for THIS render. `dataKey` is O(1)-ish (counts + last-row
         // identity), so comparing it every render is cheap. When it matches the cached key we
@@ -166,7 +193,7 @@ struct SleepView: View {
                        // re-evaluates this heavy body.
                        onRefresh: { await repo.refresh() },
                        lazy: true,
-                       topBackground: resolved == nil ? nil : AnyView(sleepNightTopBackground)) {
+                       topBackground: resolved == nil || !heroLeads ? nil : AnyView(sleepNightTopBackground)) {
             Group {
                 if let resolved {
                     // Each top-level section fades + rises in sequence on first appear (Reduce-Motion safe).
@@ -178,17 +205,16 @@ struct SleepView: View {
                                             message: "This night's sleep times or total asleep changed by at least five minutes.",
                                             symbol: "checkmark.circle")
                         }
-                        // Bleed past ScreenScaffold's 16/24 gutters so the hero column is edge-to-edge
-                        // in the upper band; the night scene itself is the fixed topBackground.
-                        // Customize sits at the end of the hero (not floating in a blank band).
-                        restHero(resolved)
-                            .padding(.horizontal, -16)
-                            .padding(.top, -24)
-                            .staggeredAppear(index: 0)
-                        // #sleep-layout: the analytical cards render in the user's saved order minus the
-                        // hidden set, below the pinned Rest hero. Reordered via the Arrange sheet.
+                        // Customize must stay reachable when the score card is moved down or hidden.
+                        if !heroLeads { sleepArrangeAffordance }
+                        // #sleep-layout: every card, the score included, renders in the user's saved order
+                        // minus the hidden set. Reordered via the Arrange sheet.
                         ForEach(Array(sleepVisibleSections.enumerated()), id: \.element) { idx, section in
-                            sleepSectionView(section, resolved).staggeredAppear(index: idx + 1)
+                            if section == .lastNight {
+                                lastNightCard(resolved, leads: idx == 0).staggeredAppear(index: idx)
+                            } else {
+                                sleepSectionView(section, resolved).staggeredAppear(index: idx + 1)
+                            }
                         }
                     }
                 } else {
@@ -502,6 +528,7 @@ struct SleepView: View {
         case .alarms:          alarmsEntry
         case .naps:            if let night = shownNight(model) { napSection(night) }
         case .cycles:          SleepCyclesCard(intervals: shownIntervals(model), staged: shownIsStaged(model))
+        case .lastNight:       lastNightCard(model, leads: false)
         }
     }
 
@@ -554,7 +581,7 @@ struct SleepView: View {
     /// performance ring, state word, source badge. Night scene lives on ScreenScaffold.topBackground
     /// (fixed under the status bar); this column only owns the readable content. Presentation-only.
     @ViewBuilder
-    private func restHero(_ model: SleepModel) -> some View {
+    private func restHero(_ model: SleepModel, showsAffordance: Bool = true) -> some View {
         let night = heroNight(model)
         let score = performanceScore(for: night)
         VStack(spacing: 0) {
@@ -622,10 +649,14 @@ struct SleepView: View {
             .padding(.top, 8)
 
             // Subtle Customize (and the calendar) at the hero foot — functional, not competing with the gauge.
-            sleepArrangeAffordance
-                .padding(.horizontal, 16)
-                .padding(.top, 6)
-                .padding(.bottom, 6)
+            if showsAffordance {
+                sleepArrangeAffordance
+                    .padding(.horizontal, 16)
+                    .padding(.top, 6)
+                    .padding(.bottom, 6)
+            } else {
+                Color.clear.frame(height: 8)
+            }
         }
         .frame(maxWidth: .infinity)
     }

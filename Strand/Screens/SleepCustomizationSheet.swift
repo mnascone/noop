@@ -103,6 +103,7 @@ extension SleepSection {
         case .alarms:          return "alarm"
         case .naps:            return "powersleep"
         case .cycles:          return "waveform.path"
+        case .lastNight:       return "moon.stars"
         }
     }
 
@@ -121,6 +122,7 @@ extension SleepSection {
         case .alarms:          return StrandPalette.restColor
         case .naps:            return StrandPalette.restBright
         case .cycles:          return StrandPalette.metricPurple
+        case .lastNight:       return StrandPalette.restColor
         }
     }
 }

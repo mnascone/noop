@@ -50,7 +50,7 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
             // Unified side margins matching the floating navigation bar so every page's cards + header line up
             // to the same edges (2026-07-02); macOS keeps the classic 28 in the #else branch.
             .padding(.horizontal, NoopMetrics.screenHPadding)
-            .padding(.top, 24)
+            .padding(.top, 16)
             // The tab bar floats over the scroll content, so the last card sat hidden behind it.
             // Reserve extra bottom scroll room so every screen's final card clears the floating bar.
             .padding(.bottom, tabBarBottomClearance ?? NoopMetrics.tabBarClearance)
@@ -103,12 +103,12 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
     /// the previous layout. `@ViewBuilder` lets the two stack types resolve to one opaque return.
     @ViewBuilder private var column: some View {
         if lazy {
-            LazyVStack(alignment: .leading, spacing: 20) {
+            LazyVStack(alignment: .leading, spacing: 16) {
                 if title != nil || subtitle != nil { header }
                 content()
             }
         } else {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 16) {
                 if title != nil || subtitle != nil { header }
                 content()
             }

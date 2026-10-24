@@ -36,6 +36,8 @@ struct CoachView: View {
     /// The id typed in the "Custom…" field.
     @State private var customModelDraft: String = ""
     @FocusState private var composerFocused: Bool
+    /// The conversation's natural height, so the transcript card is only as tall as it needs to be.
+    @State private var transcriptHeight: CGFloat = 220
 
     /// K2: confirmation gate for the destructive "Clear conversation" toolbar action.
     @State private var showClearConfirm = false
@@ -66,7 +68,9 @@ struct CoachView: View {
                        topBackground: liquidScaffoldSky()) {
             if coach.isConfigured {
                 connectedHeader
-                transcript
+                // Typing re-renders this screen on every key; the transcript (Markdown in every bubble)
+                // only re-renders when the conversation itself changes.
+                TranscriptGate(key: transcriptKey) { transcript }.equatable()
                 if let error = coach.errorText, !error.isEmpty {
                     errorBanner(error)
                 }
@@ -176,9 +180,11 @@ struct CoachView: View {
             guard coach.isConfigured else { return }
             await coach.send(prompt)
         }
-        // K15: persist the composer draft so it survives an app relaunch.
-        .onChangeCompat(of: draft) { newValue in
-            UserDefaults.standard.set(newValue, forKey: Self.draftKey)
+        // K15: persist the composer draft so it survives an app relaunch. Saved once typing pauses, not on
+        // every key: each write wakes every UserDefaults observer in the app.
+        .task(id: draft) {
+            do { try await Task.sleep(nanoseconds: 600_000_000) } catch { return }
+            UserDefaults.standard.set(draft, forKey: Self.draftKey)
         }
         // K14: haptic feedback when a reply arrives (sending goes true → false).
         .onChangeCompat(of: coach.sending) { isSending in
@@ -475,8 +481,15 @@ struct CoachView: View {
     }
     #endif
 
+    /// What the transcript draws from: changes only when a message is added, streams more text, or the
+    /// sending state flips.
+    private var transcriptKey: String {
+        let last = coach.messages.last
+        return "\(coach.messages.count)|\(last?.id.uuidString ?? "")|\(last?.text.count ?? 0)|\(coach.sending)|\(Int(transcriptHeight))"
+    }
+
     private var transcript: some View {
-        StrandCard(padding: 16) {
+        StrandCard(padding: 12) {
             if coach.messages.isEmpty {
                 emptyTranscript
             } else {
@@ -484,7 +497,7 @@ struct CoachView: View {
                     ScrollView {
                         // Lazy so off-screen bubbles aren't all resident/laid-out at once; with the
                         // `maxStoredMessages` cap the transcript is already bounded, this keeps render cost flat.
-                        LazyVStack(alignment: .leading, spacing: 12) {
+                        LazyVStack(alignment: .leading, spacing: 10) {
                             ForEach(coach.messages) { message in
                                 bubble(message).id(message.id)
                             }
@@ -494,6 +507,14 @@ struct CoachView: View {
                         }
                         .padding(.vertical, 2)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        // The card hugs a short conversation instead of holding a fixed tall box.
+                        .background(GeometryReader { g in
+                            Color.clear.preference(key: TranscriptHeightKey.self, value: g.size.height)
+                        })
+                    }
+                    .onPreferenceChange(TranscriptHeightKey.self) { h in
+                        let rounded = (h / 8).rounded(.up) * 8
+                        if abs(rounded - transcriptHeight) >= 8 { transcriptHeight = rounded }
                     }
                     // #697 parity: this screen builds its OWN ScrollView rather than going through
                     // ScreenScaffold, so it never inherited the scaffold's horizontal-bounce suppression and
@@ -503,7 +524,7 @@ struct CoachView: View {
                     #if os(iOS)
                     .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
                     #endif
-                    .frame(minHeight: 220, maxHeight: 460)
+                    .frame(height: min(max(transcriptHeight, 56), 520))
                     .onChangeCompat(of: coach.messages.count) { _ in
                         scrollToEnd(proxy)
                     }
@@ -525,7 +546,7 @@ struct CoachView: View {
                 .foregroundStyle(StrandPalette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
@@ -533,14 +554,14 @@ struct CoachView: View {
         switch message.role {
         case .user:
             HStack {
-                Spacer(minLength: 48)
+                Spacer(minLength: 40)
                 Text(message.text)
                     .font(StrandFont.body)
                     .foregroundStyle(StrandPalette.surfaceBase)
                     .textSelection(.enabled)
                     .multilineTextAlignment(.leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                     .background(StrandPalette.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .frame(maxWidth: 520, alignment: .trailing)
             }
@@ -556,9 +577,9 @@ struct CoachView: View {
                     .markdownTheme(.strand)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .frostedCardSurface(tint: StrandPalette.chargeColor, cornerRadius: 16)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .frostedCardSurface(tint: StrandPalette.chargeColor, cornerRadius: 14)
                     .frame(maxWidth: 560, alignment: .leading)
                     // K8: Copy / Share / Save context menu on assistant replies.
                     .contextMenu {
@@ -581,7 +602,7 @@ struct CoachView: View {
                             Label("Save to Journal", systemImage: "square.and.pencil")
                         }
                     }
-                Spacer(minLength: 48)
+                Spacer(minLength: 24)
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Coach said: \(message.text)")
@@ -956,4 +977,18 @@ struct CoachView: View {
             }
         }
     }
+}
+
+/// Draws `content` only when `key` changes, so unrelated state (the draft being typed) doesn't rebuild an
+/// expensive subtree.
+private struct TranscriptGate<Content: View>: View, Equatable {
+    let key: String
+    @ViewBuilder let content: () -> Content
+    static func == (a: Self, b: Self) -> Bool { a.key == b.key }
+    var body: some View { content() }
+}
+
+private struct TranscriptHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }

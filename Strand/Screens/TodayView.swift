@@ -1971,6 +1971,10 @@ struct TodayView: View {
             if selectedDayOffset == 0 {
                 PacingDialCard(days: repo.days, effortScale: effortScale, mode: .short)
             }
+        case .feel:
+            if selectedDayOffset == 0 {
+                NoopCard { FeelCheckInContent(charge: displayDay?.recovery) }
+            }
         }
     }
 

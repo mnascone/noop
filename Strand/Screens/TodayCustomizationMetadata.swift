@@ -16,6 +16,7 @@ extension TodaySection {
         case .journal: return "book.closed"
         case .addedCards: return "rectangle.stack.badge.plus"
         case .pacing: return "speedometer"
+        case .feel: return "face.smiling"
         }
     }
 
@@ -33,6 +34,7 @@ extension TodaySection {
         case .journal: return StrandPalette.metricAmber
         case .addedCards: return StrandPalette.accent
         case .pacing: return StrandPalette.effortColor
+        case .feel: return StrandPalette.metricAmber
         }
     }
 }

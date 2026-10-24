@@ -100,6 +100,7 @@ struct LiquidTodayView: View {
     /// Rest days and training streak from the workout log, judged by the user's rest-day rules. Today only.
     @State private var restWeek: RestDayRules.Week?
     @ObservedObject private var recommendation = DailyRecommendation.shared
+    @ObservedObject private var feelStore = FeelStore.shared
     @State private var showLiveSession = false
 
     /// Live Sessions (silent guardian) beta gate — the SAME key the Settings toggle writes. Default ON
@@ -404,6 +405,10 @@ struct LiquidTodayView: View {
                                 // gauge beside it starts a live measurement on tap.
                                 PacingDialCard(days: repo.days, effortScale: effortScale, mode: .short,
                                                onOpen: { router.requestedDestination = .trends })
+                            }
+                        case .feel:
+                            if selectedDayOffset == 0 {
+                                card { FeelCheckInContent(charge: chargeDisplay.pct) }
                             }
                         }
                     }
@@ -1314,12 +1319,17 @@ struct LiquidTodayView: View {
         DailyRecommendation.Inputs(
             day: Repository.localDayKey(Date()),
             chargeBucket: chargeDisplay.pct.map { Int(($0 / 5).rounded()) * 5 },
-            restDays: week.restDays, trainingStreak: week.trainingStreak, trainedToday: week.trainedToday)
+            restDays: week.restDays, trainingStreak: week.trainingStreak, trainedToday: week.trainedToday,
+            feel: feelStore.todayKeyPart)
     }
 
     /// The coach's call when there is one for today, else the readiness line plus the rest-day rule.
     private var recommendationLine: String {
         if selectedDayOffset == 0, coachEnabled, let ai = recommendation.aiText { return ai }
+        if selectedDayOffset == 0, let t = feelStore.today,
+           let feelAdvice = FeelCheckIn.advice(charge: chargeDisplay.pct, feel: t.feel, reasons: t.reasons) {
+            return synthLine + " " + feelAdvice
+        }
         guard selectedDayOffset == 0, let week = restWeek,
               let advice = RestDayRules.advice(charge: chargeDisplay.pct, week: week) else { return synthLine }
         return synthLine + " " + advice
@@ -1327,9 +1337,12 @@ struct LiquidTodayView: View {
 
     private var recommendationSourceLine: String {
         guard selectedDayOffset == 0 else { return String(localized: "Your read for this day.") }
+        // How you feel is named beside the source, so the advice never reads as if the strap measured it.
+        let felt = feelStore.today.flatMap { $0.feel == .asScored ? nil : $0 }
+            .map { " " + String(localized: "Adjusted for how you said you feel: \(FeelStore.describe($0)).") } ?? ""
         if coachEnabled, recommendation.aiText != nil {
-            return restWeek.map { String(localized: "From your coach. Rest days in the last 7: \($0.restDays).") }
-                ?? String(localized: "From your coach.")
+            return (restWeek.map { String(localized: "From your coach. Rest days in the last 7: \($0.restDays).") }
+                ?? String(localized: "From your coach.")) + felt
         }
         if coachEnabled, recommendation.loading { return String(localized: "Asking your coach...") }
         let rest = restWeek.map { String(localized: "Rest days in the last 7: \($0.restDays).") } ?? ""

@@ -40,6 +40,9 @@ enum TodaySection: String, CaseIterable, Identifiable {
     /// Short-term pace: the last 3 days of Effort against Charge, as a speedometer. Declared last so the
     /// stored keys above keep their order; placed under Synthesis by default.
     case pacing
+    /// "I feel different from my score": a one-tap check-in. Declared last so stored keys keep their
+    /// order; placed right under For Today by default, whose advice it adjusts.
+    case feel
 
     var id: String { rawValue }
 
@@ -58,13 +61,14 @@ enum TodaySection: String, CaseIterable, Identifiable {
         case .journal:        return String(localized: "Journal")
         case .addedCards:     return String(localized: "Added Cards")
         case .pacing:         return String(localized: "Pace vs Charge")
+        case .feel:           return String(localized: "How you feel")
         }
     }
 
     /// The original, hard-coded section order — the default when the layout isn't customised. The journal
     /// widget (#656) is last by default, where it was first added, above the data-sources card.
     static let defaultOrder: [TodaySection] = [
-        .hero, .liveSession, .synthesis, .pacing, .keyMetrics, .workouts, .heartRate, .recoveryVitals,
+        .hero, .liveSession, .synthesis, .feel, .pacing, .keyMetrics, .workouts, .heartRate, .recoveryVitals,
         .yourCards, .menstrualCycle, .journal, .addedCards,
     ]
 }

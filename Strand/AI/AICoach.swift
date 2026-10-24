@@ -977,6 +977,10 @@ final class AICoachEngine: ObservableObject {
     Weigh today's charge against how many rest days I've had this week and what I trained recently, \
     with cardio and lifting load judged separately: a big lift is not a reason to skip cardio unless \
     a vital (charge, HRV, resting heart rate, sleep) says so, and then name it. \
+    If I've said how I feel, that is my own report, separate from Charge: never restate or reinterpret \
+    Charge because of it, but adapt the session (feeling off or sore on a good day means an easier \
+    session or other muscles, unwell means rest, feeling good on a low day allows a light session at \
+    most). \
     Name the session (or rest) and one thing to watch. Talk like a friend who coaches: plain, direct, \
     no headings, no lists, no greeting, no sign-off, no exclamation marks.
     """
@@ -1003,6 +1007,13 @@ final class AICoachEngine: ObservableObject {
         // with consent on), so it rides the SAME consent + text-only channel as the HRV/RHR summary, a
         // derived number, never raw R-R egress. Omitted when there aren't enough clean beats yet.
         if let line = await stressIndexLine() { ctx += "\n\n" + line }
+        // Self-reported check-ins, labelled as such, with any repeated patterns.
+        let feelRows = await repo.workoutRows(days: 120)
+        var sportsByDay: [String: [String]] = [:]
+        for w in feelRows {
+            sportsByDay[Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(w.startTs))), default: []].append(w.sport)
+        }
+        if let block = FeelStore.shared.coachBlock(sportsByDay: sportsByDay) { ctx += "\n\n" + block }
         if includeOnDeviceSignals {
             let block = await onDeviceSignalsBlock()
             if !block.isEmpty { ctx += "\n\n" + block }

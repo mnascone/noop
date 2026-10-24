@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import SwiftUI
+import StrandAnalytics
 
 /// Today's recommendation for the Today card: the AI coach's call when it's set up, the rule-based one
 /// otherwise. One request per day and set of inputs, cached across launches, so opening Today doesn't
@@ -16,9 +17,11 @@ final class DailyRecommendation: ObservableObject {
         var restDays: Int
         var trainingStreak: Int
         var trainedToday: Bool
+        /// Today's check-in ("off:sore"), "-" when none. Part of the key, so a check-in asks again.
+        var feel: String = "-"
 
         var cacheKey: String {
-            "\(day)|\(chargeBucket.map(String.init) ?? "-")|\(restDays)|\(trainingStreak)|\(trainedToday)"
+            "\(day)|\(chargeBucket.map(String.init) ?? "-")|\(restDays)|\(trainingStreak)|\(trainedToday)|\(feel)"
         }
     }
 
@@ -83,6 +86,12 @@ final class DailyRecommendation: ObservableObject {
         extra.append("  Days in a row with training: \(inputs.trainingStreak)")
         extra.append("  Already trained today: \(inputs.trainedToday ? "yes" : "no")")
         if let ruleAdvice { extra.append("  Rule-based read: \(ruleAdvice)") }
+        if let t = FeelStore.shared.today, t.feel != .asScored {
+            extra.append("  How I say I feel today (my own report, not measured): \(FeelStore.describe(t))")
+            if let hint = FeelCheckIn.advice(charge: charge, feel: t.feel, reasons: t.reasons) {
+                extra.append("  Feel-adjusted rule: \(hint)")
+            }
+        }
 
         guard let text = await coach.generateDailyRecommendation(extra: extra.joined(separator: "\n")) else { return }
         UserDefaults.standard.set(["key": key, "text": text], forKey: Self.cacheKey)

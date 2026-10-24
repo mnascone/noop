@@ -328,6 +328,7 @@ struct LiquidTodayView: View {
 
     /// Scroll-to-top on an at-root Today re-tap (#198 follow-up); default 0 so macOS/other contexts stay inert.
     @Environment(\.scrollToTopSignal) private var scrollToTopSignal
+    @Environment(\.tabBarBottomClearance) private var tabBarBottomClearance
     private static let topAnchorID = "liquidToday.top"
 
     var body: some View {
@@ -408,7 +409,7 @@ struct LiquidTodayView: View {
                     // so it renders nothing by default.
                     AutoWorkoutCard()
                     dataSourcesSection
-                    Color.clear.frame(height: 90) // floating tab-bar clearance
+                    Color.clear.frame(height: tabBarBottomClearance ?? 90) // tab-bar clearance
                 }
                 .padding(.horizontal, NoopMetrics.screenHPadding)
                 .padding(.top, 30) // sit the title lower into the sky, not jammed under the status bar
@@ -1296,11 +1297,11 @@ struct LiquidTodayView: View {
     private var recommendationSourceLine: String {
         guard selectedDayOffset == 0 else { return String(localized: "Your read for this day.") }
         if coachEnabled, recommendation.aiText != nil {
-            return restWeek.map { String(localized: "From your coach. Rest days this week: \($0.restDays).") }
+            return restWeek.map { String(localized: "From your coach. Rest days in the last 7: \($0.restDays).") }
                 ?? String(localized: "From your coach.")
         }
         if coachEnabled, recommendation.loading { return String(localized: "Asking your coach...") }
-        let rest = restWeek.map { String(localized: "Rest days this week: \($0.restDays).") } ?? ""
+        let rest = restWeek.map { String(localized: "Rest days in the last 7: \($0.restDays).") } ?? ""
         guard coachEnabled, !recommendation.available else { return rest }
         return (rest + " " + String(localized: "Set up the coach for a personal call."))
             .trimmingCharacters(in: .whitespaces)

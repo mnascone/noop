@@ -40,7 +40,7 @@ enum RestDayRules {
         var minMinutes: Int
 
         static func current(_ d: UserDefaults = .standard) -> Snapshot {
-            Snapshot(light: lightSports(d), minMinutes: minMinutes(d))
+            Snapshot(light: RestDayRules.lightSports(d), minMinutes: RestDayRules.minMinutes(d))
         }
 
         func isTraining(_ row: WorkoutRow) -> Bool {

@@ -787,9 +787,18 @@ struct TrendsView: View {
                 if recoveryDays.isEmpty {
                     sparsePlaceholder.frame(height: 120)
                 } else {
+                    #if os(iOS)
+                    // Month calendars read the normal way on a phone; the week-column strip ran days
+                    // down the screen.
+                    ChargeYearCalendar(
+                        scores: Dictionary(recent.compactMap { d in d.recovery.map { (d.day, $0) } },
+                                           uniquingKeysWith: { _, last in last }),
+                        months: min(36, max(12, Int((Double(stripDays) / 30.4).rounded(.up)))))
+                    #else
                     ScrollView(.horizontal, showsIndicators: false) {
                         YearHeatStrip(days: recoveryDays).padding(.vertical, NoopMetrics.space1 / 2)
                     }
+                    #endif
                     Divider().overlay(StrandPalette.hairline)
                     legend
                 }

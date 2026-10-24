@@ -46,6 +46,22 @@ struct RootTabView: View {
     /// Selected tab — bound so tab switches can crossfade (README §Motion: ~240ms opacity swap
     /// between tab roots, calm easing). Defaults to Today.
     @State private var selectedTab: Int = 0
+    /// The tab bar as measured by `TabBarProbe`, the largest seen (the bar shrinks while minimised, and
+    /// the clearance shouldn't jump mid-scroll). nil until measured.
+    @State private var tabBarReading: TabBarProbe.Reading?
+    /// Height of the gym-session bar while it shows, so content clears it too.
+    @State private var liftBarHeight: CGFloat = 0
+
+    /// Bottom room for every tab's scroll content: just past the tab bar (and the session bar).
+    private var bottomClearance: CGFloat? {
+        tabBarReading.map { $0.overlap + 14 + (liftSession.isActive ? liftBarHeight : 0) }
+    }
+
+    private func recordTabBar(_ r: TabBarProbe.Reading) {
+        let merged = TabBarProbe.Reading(overlap: max(r.overlap, tabBarReading?.overlap ?? 0),
+                                         rise: max(r.rise, tabBarReading?.rise ?? 0))
+        if merged != tabBarReading { tabBarReading = merged }
+    }
     /// One `NavigationPath` per tab, indexed by tab tag. Re-tapping the already-active tab pops
     /// that tab's stack to its root (#135) by clearing its path — an animated pop that leaves the
     /// root view alive, so an at-root re-tap keeps scroll position and never re-runs `.task`
@@ -89,10 +105,6 @@ struct RootTabView: View {
         )
     }
 
-    /// Tab tags in on-screen order: Today, Sleep, Workouts, Performance, More. Tags are identities kept from
-    /// the older layout (Performance reuses Trends' 1), so paths and scroll positions stay put.
-    static let visibleTabOrder = [0, 2, 5, 1, 4]
-
     private func reselectTab(_ tag: Int) {
         Task { await repo.refresh() }
         if !tabPaths[tag].isEmpty {
@@ -100,32 +112,6 @@ struct RootTabView: View {
         } else {
             scrollTop[tag] += 1
         }
-    }
-
-    /// The anywhere-swipe tab-switch drag (2026-07-02). Held as a property so the attachment site can
-    /// enable or disable it through a `GestureMask` instead of attaching it conditionally: a conditional
-    /// attachment changes view identity, and this condition toggles on every push and pop, which would
-    /// rebuild the tab roots underneath it. The same class of rebuild is what #197 caused with an
-    /// `.id()` reset and #198 had to undo — it lost scroll position and re-ran `.task`.
-    ///
-    /// Only a decisive horizontal flick switches tabs, and Today is carved out because it uses
-    /// horizontal swipe to change DAYS. Both thresholds are unchanged from the original gesture.
-    private var tabSwipeGesture: some Gesture {
-        DragGesture(minimumDistance: 24)
-            .onEnded { v in
-                // Today (tab 0) uses horizontal swipe to change DAYS, so tab-swipe is off there.
-                guard selectedTab != 0 else { return }
-                let dx = v.translation.width, dy = v.translation.height
-                guard abs(dx) > 60, abs(dx) > abs(dy) * 1.6 else { return }
-                // Tags are identities, not positions (Workouts is tag 5 but sits third), so step through
-                // the visible order.
-                let order = Self.visibleTabOrder
-                guard let i = order.firstIndex(of: selectedTab) else { return }
-                let next = order[min(order.count - 1, max(0, i + (dx < 0 ? 1 : -1)))]
-                if next != selectedTab {
-                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = next }
-                }
-            }
     }
 
     var body: some View {
@@ -147,27 +133,6 @@ struct RootTabView: View {
             // Tab crossfade — README §Motion: ~240ms opacity swap between tab roots, global calm
             // easing cubic-bezier(0.22,1,0.36,1).
             .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24), value: selectedTab)
-            // Swipe left/right anywhere to move between tabs (2026-07-02), but ONLY while the current
-            // tab is at its root. Attaching this ancestor drag gesture unconditionally defeated the
-            // edge-restriction of a pushed NavigationStack screen's native interactive-pop gesture —
-            // any More-tab subscreen (Settings, Devices, …) became draggable/rubber-banding from
-            // anywhere, not just the left edge (#519). Disabling the recognizer once a push is active,
-            // rather than just gating the onEnded action, is what stops the interference: the action
-            // never runs early enough, because the recognizer competes during recognition.
-            //
-            // The mask does that WITHOUT changing view identity. #519 attached the gesture through a
-            // conditional ViewModifier, which put the two states in separate _ConditionalContent
-            // branches — and since this condition toggles on every push and pop, each navigation
-            // rebuilt the whole TabView subtree and could reset @State inside the tab roots (scroll
-            // offsets, chart ranges, expanded sections). `including:` keeps one view type in both
-            // states, so nothing is torn down.
-            //
-            // The mask MUST be `.subviews`, not `.none`. `.subviews` means "enable the subview
-            // hierarchy's gestures, disable the added one" — exactly this requirement. `.none` disables
-            // the subview hierarchy TOO, which on a pushed screen would take out scrolling, taps and the
-            // interactive-pop itself: far worse than the bug being fixed.
-            .simultaneousGesture(tabSwipeGesture,
-                                 including: tabPaths[selectedTab].isEmpty ? .all : .subviews)
         .task {
             await repo.refresh()
             // Backup & Sync: on-launch catch-up (see RootView). Detached + utility priority so a
@@ -270,9 +235,13 @@ struct RootTabView: View {
             if liftSession.isActive {
                 LiftSessionBar()
                     .padding(.horizontal, 14)
-                    // Clear the floating tab bar with the same constant every screen uses, or the
-                    // session bar sits on top of the tab labels.
-                    .padding(.bottom, NoopMetrics.tabBarClearance)
+                    // Sit just above the tab bar as measured, else the old fixed gap.
+                    .padding(.bottom, tabBarReading.map { $0.rise + 8 } ?? NoopMetrics.tabBarClearance)
+                    .background(GeometryReader { g in
+                        Color.clear
+                            .onAppear { liftBarHeight = g.size.height }
+                            .onChange(of: g.size.height) { _, h in liftBarHeight = h }
+                    })
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -439,10 +408,12 @@ struct RootTabView: View {
         // TabRoute values, registered here ONCE per stack (a double registration double-pushes, #38).
         NavigationStack(path: path) {
             view
+                .background(TabBarProbe(onMeasure: recordTabBar))
                 .background(StrandPalette.surfaceBase.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
                 .tabRouteDestinations()
         }
+        .environment(\.tabBarBottomClearance, bottomClearance)
         // Drive this tab's root scroll-to-top on an at-root re-tap (#198 follow-up); read by ScreenScaffold
         // / LiquidTodayView inside. Only THIS tab's token changes on its reselect, so the others don't scroll.
         .environment(\.scrollToTopSignal, scrollSignal)
@@ -529,6 +500,7 @@ struct RootTabView: View {
                     .toolbarBackground(.hidden, for: .navigationBar)
             }
         }
+        .environment(\.tabBarBottomClearance, bottomClearance)
         // Scroll the More index to the top on an at-root re-tap (#198 follow-up); read by its ScreenScaffold.
         .environment(\.scrollToTopSignal, scrollSignal)
         .tabItem { Label("More", systemImage: "ellipsis") }

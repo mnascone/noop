@@ -37,6 +37,7 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
     /// at-root re-tap of the active tab (#198 follow-up). Default 0 never changes, so macOS and every
     /// non-tab screen keep their exact prior scroll behaviour.
     @Environment(\.scrollToTopSignal) private var scrollToTopSignal
+    @Environment(\.tabBarBottomClearance) private var tabBarBottomClearance
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -52,7 +53,7 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
             .padding(.top, 24)
             // The tab bar floats over the scroll content, so the last card sat hidden behind it.
             // Reserve extra bottom scroll room so every screen's final card clears the floating bar.
-            .padding(.bottom, NoopMetrics.tabBarClearance)
+            .padding(.bottom, tabBarBottomClearance ?? NoopMetrics.tabBarClearance)
             // iPad: cap the readable column, then centre it in the full-width scroll viewport.
             // iPhone (.compact): the inner frame is .infinity/.leading, identical to before.
             .frame(maxWidth: hSizeClass == .regular ? 700 : .infinity,
@@ -264,5 +265,18 @@ extension EnvironmentValues {
     var scrollToTopSignal: Int {
         get { self[ScrollToTopSignalKey.self] }
         set { self[ScrollToTopSignalKey.self] = newValue }
+    }
+}
+
+private struct TabBarBottomClearanceKey: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
+extension EnvironmentValues {
+    /// Bottom scroll room the iOS tab shell measured so a screen's last card stops just above the tab bar
+    /// (and the gym-session bar, when one is showing). nil = not measured, use `NoopMetrics.tabBarClearance`.
+    var tabBarBottomClearance: CGFloat? {
+        get { self[TabBarBottomClearanceKey.self] }
+        set { self[TabBarBottomClearanceKey.self] = newValue }
     }
 }

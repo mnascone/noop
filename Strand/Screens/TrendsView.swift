@@ -419,7 +419,7 @@ struct TrendsView: View {
             EmptyView()
         } else {
             VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
-                weekNavBar(digest: digest)
+                weekNavBar(digest: digest, onShare: digest.isEmpty ? nil : { shareRecap(digest) })
                 if digest.isEmpty {
                     // This particular week had no readings — keep the chevrons above so the user can move on.
                     DataPendingNote(
@@ -428,25 +428,26 @@ struct TrendsView: View {
                 } else {
                     WeeklyDigestContent(digest: digest, compact: true, showsHeader: false)
                         .padding(.top, NoopMetrics.space1)
-                    // Share this week's recap as an image. Renders the digest card (with its header) to a
-                    // PNG off-screen and hands it to the share sheet / Save panel — reuses TrendsReport's
-                    // ImageRenderer path. Only offered when the week actually holds data.
-                    NoopButton("Share recap", systemImage: "square.and.arrow.up", kind: .secondary) {
-                        let page = WeeklyDigestContent(digest: digest, compact: true, showsHeader: true)
-                            .frame(width: 380)
-                            .padding(24)
-                            .background(StrandPalette.surfaceBase)
-                            .environment(\.colorScheme, colorScheme)
-                        TrendsReportRenderer.exportPNG(page: page, suggestedName: "noop-recap-\(weekAnchorDay).png")
-                    }
                 }
             }
         }
     }
 
+    /// Share this week's recap as an image: the digest card (with its header) rendered to a PNG off-screen
+    /// and handed to the share sheet / Save panel, through TrendsReport's ImageRenderer path.
+    private func shareRecap(_ digest: WeeklyDigest) {
+        let page = WeeklyDigestContent(digest: digest, compact: true, showsHeader: true)
+            .frame(width: 380)
+            .padding(24)
+            .background(StrandPalette.surfaceBase)
+            .environment(\.colorScheme, colorScheme)
+        TrendsReportRenderer.exportPNG(page: page, suggestedName: "noop-recap-\(weekAnchorDay).png")
+    }
+
     /// Prev/next week stepper. Back is clamped at the earliest week we hold; forward is clamped at this
     /// week (no future weeks). Mirrors the FullDayChartView day stepper's flat accent chevrons (#597).
-    private func weekNavBar(digest: WeeklyDigest) -> some View {
+    /// `onShare` adds a small share icon beside the week's dates, only when the week holds data.
+    private func weekNavBar(digest: WeeklyDigest, onShare: (() -> Void)? = nil) -> some View {
         let atOldest = weekOffset <= minWeekOffset
         let atNewest = weekOffset >= 0
         let daysSummary = String(localized: "\(digest.daysWithData)/7 days")
@@ -465,12 +466,23 @@ struct TrendsView: View {
                 Text(weekOffset == 0 ? String(localized: "This week") : weekOffsetLabel)
                     .font(StrandFont.headline)
                     .foregroundStyle(StrandPalette.textPrimary)
-                Text("\(weeklyDigestRangeLabel(digest)) · \(daysSummary)")
-                    .font(StrandFont.footnote)
-                    .foregroundStyle(StrandPalette.textSecondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                    .accessibilityLabel("\(weeklyDigestRangeLabel(digest)), \(daysAccessibility)")
+                HStack(spacing: 6) {
+                    Text("\(weeklyDigestRangeLabel(digest)) · \(daysSummary)")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                        .accessibilityLabel("\(weeklyDigestRangeLabel(digest)), \(daysAccessibility)")
+                    if let onShare {
+                        Button(action: onShare) {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(StrandFont.footnote.weight(.semibold))
+                                .foregroundStyle(StrandPalette.accent)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Share this week's recap")
+                    }
+                }
             }
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)

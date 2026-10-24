@@ -32,6 +32,8 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
     case batteryFull
     /// Lifting: green / yellow / red for starting the next set, from heart-rate recovery.
     case setReady
+    /// Stress 0-100: live from beat-to-beat HRV, else today's latest scored hour.
+    case stress
 
     public var label: String {
         switch self {
@@ -60,8 +62,12 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
         case .pace: return "Pace"
         case .batteryFull: return "Complete battery"
         case .setReady: return "Ready for next set"
+        case .stress: return "Stress"
         }
     }
+
+    /// The value is its own picture (the battery gauge), so the banner leaves off the icon above it.
+    public var drawsOwnIcon: Bool { self == .batteryFull }
 
     /// The name on the banner itself, where space is tight. Same as `label` except where that runs long.
     public var bannerLabel: String {
@@ -101,6 +107,7 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
         case .pace: return "speedometer"
         case .batteryFull: return "battery.100percent"
         case .setReady: return "light.beacon.max"
+        case .stress: return "gauge.with.dots.needle.33percent"
         }
     }
 
@@ -125,6 +132,7 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
         case .distance, .pace: return "66D4CF"
         case .batteryFull: return "34C759"
         case .setReady: return "30D158"
+        case .stress: return "FFB340"
         }
     }
 
@@ -139,7 +147,7 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
     /// Grouping for the picker.
     public var group: String {
         switch self {
-        case .heartRate, .zone: return "Live"
+        case .heartRate, .zone, .stress: return "Live"
         case .charge, .effort, .rest, .steps, .calories: return "Today"
         case .hrv, .restingHr, .sleepTime, .skinTemp, .respiration, .spo2: return "Last night"
         case .battery, .batteryTime, .batteryFull: return "WHOOP strap"
@@ -152,7 +160,7 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
     public var usesText: Bool {
         switch self {
         case .battery, .batteryTime, .sleepTime, .skinTemp, .respiration, .spo2, .workoutEffort, .avgHr,
-             .peakHr, .distance, .pace, .batteryFull, .setReady: return true
+             .peakHr, .distance, .pace, .batteryFull, .setReady, .stress: return true
         default: return false
         }
     }

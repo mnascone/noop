@@ -83,7 +83,7 @@ struct NOOPWidgetView: View {
     private var inlineText: String {
         var parts: [String] = []
         if let r = snap.recovery { parts.append("Charge \(r)%") }
-        if let b = snap.bpm { parts.append("\(b) bpm") }
+        if let hr = snap.shownHeartRate(now: entry.date) { parts.append("\(hr.bpm) bpm") }
         return parts.isEmpty ? "NOOP" : parts.joined(separator: " · ")
     }
 
@@ -106,11 +106,19 @@ struct NOOPWidgetView: View {
         // the only reason to add it — squeezed underneath. The title is gone and the heart-rate line is
         // now conditional, so with no live HR the scores get the entire area.
         VStack(spacing: 2) {
-            if let bpm = snap.bpm {
-                Text("\(bpm) bpm")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+            if let hr = snap.shownHeartRate(now: entry.date) {
+                // Live, or the last reading (from the strap or the last sync) with its time.
+                HStack(spacing: 3) {
+                    Spacer(minLength: 0)
+                    Image(systemName: "heart.fill").font(.system(size: 8))
+                    Text("\(hr.bpm) bpm")
+                    if let at = hr.at {
+                        Text(at, style: .time).opacity(0.7)
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             }
             HStack(alignment: .top, spacing: 0) {
                 accessoryScore("Charge", symbol: "figure.mind.and.body",
@@ -215,9 +223,9 @@ struct NOOPWidgetView: View {
                 statCell("Rest HR", value: snap.restingHr.map { "\($0)" }, unit: "bpm",
                          name: "Resting heart rate",
                          spoken: snap.restingHr.map { "\($0) beats per minute" })
-                statCell("HR", value: snap.bpm.map { "\($0)" }, unit: "bpm",
+                statCell("HR", value: snap.shownHeartRate(now: entry.date).map { "\($0.bpm)" }, unit: "bpm",
                          name: "Heart rate",
-                         spoken: snap.bpm.map { "\($0) beats per minute" })
+                         spoken: snap.shownHeartRate(now: entry.date).map { "\($0.bpm) beats per minute" })
                 statCell("Battery", value: snap.batteryPct.map { "\($0)%" },
                          name: "Strap battery",
                          spoken: snap.batteryPct.map { "\($0) percent" })
@@ -295,8 +303,8 @@ struct NOOPWidgetView: View {
     /// entire problem: nothing here carries a text label, so the glyph is the only thing naming a number.
     private func vitalsFooter(compact: Bool) -> some View {
         HStack {
-            vital(symbol: "heart.fill", text: snap.bpm.map(String.init),
-                  name: "Heart rate", spoken: snap.bpm.map { "\($0) beats per minute" })
+            vital(symbol: "heart.fill", text: snap.shownHeartRate(now: entry.date).map { String($0.bpm) },
+                  name: "Heart rate", spoken: snap.shownHeartRate(now: entry.date).map { "\($0.bpm) beats per minute" })
             Spacer()
             if !compact, let hrv = snap.hrv {
                 vital(symbol: "waveform.path.ecg", text: "\(hrv)",

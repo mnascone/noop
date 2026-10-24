@@ -98,6 +98,7 @@ extension WidgetSnapshot {
         // would decode the App Group blob twice on any publish that could not score, and this file
         // already went to the trouble of removing one such decode from the live path.
         let storedStress: WidgetSnapshot? = stress == nil ? load() : nil
+        let last = await lastKnownHeartRate(model, previous: storedStress ?? load(), now: now)
         let snap = WidgetSnapshot(
             recovery: day?.recovery.map { Int($0.rounded()) },
             bpm: model.bpm ?? model.live.heartRate,
@@ -114,9 +115,32 @@ extension WidgetSnapshot {
             // nil when the curve could not be scored at all, which must not blank a widget that already
             // has one: carry the stored values forward instead of publishing an absence.
             stressSeries: stressPoints ?? storedStress?.stressSeries,
-            stressDay: stress?.day ?? storedStress?.stressDay
+            stressDay: stress?.day ?? storedStress?.stressDay,
+            lastBpm: last?.bpm,
+            lastBpmTs: last?.ts
         )
         saveAndReloadIfChanged(snap)
+    }
+
+    /// The newest heart rate known: live now, else the newest of the last snapshot's and the stored samples
+    /// from the past 12 hours, so the glance keeps a number between syncs and moves on when one lands.
+    @MainActor
+    private static func lastKnownHeartRate(_ model: AppModel, previous: WidgetSnapshot?,
+                                           now: Date) async -> (bpm: Int, ts: Int64)? {
+        let nowSec = Int(now.timeIntervalSince1970)
+        if let live = model.bpm ?? model.live.heartRate, live > 0 { return (live, Int64(nowSec)) }
+        var best: (bpm: Int, ts: Int64)? = previous.flatMap { p in
+            guard let b = p.lastBpm, let t = p.lastBpmTs else { return nil }
+            return (b, t)
+        }
+        for window in [1800, 4 * 3600, 12 * 3600] {
+            let rows = await model.repo.hrSamples(from: nowSec - window, to: nowSec, limit: 50_000)
+            if let s = rows.last(where: { $0.bpm >= 30 && $0.bpm <= 230 }) {
+                if best == nil || Int64(s.ts) > best!.ts { best = (s.bpm, Int64(s.ts)) }
+                break
+            }
+        }
+        return best
     }
 
     /// Publish fields that come directly from the live BLE state without re-reading the Rest metric
@@ -138,6 +162,11 @@ extension WidgetSnapshot {
         // ONCE per tick instead of loading it again inside saveAndReloadIfChanged.
         let previous = snap
         snap.bpm = model.bpm ?? model.live.heartRate
+        if let live = snap.bpm, live > 0 {
+            snap.lastBpm = live
+            // To the minute, so a steady heart rate doesn't rewrite the App Group every tick.
+            snap.lastBpmTs = Int64(now.timeIntervalSince1970 / 60) * 60
+        }
         snap.batteryPct = Self.activeBatteryPct(from: model)
         snap.bonded = model.live.bonded
         snap.updated = now

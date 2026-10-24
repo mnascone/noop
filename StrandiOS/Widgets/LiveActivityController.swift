@@ -19,6 +19,9 @@ final class LiveActivityController {
     private var lastPush: Date = .distantPast
     /// The newest heart rate seen while connected, stamped to the minute, for the banner's fallback.
     private var lastReading: (bpm: Int, at: Date)?
+    /// The widget snapshot, re-read at most once a minute: the last known heart rate and today's stress
+    /// curve when nothing is live.
+    private var glanceCache: (at: Date, snap: WidgetSnapshot?)?
     /// What the banner was last pushed with, so an unchanged banner is not pushed again
     /// (`LiveHRBannerPushPolicy`). Nil until this controller pushes, and again once it ends the activity.
     private var shownState: NOOPActivityAttributes.ContentState?
@@ -161,6 +164,39 @@ final class LiveActivityController {
         var colors: [String: String] = [:]
     }
 
+    private func storedGlance(_ now: Date) -> WidgetSnapshot? {
+        if let c = glanceCache, now.timeIntervalSince(c.at) < 60 { return c.snap }
+        let snap = WidgetSnapshot.load()
+        glanceCache = (now, snap)
+        return snap
+    }
+
+    /// Stress 0-100 for the banner, and its colour: live from the strap's beat-to-beat intervals against
+    /// your nightly HRV, "Active" while heart rate is up from moving, else today's latest scored hour.
+    private func stressText(_ model: AppModel) -> (text: String, hex: String)? {
+        let days = model.repo.days
+        let hrvs = days.suffix(30).compactMap(\.avgHrv).filter { $0 > 0 }.sorted()
+        let resting = days.last(where: { ($0.restingHr ?? 0) > 0 })?.restingHr
+        if model.live.connected, let hr = model.live.heartRate {
+            if let r = resting, hr > r + 35 { return (String(localized: "Active"), "8E8E93") }
+            if hrvs.count >= 5, let v = LiveStressGauge.level(rr: model.live.rrRecent, hrvBaseline: hrvs[hrvs.count / 2]) {
+                return ("\(Int(v.rounded()))", Self.stressHex(v))
+            }
+        }
+        guard let last = storedGlance(Date())?.latestStress() else { return nil }
+        let v = min(100, max(0, last.level / 3 * 100))
+        return ("\(Int(v.rounded()))", Self.stressHex(v))
+    }
+
+    static func stressHex(_ v: Double) -> String {
+        switch v {
+        case ..<26: return "4FA3F7"
+        case ..<51: return "8CC0F2"
+        case ..<76: return "FFB340"
+        default: return "FF453A"
+        }
+    }
+
     static func compactLeft(_ hours: Double) -> String {
         hours < 48 ? "\(max(0, Int(hours.rounded())))h" : String(format: "%.1fd", hours / 24)
     }
@@ -240,6 +276,10 @@ final class LiveActivityController {
             e.zone = model.profile.hrZoneSet.zoneNumber(forBPM: Double(bpm))
         }
         e.texts = bannerTexts(model, day: day, wanted: Set(e.fields + [e.islandField].compactMap { $0 }))
+        if e.fields.contains(.stress) || e.islandField == .stress, let st = stressText(model) {
+            e.texts[LiveBannerField.stress.rawValue] = st.text
+            e.colors[LiveBannerField.stress.rawValue] = st.hex
+        }
         if e.fields.contains(.rest) || e.islandField == .rest, let day {
             let key = "\(day.day)|\(model.repo.refreshSeq)|\(model.intelligence.lastSleepNeedHours ?? -1)"
             if let cached = restCache, cached.key == key {
@@ -337,6 +377,10 @@ final class LiveActivityController {
         // Timers are sent as start dates, so the Lock Screen counts them itself without a push per second.
         if connected, let bpm, bpm > 0 {
             lastReading = (bpm, Date(timeIntervalSince1970: (now.timeIntervalSince1970 / 60).rounded(.down) * 60))
+        } else if let stored = storedGlance(now), let b = stored.lastBpm, let ts = stored.lastBpmTs {
+            // No live reading: the last one known, from an earlier session or the last sync, when newer.
+            let at = Date(timeIntervalSince1970: TimeInterval(ts))
+            if lastReading == nil || at > lastReading!.at { lastReading = (b, at) }
         }
         let state = NOOPActivityAttributes.ContentState(
             bpm: connected ? bpm : nil, recovery: recovery, bonded: connected, effort: effort,

@@ -80,7 +80,10 @@ struct NOOPLiveActivity: Widget {
                             ForEach(fields, id: \.self) { f in
                                 VStack(spacing: 3) {
                                     HStack(spacing: 4) {
-                                        Image(systemName: Self.symbol(f, context.state)).font(.caption).foregroundStyle(Self.tint(f, context.state))
+                                        if f.drawsOwnIcon == false {
+                                            Image(systemName: Self.symbol(f, context.state)).font(.caption)
+                                                .foregroundStyle(Self.tint(f, context.state))
+                                        }
                                         if labels {
                                             Text(f.bannerLabel).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
                                                 .lineLimit(1).minimumScaleFactor(0.7)
@@ -96,9 +99,11 @@ struct NOOPLiveActivity: Widget {
                     // The first field big, the rest beside it.
                     HStack(spacing: 14) {
                         if let primary = fields.first {
-                            Image(systemName: Self.symbol(primary, context.state))
-                                .font(.title2)
-                                .foregroundStyle(Self.tint(primary, context.state))
+                            if primary.drawsOwnIcon == false {
+                                Image(systemName: Self.symbol(primary, context.state))
+                                    .font(.title2)
+                                    .foregroundStyle(Self.tint(primary, context.state))
+                            }
                             VStack(alignment: .leading, spacing: 2) {
                                 if labels {
                                     Text(state.title ?? state.workoutSport ?? primary.bannerLabel)
@@ -113,7 +118,7 @@ struct NOOPLiveActivity: Widget {
                                 VStack(alignment: .center, spacing: 2) {
                                     if labels {
                                         Text(f.bannerLabel).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
-                                    } else {
+                                    } else if f.drawsOwnIcon == false {
                                         Image(systemName: Self.symbol(f, context.state)).font(.caption2).foregroundStyle(Self.tint(f, context.state))
                                     }
                                     FieldValue(field: f, context: context, size: .small)
@@ -248,7 +253,7 @@ private struct FieldValue: View {
         case .sets:
             Text(s.setCount.map(String.init) ?? "–")
         case .battery, .batteryTime, .sleepTime, .skinTemp, .respiration, .spo2, .workoutEffort, .avgHr,
-             .peakHr, .distance, .pace:
+             .peakHr, .distance, .pace, .stress:
             Text(s.texts?[field.rawValue] ?? "–")
         case .batteryFull:
             BatteryGauge(packed: s.texts?[field.rawValue], size: size)

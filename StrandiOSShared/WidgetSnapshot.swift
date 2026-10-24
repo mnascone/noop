@@ -40,12 +40,17 @@ public struct WidgetSnapshot: Codable, Equatable {
     /// so the widget cannot show yesterday's afternoon under today's date while waiting for the first
     /// scorable hour after midnight.
     public var stressDay: Int?
+    /// The most recent heart rate known, live or from the last sync, and when it was read (unix seconds).
+    /// Kept apart from `bpm`, which is live only and feeds the trace: widgets show this, dimmed with its
+    /// time, when there is no live reading.
+    public var lastBpm: Int?
+    public var lastBpmTs: Int64?
 
     public init(recovery: Int?, bpm: Int?, batteryPct: Int?, bonded: Bool, updated: Date,
                 effort: Int? = nil, rest: Int? = nil, hrv: Int? = nil, restingHr: Int? = nil,
                 effortDisplay: String? = nil, effortWhoop: Bool? = nil,
                 hrSeries: [HrPoint]? = nil, stressSeries: [StressPoint]? = nil,
-                stressDay: Int? = nil) {
+                stressDay: Int? = nil, lastBpm: Int? = nil, lastBpmTs: Int64? = nil) {
         self.recovery = recovery
         self.bpm = bpm
         self.batteryPct = batteryPct
@@ -60,6 +65,23 @@ public struct WidgetSnapshot: Codable, Equatable {
         self.hrSeries = hrSeries
         self.stressSeries = stressSeries
         self.stressDay = stressDay
+        self.lastBpm = lastBpm
+        self.lastBpmTs = lastBpmTs
+    }
+
+    /// The heart rate to show: live when there is one, else the last known reading under 24 hours old with
+    /// its time (nil time = live).
+    public func shownHeartRate(now: Date = Date()) -> (bpm: Int, at: Date?)? {
+        if let bpm, bpm > 0 { return (bpm, nil) }
+        guard let b = lastBpm, b > 0, let ts = lastBpmTs else { return nil }
+        let at = Date(timeIntervalSince1970: TimeInterval(ts))
+        return now.timeIntervalSince(at) < 24 * 3600 ? (b, at) : nil
+    }
+
+    /// The latest scored hour of today's stress curve, 0-3, with its time.
+    public func latestStress(now: Date = Date()) -> (level: Double, at: Date)? {
+        guard let p = stressCurve(now: now).last(where: { $0.level != nil }), let l = p.level else { return nil }
+        return (l, Date(timeIntervalSince1970: TimeInterval(p.ts)))
     }
 
     /// The curve to DRAW: what was published, unless it belongs to a day that is over.
@@ -229,6 +251,10 @@ public struct WidgetSnapshot: Codable, Equatable {
             // midnight still reaches WidgetKit even when the new day has no scored hour yet.
             || previous.stressSeries != next.stressSeries
             || previous.stressDay != next.stressDay
+            // The last-known heart rate shows when there is no live one, so its value counts, and so does
+            // its time while it is the one on show (a sync can land a newer reading of the same number).
+            || previous.lastBpm != next.lastBpm
+            || (next.bpm == nil && previous.lastBpmTs != next.lastBpmTs)
     }
 
     /// A live-only update may reuse score fields only within the same local calendar day. At rollover,

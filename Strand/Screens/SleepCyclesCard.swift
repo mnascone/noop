@@ -9,6 +9,9 @@ struct SleepCyclesCard: View {
     /// False for nights whose stages were rebuilt from totals (imports), which have no real cycles.
     let staged: Bool
 
+    /// The tapped cycle (0-based), shown in detail under the strip.
+    @State private var selected: Int?
+
     private var result: SleepArchitecture.Result? {
         guard staged else { return nil }
         return SleepArchitecture.analyze(intervals.map {
@@ -36,6 +39,13 @@ struct SleepCyclesCard: View {
                         bigStat(r.remLatencyMinutes.map { "\(Int($0.rounded()))" } ?? "–", String(localized: "min to REM"))
                     }
                     cycleStrip(r)
+                    if let i = selected, r.cycleSpans.indices.contains(i) {
+                        cycleDetail(i, r)
+                    } else {
+                        Text("Tap a cycle to see its stages.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                    }
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(Array(insights(r).enumerated()), id: \.offset) { _, line in
                             HStack(alignment: .top, spacing: 8) {
@@ -65,44 +75,46 @@ struct SleepCyclesCard: View {
         }
     }
 
-    /// One strip for the night: each cycle a segment, REM in purple where it fell, wake-ups as dots above,
-    /// and each cycle's REM minutes under it.
+    /// One strip for the night: a tappable segment per cycle with its REM in purple, wake-ups as dots
+    /// above, each cycle's number and REM minutes under it.
     private func cycleStrip(_ r: SleepArchitecture.Result) -> some View {
-        let span = max(1, r.sleepEnd - r.sleepOnset)
-        let rem = StrandPalette.sleepStageColor(.rem)
-        let gap: CGFloat = 3
-        let lastEnd = r.cycleSpans.last?.end ?? 0
-        let tailShare: CGFloat = CGFloat((span - lastEnd) / span)
-        let tailStart: CGFloat = CGFloat(lastEnd / span)
+        let span: Double = max(1, r.sleepEnd - r.sleepOnset)
+        let lastEnd: Double = r.cycleSpans.last?.end ?? 0
+        let tail: Double = span - lastEnd
         let wakeShares: [CGFloat] = r.wakeBouts.map { CGFloat(($0.start + $0.end) / 2 / span) }
         let remList: String = r.cycleSpans.map { String(Int($0.remMinutes.rounded())) }.joined(separator: ", ")
         return VStack(alignment: .leading, spacing: 6) {
             GeometryReader { geo in
                 let w: CGFloat = geo.size.width
+                let gap: CGFloat = 3
+                let count: CGFloat = CGFloat(r.cycleSpans.count + (tail > 60 ? 1 : 0))
+                let usable: CGFloat = max(1, w - gap * max(0, count - 1))
                 ZStack(alignment: .topLeading) {
-                    ForEach(Array(r.cycleSpans.enumerated()), id: \.offset) { _, c in
-                        cycleSegment(c, r, width: w, span: span, gap: gap)
-                    }
-                    if span - lastEnd > 60 {
-                        // Sleep after the last full cycle that didn't reach REM.
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .strokeBorder(StrandPalette.restColor.opacity(0.45),
-                                          style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                            .frame(width: max(4, w * tailShare), height: 22)
-                            .offset(x: w * tailStart, y: 8)
+                    HStack(alignment: .top, spacing: gap) {
+                        ForEach(Array(r.cycleSpans.enumerated()), id: \.offset) { i, c in
+                            cycleSegment(i, c, r, width: usable * CGFloat((c.end - c.start) / span), span: span)
+                        }
+                        if tail > 60 {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .strokeBorder(StrandPalette.restColor.opacity(0.45),
+                                              style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                                .frame(width: max(4, usable * CGFloat(tail / span)), height: 30)
+                                .padding(.top, 8)
+                        }
                     }
                     ForEach(Array(wakeShares.enumerated()), id: \.offset) { _, share in
                         Circle().fill(StrandPalette.recovery055)
                             .frame(width: 4, height: 4)
                             .offset(x: w * share - 2, y: 0)
                     }
+                    .allowsHitTesting(false)
                 }
             }
-            .frame(height: 48)
+            .frame(height: 70)
             HStack(spacing: 4) {
                 Text(Date(timeIntervalSince1970: r.sleepOnset), style: .time)
                 Spacer()
-                Circle().fill(rem).frame(width: 6, height: 6)
+                Circle().fill(StrandPalette.sleepStageColor(.rem)).frame(width: 6, height: 6)
                 Text("REM")
                 Circle().fill(StrandPalette.recovery055).frame(width: 4, height: 4).padding(.leading, 6)
                 Text("Woke up")
@@ -112,39 +124,131 @@ struct SleepCyclesCard: View {
             .font(StrandFont.caption)
             .foregroundStyle(StrandPalette.textTertiary)
         }
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("\(r.cycles) cycles. REM per cycle: \(remList) minutes. \(r.awakenings) wake-ups."))
     }
 
-    /// One cycle: a muted segment with its REM in purple, and its REM minutes under it.
-    private func cycleSegment(_ c: SleepArchitecture.Cycle, _ r: SleepArchitecture.Result,
-                              width w: CGFloat, span: Double, gap: CGFloat) -> some View {
-        let x: CGFloat = w * CGFloat(c.start / span)
-        let cw: CGFloat = max(4, w * CGFloat((c.end - c.start) / span) - gap)
+    /// One cycle, tappable: a segment with its REM in purple at its real place, the cycle number and its REM
+    /// minutes under it. The selected one is outlined and the others dim.
+    private func cycleSegment(_ i: Int, _ c: SleepArchitecture.Cycle, _ r: SleepArchitecture.Result,
+                              width cw: CGFloat, span: Double) -> some View {
+        let len: Double = max(1, c.end - c.start)
         let rem = StrandPalette.sleepStageColor(.rem)
+        let isSel: Bool = selected == i
+        let dim: Bool = selected != nil && !isSel
         let parts: [(x: CGFloat, w: CGFloat)] = r.remEpisodes.compactMap { e in
             let a = max(e.start, c.start), b = min(e.end, c.end)
             guard b > a else { return nil }
-            return (w * CGFloat((a - c.start) / span), max(2, w * CGFloat((b - a) / span)))
+            return (cw * CGFloat((a - c.start) / len), max(2, cw * CGFloat((b - a) / len)))
         }
-        return ZStack(alignment: .topLeading) {
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(StrandPalette.restColor.opacity(0.22))
-                ForEach(Array(parts.enumerated()), id: \.offset) { _, p in
-                    Rectangle().fill(rem).frame(width: p.w).offset(x: p.x)
+        let showLabel: Bool = cw >= 22
+        return Button {
+            withAnimation(.easeInOut(duration: 0.2)) { selected = isSel ? nil : i }
+        } label: {
+            VStack(spacing: 3) {
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(StrandPalette.restColor.opacity(isSel ? 0.38 : 0.22))
+                    ForEach(Array(parts.enumerated()), id: \.offset) { _, p in
+                        Rectangle().fill(rem).frame(width: p.w).offset(x: p.x)
+                    }
                 }
+                .frame(width: cw, height: 30)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(isSel ? StrandPalette.textPrimary : Color.clear, lineWidth: 1.5)
+                )
+                Text(showLabel ? "\(Int(c.remMinutes.rounded()))m" : " ")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(rem)
+                Text(showLabel ? "\(i + 1)" : " ")
+                    .font(.system(size: 9, weight: isSel ? .bold : .regular))
+                    .foregroundStyle(isSel ? StrandPalette.textPrimary : StrandPalette.textTertiary)
             }
-            .frame(width: cw, height: 22)
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .offset(y: 8)
-            Text("\(Int(c.remMinutes.rounded()))m")
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .foregroundStyle(cw >= 24 ? rem : Color.clear)
-                .frame(width: cw)
-                .offset(y: 34)
+            .frame(width: cw)
+            .padding(.top, 8)
+            .opacity(dim ? 0.45 : 1)
+            .contentShape(Rectangle())
         }
-        .offset(x: x)
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text("Cycle \(i + 1), \(Int(c.minutes.rounded())) minutes, REM \(Int(c.remMinutes.rounded())) minutes"))
+    }
+
+    /// The tapped cycle: its clock times, minutes in each stage, a stage chart of just that stretch, and
+    /// what interrupted it.
+    private func cycleDetail(_ i: Int, _ r: SleepArchitecture.Result) -> some View {
+        let c = r.cycleSpans[i]
+        let a: Double = r.sleepOnset + c.start
+        let b: Double = r.sleepOnset + c.end
+        let segs: [SleepInterval] = intervals.filter { $0.end > a && $0.start < b }
+        func minutes(_ s: SleepStage) -> Double {
+            segs.filter { $0.stage == s }.reduce(0) { $0 + (min($1.end, b) - max($1.start, a)) } / 60
+        }
+        let awake = minutes(.awake), light = minutes(.light), deep = minutes(.deep), remM = minutes(.rem)
+        let wakes = r.wakeBouts.filter { $0.start < c.end && $0.end > c.start }
+        let firstRem: Double? = r.remEpisodes.first { $0.end > c.start && $0.start < c.end }
+            .map { (max($0.start, c.start) - c.start) / 60 }
+        return VStack(alignment: .leading, spacing: NoopMetrics.space2) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(String(localized: "Cycle \(i + 1)"))
+                    .font(StrandFont.subhead.weight(.semibold))
+                    .foregroundStyle(StrandPalette.textPrimary)
+                Text(Date(timeIntervalSince1970: a), style: .time)
+                Text("–")
+                Text(Date(timeIntervalSince1970: b), style: .time)
+                Spacer()
+                Text(Self.minutes(c.minutes))
+                    .font(StrandFont.captionNumber.weight(.semibold))
+                    .foregroundStyle(StrandPalette.textPrimary)
+            }
+            .font(StrandFont.caption)
+            .foregroundStyle(StrandPalette.textTertiary)
+            CycleStages(segments: segs, start: a, end: b)
+                .frame(height: 64)
+            HStack(spacing: 0) {
+                stageFigure(.deep, "Deep", deep)
+                stageFigure(.light, "Light", light)
+                stageFigure(.rem, "REM", remM)
+                stageFigure(.awake, "Awake", awake)
+            }
+            Text(detailLine(firstRem: firstRem, wakes: wakes))
+                .font(StrandFont.footnote)
+                .foregroundStyle(StrandPalette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(NoopMetrics.space3)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(StrandPalette.surfaceInset.opacity(0.6)))
+        .transition(.opacity)
+    }
+
+    private func stageFigure(_ s: SleepStage, _ label: LocalizedStringKey, _ m: Double) -> some View {
+        VStack(spacing: 1) {
+            Text("\(Int(m.rounded()))m")
+                .font(StrandFont.captionNumber.weight(.semibold))
+                .foregroundStyle(StrandPalette.textPrimary)
+            HStack(spacing: 3) {
+                Circle().fill(StrandPalette.sleepStageColor(s)).frame(width: 6, height: 6)
+                Text(label).font(.system(size: 10)).foregroundStyle(StrandPalette.textTertiary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func detailLine(firstRem: Double?, wakes: [SleepArchitecture.Episode]) -> String {
+        var parts: [String] = []
+        if let f = firstRem {
+            parts.append(String(localized: "REM began \(Int(f.rounded())) min into this cycle."))
+        }
+        if wakes.isEmpty {
+            parts.append(String(localized: "No wake-ups over 2 min."))
+        } else {
+            let total = wakes.reduce(0) { $0 + $1.minutes }
+            parts.append(wakes.count == 1
+                ? String(localized: "One wake-up, \(Int(total.rounded())) min.")
+                : String(localized: "\(wakes.count) wake-ups, \(Int(total.rounded())) min in all."))
+        }
+        return parts.joined(separator: " ")
     }
 
     private struct Insight { let good: Bool; let text: String }
@@ -228,5 +332,40 @@ struct SleepCyclesCard: View {
         case .flatRem:
             return String(localized: "REM didn't build toward morning. Waking early or a disturbed last few hours takes the longest REM.")
         }
+    }
+}
+
+/// A stage chart of one cycle: REM on top, then light, deep at the bottom, awake above REM.
+private struct CycleStages: View {
+    let segments: [SleepInterval]
+    let start: Double
+    let end: Double
+
+    private static func lane(_ s: SleepStage) -> CGFloat {
+        switch s {
+        case .awake: return 0
+        case .rem: return 1
+        case .light: return 2
+        case .deep: return 3
+        }
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let w: CGFloat = geo.size.width
+            let laneH: CGFloat = geo.size.height / 4
+            let span: Double = max(1, end - start)
+            ZStack(alignment: .topLeading) {
+                ForEach(segments, id: \.id) { iv in
+                    let a: CGFloat = CGFloat((max(iv.start, start) - start) / span)
+                    let b: CGFloat = CGFloat((min(iv.end, end) - start) / span)
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(StrandPalette.sleepStageColor(iv.stage))
+                        .frame(width: max(1.5, w * (b - a)), height: laneH - 4)
+                        .offset(x: w * a, y: laneH * Self.lane(iv.stage) + 2)
+                }
+            }
+        }
+        .accessibilityHidden(true)
     }
 }

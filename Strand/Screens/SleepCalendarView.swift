@@ -269,6 +269,49 @@ struct SleepCalendarCard: View {
         if let x = Self.mean(curH), let y = Self.mean(oldH) { dh = (x - y) * 60 }
         return (a - b, dh)
     }
+
+    private var legend: some View {
+        HStack(spacing: NoopMetrics.space2) {
+            Text("Poor").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+            LinearGradient(colors: [SleepCalendarColors.color(poor), SleepCalendarColors.color(good)],
+                           startPoint: .leading, endPoint: .trailing)
+                .frame(height: 8)
+                .clipShape(Capsule())
+            Text("Good").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+            NavigationLink {
+                SleepCalendarColorsView()
+            } label: {
+                Image(systemName: "paintpalette")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Calendar colours")
+        }
+    }
+
+    private func monthSummary(_ keys: [String], _ data: [String: Night]) -> some View {
+        let scores = keys.compactMap { data[$0]?.score }
+        let hours = keys.compactMap { data[$0]?.hours }
+        return HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Average score").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                Text(scores.isEmpty ? "–" : "\(scores.reduce(0, +) / scores.count)")
+                    .font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+            }
+            Spacer()
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Average sleep").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                Text(hours.isEmpty ? "–" : String(format: "%.1f h", hours.reduce(0, +) / Double(hours.count)))
+                    .font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+            }
+            Spacer()
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Nights").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                Text("\(hours.count)").font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+            }
+        }
+    }
 }
 
 /// A month grid of recorded nights, coloured by score. Picking one shows that night on the Sleep tab.

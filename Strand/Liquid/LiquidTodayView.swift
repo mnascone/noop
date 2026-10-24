@@ -400,11 +400,10 @@ struct LiquidTodayView: View {
                         case .addedCards: if selectedDayOffset == 0 { hostedCardsSection }
                         case .pacing:
                             if selectedDayOffset == 0 {
-                                // Opens Performance, where both dials and the long-term read live.
-                                Button { router.requestedDestination = .trends } label: {
-                                    PacingDialCard(days: repo.days, effortScale: effortScale, mode: .short)
-                                }
-                                .buttonStyle(.plain)
+                                // The pace side opens Performance, where the long-term read lives; the stress
+                                // gauge beside it starts a live measurement on tap.
+                                PacingDialCard(days: repo.days, effortScale: effortScale, mode: .short,
+                                               onOpen: { router.requestedDestination = .trends })
                             }
                         }
                     }

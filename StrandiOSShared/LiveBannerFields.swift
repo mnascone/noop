@@ -43,8 +43,8 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
         case .workoutTime: return "Workout"
         case .restTimer: return "Rest"
         case .sets: return "Sets"
-        case .battery: return "Battery"
-        case .batteryTime: return "Battery left"
+        case .battery: return "WHOOP battery"
+        case .batteryTime: return "WHOOP battery left"
         case .sleepTime: return "Slept"
         case .skinTemp: return "Skin temp"
         case .respiration: return "Breathing"
@@ -61,7 +61,7 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
         switch self {
         case .heartRate: return "heart.fill"
         case .zone: return "gauge.with.dots.needle.67percent"
-        case .charge: return "battery.100.bolt"
+        case .charge: return "arrow.clockwise.heart.fill"
         case .effort: return "flame.fill"
         case .rest: return "bed.double.fill"
         case .steps: return "figure.walk"
@@ -99,7 +99,7 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
         case .heartRate, .zone: return "Live"
         case .charge, .effort, .rest, .steps, .calories: return "Today"
         case .hrv, .restingHr, .sleepTime, .skinTemp, .respiration, .spo2: return "Last night"
-        case .battery, .batteryTime: return "Strap"
+        case .battery, .batteryTime: return "WHOOP strap"
         case .workoutTime, .restTimer, .sets, .workoutEffort, .avgHr, .peakHr, .distance, .pace: return "Workout"
         }
     }

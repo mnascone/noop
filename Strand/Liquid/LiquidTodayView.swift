@@ -97,6 +97,9 @@ struct LiquidTodayView: View {
     @State private var showCoachLauncher = false
     @State private var showSettings = false
     @State private var synthesisExpanded = false
+    /// Rest days and training streak from the workout log, judged by the user's rest-day rules. Today only.
+    @State private var restWeek: RestDayRules.Week?
+    @ObservedObject private var recommendation = DailyRecommendation.shared
     @State private var showLiveSession = false
 
     /// Live Sessions (silent guardian) beta gate — the SAME key the Settings toggle writes. Default ON
@@ -369,7 +372,14 @@ struct LiquidTodayView: View {
                         case .hero:
                             heroCard
                             if chargeLegacyRRGap { ChargeLegacyRRGapNote() }
-                        case .liveSession: if liveSessionsBeta { liveSessionStartRow }
+                        // Live Session now starts from the Workouts tab, during a workout, where it applies.
+                        case .liveSession:
+                            // iOS starts Live Session from the Workouts tab, during a workout.
+                            #if os(macOS)
+                            if liveSessionsBeta { liveSessionStartRow }
+                            #else
+                            EmptyView()
+                            #endif
                         case .synthesis: synthesisSection
                         case .keyMetrics: keyMetricsSection
                         case .workouts: lastWorkoutsSection
@@ -1189,26 +1199,43 @@ struct LiquidTodayView: View {
             .padding(.horizontal, 2)
             .padding(.top, 4)
 
-            Button { withAnimation(.easeInOut(duration: 0.2)) { synthesisExpanded.toggle() } } label: {
+            Button {
+                if coachEnabled { router.openCoach() }
+                else { withAnimation(.easeInOut(duration: 0.2)) { synthesisExpanded.toggle() } }
+            } label: {
                 card {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("SYNTHESIS").font(StrandFont.overline).tracking(1.6)
+                            Text("FOR TODAY").font(StrandFont.overline).tracking(1.6)
                                 .foregroundStyle(StrandPalette.textSecondary)
                             Spacer()
-                            Text(synthesisExpanded
-                                 ? String(localized: "hide")
-                                 : String(localized: "show"))
+                            if coachEnabled {
+                                HStack(spacing: 3) {
+                                    Text("Ask coach")
+                                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
+                                }
                                 .font(StrandFont.caption)
-                                .foregroundStyle(StrandPalette.textTertiary)
+                                .foregroundStyle(StrandPalette.accent)
+                            } else {
+                                Text(synthesisExpanded
+                                     ? String(localized: "hide")
+                                     : String(localized: "show"))
+                                    .font(StrandFont.caption)
+                                    .foregroundStyle(StrandPalette.textTertiary)
+                            }
                         }
                         // While the baseline calibrates, the honest "N of 4 nights" progress replaces the
                         // readiness one-liner here — the same swap classic makes (`calibrationDetail ??
                         // synthesisCardDetail`), so the count the short greeting pill can't carry lands in
                         // the card and both Today screens read identically.
-                        Text(chargeDisplay.calibrationDetail ?? synthLine)
+                        Text(chargeDisplay.calibrationDetail ?? recommendationLine)
                             .font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
+                        if chargeDisplay.calibrationDetail == nil, !recommendationSourceLine.isEmpty {
+                            Text(recommendationSourceLine)
+                                .font(StrandFont.caption)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                        }
                         // The reason the count is not moving, when nights are arriving empty. Sits under
                         // the progress rather than replacing it: the wearer needs both the number and why.
                         if let why = chargeDisplay.calibrationReason(
@@ -1232,7 +1259,7 @@ struct LiquidTodayView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
-                        if synthesisExpanded {
+                        if synthesisExpanded && !coachEnabled {
                             Text(LocalizedStringKey(readiness.summary)).font(StrandFont.caption)
                                 .foregroundStyle(StrandPalette.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -1241,7 +1268,42 @@ struct LiquidTodayView: View {
                 }
             }
             .buttonStyle(LiquidPressStyle())
+            .accessibilityHint(coachEnabled ? Text("Opens the coach") : Text(""))
+            .background {
+                if coachEnabled, selectedDayOffset == 0, let week = restWeek {
+                    DailyRecommendationLoader(inputs: recommendationInputs(week), charge: chargeDisplay.pct,
+                                              ruleAdvice: RestDayRules.advice(charge: chargeDisplay.pct, week: week))
+                }
+            }
         }
+    }
+
+    private func recommendationInputs(_ week: RestDayRules.Week) -> DailyRecommendation.Inputs {
+        DailyRecommendation.Inputs(
+            day: Repository.localDayKey(Date()),
+            chargeBucket: chargeDisplay.pct.map { Int(($0 / 5).rounded()) * 5 },
+            restDays: week.restDays, trainingStreak: week.trainingStreak, trainedToday: week.trainedToday)
+    }
+
+    /// The coach's call when there is one for today, else the readiness line plus the rest-day rule.
+    private var recommendationLine: String {
+        if selectedDayOffset == 0, coachEnabled, let ai = recommendation.aiText { return ai }
+        guard selectedDayOffset == 0, let week = restWeek,
+              let advice = RestDayRules.advice(charge: chargeDisplay.pct, week: week) else { return synthLine }
+        return synthLine + " " + advice
+    }
+
+    private var recommendationSourceLine: String {
+        guard selectedDayOffset == 0 else { return String(localized: "Your read for this day.") }
+        if coachEnabled, recommendation.aiText != nil {
+            return restWeek.map { String(localized: "From your coach. Rest days this week: \($0.restDays).") }
+                ?? String(localized: "From your coach.")
+        }
+        if coachEnabled, recommendation.loading { return String(localized: "Asking your coach...") }
+        let rest = restWeek.map { String(localized: "Rest days this week: \($0.restDays).") } ?? ""
+        guard coachEnabled, !recommendation.available else { return rest }
+        return (rest + " " + String(localized: "Set up the coach for a personal call."))
+            .trimmingCharacters(in: .whitespaces)
     }
 
     // MARK: - Recovery vitals
@@ -1837,7 +1899,10 @@ struct LiquidTodayView: View {
         let hrBuckets = await hrA
         hrValues = hrBuckets.map { $0.bpm }
         hrSegments = hrGapSegments(bucketTs: hrBuckets.map { $0.ts }, bucketSeconds: 300)
-        workouts = (await wkA).filter { $0.startTs >= from && $0.startTs < to }
+        let allWorkouts = await wkA
+        workouts = allWorkouts.filter { $0.startTs >= from && $0.startTs < to }
+        restWeek = selectedDayOffset == 0
+            ? RestDayRules.week(allWorkouts, rules: .current()) : nil
 
         let (chargeSource, effortSource, restSource) = await (chargeSourceA, effortSourceA, restSourceA)
         let sourceResolutions = [

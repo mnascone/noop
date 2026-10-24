@@ -87,7 +87,7 @@ struct LiveBannerSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    static let groups = ["Live", "Today", "Last night", "Strap", "Workout"]
+    static let groups = ["Live", "Today", "Last night", "WHOOP strap", "Workout"]
 
     @ViewBuilder
     private func fieldSection(_ header: String, _ list: Binding<[LiveBannerField]>, allowWorkoutOnly: Bool,

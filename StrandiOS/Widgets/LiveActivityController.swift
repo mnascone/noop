@@ -71,17 +71,17 @@ final class LiveActivityController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.refreshBanner() }
             .store(in: &cancellables)
-        // A change to the chosen fields shows at once.
+        // A change to the chosen fields shows at once. The prefs are read here, once per settings change,
+        // never on the heart-rate tick.
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
-            .receive(on: DispatchQueue.main)
-            .map { _ in
-                "\(LiveBannerPrefs.load())|\(String(describing: LiveBannerPrefs.loadWorkout()))|"
-                    + "\(String(describing: LiveBannerPrefs.islandField()))|\(LiveBannerPrefs.layout())|"
-                    + "\(LiveBannerPrefs.showLabels())|\(LiveBannerPrefs.title() ?? "")"
-            }
+            .debounce(for: .milliseconds(150), scheduler: DispatchQueue.main)
+            .map { _ in BannerPrefs.load() }
             .removeDuplicates()
-            .dropFirst()
-            .sink { [weak self] _ in self?.refreshBanner() }
+            .sink { [weak self] p in
+                guard let self, p != self.prefs else { return }
+                self.prefs = p
+                self.refreshBanner()
+            }
             .store(in: &cancellables)
         // The switch is the one way to be rid of the banner, so it acts at once — not at the next heart-rate tick,
         // which a strap off the wrist may not send for hours.
@@ -115,6 +115,26 @@ final class LiveActivityController {
                effort: day?.strain.map { Int($0.rounded()) },
                extras: bannerExtras(model, day: day))
     }
+
+    /// The banner settings, read once per settings change rather than on every tick.
+    struct BannerPrefs: Equatable {
+        var fields: [LiveBannerField]
+        var workoutFields: [LiveBannerField]?
+        var islandField: LiveBannerField?
+        var layout: LiveBannerLayout
+        var showLabels: Bool
+        var title: String?
+
+        static func load() -> BannerPrefs {
+            BannerPrefs(fields: LiveBannerPrefs.load(), workoutFields: LiveBannerPrefs.loadWorkout(),
+                        islandField: LiveBannerPrefs.islandField(), layout: LiveBannerPrefs.layout(),
+                        showLabels: LiveBannerPrefs.showLabels(), title: LiveBannerPrefs.title())
+        }
+    }
+    private var prefs = BannerPrefs.load()
+    /// Last night's sleep score for the banner, keyed by day and data version so it's scored once per
+    /// change instead of once per heart-rate tick.
+    private var restCache: (key: String, value: Int?)?
 
     /// The customizable part of the banner: which fields, plus the values only some fields need.
     struct BannerExtras: Equatable {
@@ -173,15 +193,15 @@ final class LiveActivityController {
     }
 
     private func bannerExtras(_ model: AppModel, day: DailyMetric?) -> BannerExtras {
-        var e = BannerExtras(fields: LiveBannerPrefs.load())
+        var e = BannerExtras(fields: prefs.fields)
         // A separate set of fields while a workout runs, when one is chosen.
-        if model.activeWorkout != nil, let workoutFields = LiveBannerPrefs.loadWorkout() {
+        if model.activeWorkout != nil, let workoutFields = prefs.workoutFields {
             e.fields = workoutFields
         }
-        e.islandField = LiveBannerPrefs.islandField()
-        e.layout = LiveBannerPrefs.layout()
-        e.showLabels = LiveBannerPrefs.showLabels()
-        e.title = LiveBannerPrefs.title()
+        e.islandField = prefs.islandField
+        e.layout = prefs.layout
+        e.showLabels = prefs.showLabels
+        e.title = prefs.title
         let today = model.repo.today
         if e.fields.contains(.steps) { e.steps = today?.steps ?? day?.steps }
         if e.fields.contains(.calories) {
@@ -193,11 +213,17 @@ final class LiveActivityController {
             e.zone = model.profile.hrZoneSet.zoneNumber(forBPM: Double(bpm))
         }
         e.texts = bannerTexts(model, day: day, wanted: Set(e.fields + [e.islandField].compactMap { $0 }))
-        if e.fields.contains(.rest), let day {
-            let inputs = SleepScoreInputs.resolve(intelligence: model.intelligence, days: model.repo.days,
-                                                  age: model.profile.age)
-            e.rest = AnalyticsEngine.Rest.composite(daily: day, needHours: inputs.needHours,
-                                                    consistency: inputs.consistency).map { Int($0.rounded()) }
+        if e.fields.contains(.rest) || e.islandField == .rest, let day {
+            let key = "\(day.day)|\(model.repo.refreshSeq)|\(model.intelligence.lastSleepNeedHours ?? -1)"
+            if let cached = restCache, cached.key == key {
+                e.rest = cached.value
+            } else {
+                let inputs = SleepScoreInputs.resolve(intelligence: model.intelligence, days: model.repo.days,
+                                                      age: model.profile.age)
+                e.rest = AnalyticsEngine.Rest.composite(daily: day, needHours: inputs.needHours,
+                                                        consistency: inputs.consistency).map { Int($0.rounded()) }
+                restCache = (key, e.rest)
+            }
         }
         if let w = model.activeWorkout {
             // Paused time is left out of the clock by shifting its start forward.

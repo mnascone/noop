@@ -1943,7 +1943,12 @@ struct TodayView: View {
         case .hero:
             classicHeroSection
         case .liveSession:
+            // iOS starts Live Session from the Workouts tab, during a workout.
+            #if os(macOS)
             if liveSessionsBeta { liveSessionStartSection }
+            #else
+            EmptyView()
+            #endif
         case .synthesis:
             synthesisSection
         case .keyMetrics:

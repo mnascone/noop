@@ -47,6 +47,12 @@ struct SleepScoreBreakdownView: View {
             VStack(alignment: .leading, spacing: NoopMetrics.space4) {
                 if let b = breakdown, let d = daily {
                     header(b, day: d.day)
+                    if let imported = repo.importedSleep[d.day]?.performancePct {
+                        Text("This night also has WHOOP's own score from your import: \(Int(imported.rounded())). The Sleep tab shows that one; the breakdown below is NOOP's scoring of the same night.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     ForEach(b.factors, id: \.kind) { f in
                         factorCard(f, b)
                     }

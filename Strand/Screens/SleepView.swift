@@ -39,6 +39,8 @@ struct SleepView: View {
     // leaf-scoping pattern and HealthView.swift:17-22), so a tick refreshes only that leaf.
     @EnvironmentObject var intelligence: IntelligenceEngine
     @EnvironmentObject private var profile: ProfileStore
+    /// The night whose score breakdown is showing (a sheet, so it opens from anywhere on this screen).
+    @State private var breakdownDay: SleepBreakdownTarget?
 
     /// Memoized snapshot of every expensive derivation (latest Night with its intervals
     /// resolved once, the seven metric series, the trend points, the typical means). Rebuilt
@@ -224,6 +226,16 @@ struct SleepView: View {
                 }
             }
             .onChangeCompat(of: intelligence.computing) { _ in observeResultChange() }
+            .sheet(item: $breakdownDay) { target in
+                NavigationStack {
+                    SleepScoreBreakdownView(dayKey: target.day)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { breakdownDay = nil }
+                            }
+                        }
+                }
+            }
             .onDisappear { resetResultNotice() }
             .task(id: resultNoticeRevision) {
                 guard resultNoticeVisible else { return }
@@ -515,6 +527,14 @@ struct SleepView: View {
     /// the Today tab's arrange entry and the Android Sleep affordance.
     private var sleepArrangeAffordance: some View {
         HStack(spacing: 0) {
+            NavigationLink {
+                SleepCalendarView()
+            } label: {
+                Label("Calendar", systemImage: "calendar")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+            }
+            .buttonStyle(.plain)
             Spacer()
             Button {
                 showSleepCustomize = true
@@ -545,8 +565,10 @@ struct SleepView: View {
             if let score {
                 // Same LiquidVessel gauge as Home (`LiquidTodayView` / `HeroScoreCell`). Tapping it opens
                 // the breakdown for this night.
-                NavigationLink(value: TabRoute.sleepScore(
-                    Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(night.session.endTs))))) {
+                Button {
+                    breakdownDay = SleepBreakdownTarget(
+                        day: Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(night.session.endTs))))
+                } label: {
                 VStack(spacing: 8) {
                     LiquidScoreGauge(
                         score: score,
@@ -593,7 +615,7 @@ struct SleepView: View {
             )
             .padding(.top, 8)
 
-            // Subtle Customize at the hero foot — functional, not competing with the gauge.
+            // Subtle Customize (and the calendar) at the hero foot — functional, not competing with the gauge.
             sleepArrangeAffordance
                 .padding(.horizontal, 16)
                 .padding(.top, 6)
@@ -2988,3 +3010,9 @@ private extension Repository {
     }
 }
 #endif
+
+/// Wraps a wake-day key for `.sheet(item:)`.
+struct SleepBreakdownTarget: Identifiable, Equatable {
+    let day: String
+    var id: String { day }
+}

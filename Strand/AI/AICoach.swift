@@ -951,6 +951,30 @@ final class AICoachEngine: ObservableObject {
         return clean.isEmpty ? nil : clean
     }
 
+    /// True when a headless request (the Today recommendation) may go out: coach on, set up, consented.
+    var canRecommend: Bool {
+        CoachBriefScheduler.coachMasterEnabled && isConfigured && dataConsent && resolvedKey != nil
+    }
+
+    private static let recommendationInstruction = """
+    Using the data above, tell me what to do today in two or three short sentences. \
+    Weigh today's charge against how many rest days I've had this week and what I trained recently. \
+    Name the session (or rest) and one thing to watch. Talk like a friend who coaches: plain, direct, \
+    no headings, no lists, no greeting, no sign-off, no exclamation marks.
+    """
+
+    /// The Today card's recommendation. Same gates as `generateBrief`, never touches the chat. `extra`
+    /// carries what the general context lacks (charge, rest days this week, the rule-based read).
+    func generateDailyRecommendation(extra: String) async -> String? {
+        guard canRecommend, let key = resolvedKey else { return nil }
+        let context = await buildFullContext()
+        let wire: [(role: ChatMessage.Role, content: String)] =
+            [(.user, context + "\n\n" + extra + "\n\n---\n\n" + Self.recommendationInstruction)]
+        guard let reply = try? await callProvider(key: key, messages: wire) else { return nil }
+        let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? nil : clean
+    }
+
     /// Full data context = the metrics summary + recent workouts (+ an OPT-IN on-device-signals summary
     /// when the second consent is on). Used when the user has granted data access.
     func buildFullContext() async -> String {

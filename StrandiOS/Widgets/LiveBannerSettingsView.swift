@@ -13,6 +13,14 @@ struct LiveBannerSettingsView: View {
     @AppStorage(LiveBannerPrefs.titleKey) private var title = ""
     @AppStorage(LiveBannerPrefs.islandFieldKey) private var islandRaw = ""
     @AppStorage(UnitPrefs.liveActivityKey) private var enabled = true
+    /// Which list "Add a field" is adding to. A full sheet instead of a pop-up menu: thirty-odd fields in
+    /// grouped sections overflowed the menu, which then couldn't scroll.
+    @State private var addingTo: AddTarget?
+
+    enum AddTarget: String, Identifiable {
+        case main, workout
+        var id: String { rawValue }
+    }
 
     var body: some View {
         List {
@@ -23,7 +31,7 @@ struct LiveBannerSettingsView: View {
             }
 
             if enabled {
-                fieldSection(String(localized: "Showing"), $fields, allowWorkoutOnly: true,
+                fieldSection(String(localized: "Showing"), $fields, target: .main, allowWorkoutOnly: true,
                              footer: String(localized: "Drag to reorder. Up to \(LiveBannerPrefs.maxFields). Workout fields (timers, sets, distance and so on) only show while a workout runs, and the timers keep counting on the Lock Screen."))
                     { LiveBannerPrefs.save(fields) }
 
@@ -36,7 +44,7 @@ struct LiveBannerSettingsView: View {
                     Text("Swap to a workout set, like rest timer, heart rate and sets, while a workout runs. Back to the normal set when it ends.")
                 }
                 if separateWorkout {
-                    fieldSection(String(localized: "During a workout"), $workoutFields, allowWorkoutOnly: true,
+                    fieldSection(String(localized: "During a workout"), $workoutFields, target: .workout, allowWorkoutOnly: true,
                                  footer: nil) { LiveBannerPrefs.saveWorkout(workoutFields) }
                 }
 
@@ -108,6 +116,17 @@ struct LiveBannerSettingsView: View {
             }
         }
         .environment(\.editMode, .constant(.active))
+        .sheet(item: $addingTo) { target in
+            BannerFieldPickerSheet(taken: target == .main ? fields : workoutFields) { f in
+                if target == .main {
+                    fields.append(f)
+                    LiveBannerPrefs.save(fields)
+                } else {
+                    workoutFields.append(f)
+                    LiveBannerPrefs.saveWorkout(workoutFields)
+                }
+            }
+        }
         .navigationTitle("Lock Screen")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -149,7 +168,8 @@ struct LiveBannerSettingsView: View {
     }
 
     @ViewBuilder
-    private func fieldSection(_ header: String, _ list: Binding<[LiveBannerField]>, allowWorkoutOnly: Bool,
+    private func fieldSection(_ header: String, _ list: Binding<[LiveBannerField]>, target: AddTarget,
+                              allowWorkoutOnly: Bool,
                               footer: String?, save: @escaping () -> Void) -> some View {
         Section {
             ForEach(list.wrappedValue, id: \.self) { f in
@@ -165,22 +185,7 @@ struct LiveBannerSettingsView: View {
                 save()
             }
             if list.wrappedValue.count < LiveBannerPrefs.maxFields {
-                Menu {
-                    ForEach(Self.groups, id: \.self) { group in
-                        Section(LocalizedStringKey(group)) {
-                            ForEach(LiveBannerField.allCases.filter {
-                                $0.group == group && !list.wrappedValue.contains($0)
-                            }, id: \.self) { f in
-                                Button {
-                                    list.wrappedValue.append(f)
-                                    save()
-                                } label: {
-                                    Label(LocalizedStringKey(f.label), systemImage: f.symbol)
-                                }
-                            }
-                        }
-                    }
-                } label: {
+                Button { addingTo = target } label: {
                     Label("Add a field", systemImage: "plus.circle.fill")
                 }
             }
@@ -205,5 +210,42 @@ struct LiveBannerSettingsView: View {
                     .foregroundStyle(StrandPalette.textTertiary)
             }
         }
+    }
+}
+
+/// Every banner field, grouped, in a scrolling list. Tapping one adds it and closes the sheet.
+private struct BannerFieldPickerSheet: View {
+    let taken: [LiveBannerField]
+    let onPick: (LiveBannerField) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(LiveBannerSettingsView.groups, id: \.self) { group in
+                    let options = LiveBannerField.allCases.filter { $0.group == group && !taken.contains($0) }
+                    if !options.isEmpty {
+                        Section(LocalizedStringKey(group)) {
+                            ForEach(options, id: \.rawValue) { f in
+                                Button {
+                                    onPick(f)
+                                    dismiss()
+                                } label: {
+                                    Label(LocalizedStringKey(f.label), systemImage: f.symbol)
+                                        .foregroundStyle(StrandPalette.textPrimary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .environment(\.editMode, .constant(.inactive))
+            .navigationTitle("Add a field")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }

@@ -218,7 +218,9 @@ final class LiveIntervalTracker: ObservableObject {
     /// of reps whose heart rate rose with it; everything between is rest, however much you move.
     private func motionSummary(now: Int) -> WorkRestSegmenter.Summary? {
         let reps = LiveRepTracker.shared
-        guard reps.active else { return nil }
+        // Switching rep counting off mid-workout keeps the sets it already counted; only a workout that
+        // never streamed motion falls back to heart rate.
+        guard reps.active || !reps.sets.isEmpty else { return nil }
         let sets = reps.sets
         let rests: [Int] = sets.count > 1
             ? (1..<sets.count).map { Int(sets[$0].start - sets[$0 - 1].end) } : []

@@ -14,6 +14,22 @@ struct LiveIntervalCard: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
+        // The settings sheet hangs off this always-present container, not the card, so switching the
+        // panel off from inside the sheet can't pull the sheet's anchor out from under it (which could
+        // close the whole workout screen with it).
+        VStack(spacing: 0) { content }
+            .sheet(isPresented: $showSettings) {
+                NavigationStack {
+                    SetReadySettingsView()
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } }
+                        }
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if !showPanel {
             // Hidden in settings: keep one small way back while a workout runs.
             if model.activeWorkout != nil {
@@ -116,14 +132,6 @@ struct LiveIntervalCard: View {
                 }
             }
             .accessibilityElement(children: .contain)
-            .sheet(isPresented: $showSettings) {
-                NavigationStack {
-                    SetReadySettingsView()
-                        .toolbar {
-                            ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } }
-                        }
-                }
-            }
         }
     }
 

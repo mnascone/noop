@@ -555,9 +555,12 @@ struct TrendsReportSheet: View {
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         #endif
         .background(StrandPalette.surfaceBase)
-        .frame(width: 460, height: 640)
         #if os(iOS)
+        // Fills the sheet on iPhone. The fixed size is only for the macOS sheet window: on a phone it ran
+        // past the screen edge.
         .noopSheetPresentation(largeFirst: true)
+        #else
+        .frame(width: 460, height: 640)
         #endif
         // Load the stored daily stress series for the Stress row (#457). The same
         // "my-whoop" series the Stress screen prioritises; the report never re-derives it.

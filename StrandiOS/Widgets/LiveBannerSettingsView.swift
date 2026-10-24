@@ -1,5 +1,6 @@
 import SwiftUI
 import StrandDesign
+import UIKit
 
 /// Everything about the Lock Screen / Dynamic Island banner: which fields, their order, a separate set for
 /// workouts, layout, labels, title, and the Dynamic Island's field.
@@ -37,6 +38,28 @@ struct LiveBannerSettingsView: View {
                 if separateWorkout {
                     fieldSection(String(localized: "During a workout"), $workoutFields, allowWorkoutOnly: true,
                                  footer: nil) { LiveBannerPrefs.saveWorkout(workoutFields) }
+                }
+
+                Section {
+                    ForEach(colorFields, id: \.self) { f in
+                        ColorPicker(selection: colorBinding(f), supportsOpacity: false) {
+                            Label {
+                                Text(LocalizedStringKey(f.label))
+                            } icon: {
+                                Image(systemName: f.symbol).foregroundStyle(color(f))
+                            }
+                        }
+                    }
+                    if !colorOverrides.isEmpty {
+                        Button("Reset colours") {
+                            colorOverrides = [:]
+                            UserDefaults.standard.removeObject(forKey: LiveBannerPrefs.colorsKey)
+                        }
+                    }
+                } header: {
+                    Text("Icon colours")
+                } footer: {
+                    Text("Each field has its own colour. Tap one to change it.")
                 }
 
                 Section("Look") {
@@ -78,6 +101,8 @@ struct LiveBannerSettingsView: View {
                         showLabels = true
                         title = ""
                         islandRaw = ""
+                        colorOverrides = [:]
+                        UserDefaults.standard.removeObject(forKey: LiveBannerPrefs.colorsKey)
                     }
                 }
             }
@@ -88,6 +113,40 @@ struct LiveBannerSettingsView: View {
     }
 
     static let groups = ["Live", "Today", "Last night", "WHOOP strap", "Workout"]
+
+    @State private var colorOverrides: [String: String] = LiveBannerPrefs.colors()
+
+    /// The fields on show in either set, each once.
+    private var colorFields: [LiveBannerField] {
+        var seen = Set<LiveBannerField>()
+        return (fields + (separateWorkout ? workoutFields : [])).filter { seen.insert($0).inserted }
+    }
+
+    private func color(_ f: LiveBannerField) -> Color {
+        Self.hexColor(LiveBannerPrefs.colorHex(f, overrides: colorOverrides))
+    }
+
+    private func colorBinding(_ f: LiveBannerField) -> Binding<Color> {
+        Binding(get: { color(f) }, set: { c in
+            guard let hex = Self.hex(c) else { return }
+            let value: String? = hex == f.defaultColorHex ? nil : hex
+            colorOverrides[f.rawValue] = value
+            LiveBannerPrefs.setColor(value, for: f)
+        })
+    }
+
+    static func hexColor(_ hex: String) -> Color {
+        let v = UInt32(hex, radix: 16) ?? 0x0A84FF
+        return Color(red: Double((v >> 16) & 0xFF) / 255, green: Double((v >> 8) & 0xFF) / 255,
+                     blue: Double(v & 0xFF) / 255)
+    }
+
+    static func hex(_ c: Color) -> String? {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard UIColor(c).getRed(&r, green: &g, blue: &b, alpha: &a) else { return nil }
+        func byte(_ x: CGFloat) -> Int { Int((min(1, max(0, x)) * 255).rounded()) }
+        return String(format: "%02X%02X%02X", byte(r), byte(g), byte(b))
+    }
 
     @ViewBuilder
     private func fieldSection(_ header: String, _ list: Binding<[LiveBannerField]>, allowWorkoutOnly: Bool,
@@ -135,7 +194,7 @@ struct LiveBannerSettingsView: View {
     private func row(_ f: LiveBannerField, first: Bool) -> some View {
         HStack(spacing: NoopMetrics.space3) {
             Image(systemName: f.symbol)
-                .foregroundStyle([.heartRate, .zone, .avgHr, .peakHr].contains(f) ? StrandPalette.statusCritical : StrandPalette.accent)
+                .foregroundStyle(color(f))
                 .frame(width: 24)
             Text(LocalizedStringKey(f.label))
                 .font(StrandFont.subhead)

@@ -85,6 +85,28 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
         }
     }
 
+    /// The icon colour out of the box, as RGB hex. Each field gets its own so they're easy to tell apart.
+    public var defaultColorHex: String {
+        switch self {
+        case .heartRate, .avgHr, .peakHr: return "FF453A"
+        case .zone: return "FF9F0A"
+        case .charge: return "30D158"
+        case .effort, .workoutEffort: return "FF9F0A"
+        case .rest, .sleepTime: return "8E7CFF"
+        case .steps: return "64D2FF"
+        case .calories: return "FF6B3D"
+        case .hrv: return "BF5AF2"
+        case .restingHr: return "FF375F"
+        case .workoutTime, .restTimer: return "FFD60A"
+        case .sets: return "5AC8FA"
+        case .battery, .batteryTime: return "34C759"
+        case .skinTemp: return "FFB340"
+        case .respiration: return "64D2FF"
+        case .spo2: return "0A84FF"
+        case .distance, .pace: return "66D4CF"
+        }
+    }
+
     /// Fields that only have a value during a workout. Shown only while one is running.
     public var workoutOnly: Bool {
         switch self {
@@ -136,6 +158,8 @@ public enum LiveBannerPrefs {
     public static let showLabelsKey = "liveActivity.showLabels"
     public static let titleKey = "liveActivity.title"
     public static let workoutFieldsKey = "liveActivity.workoutFields"
+    /// Icon colour overrides: field raw value → RGB hex.
+    public static let colorsKey = "liveActivity.colors"
 
     /// The banner as it always was: heart rate, Charge, Effort.
     public static let defaultFields: [LiveBannerField] = [.heartRate, .charge, .effort]
@@ -177,6 +201,21 @@ public enum LiveBannerPrefs {
     public static func title(_ d: UserDefaults = .standard) -> String? {
         let t = (d.string(forKey: titleKey) ?? "").trimmingCharacters(in: .whitespaces)
         return t.isEmpty ? nil : String(t.prefix(24))
+    }
+
+    /// The user's colour overrides (field raw value → hex). Missing fields use `defaultColorHex`.
+    public static func colors(_ d: UserDefaults = .standard) -> [String: String] {
+        (d.dictionary(forKey: colorsKey) as? [String: String]) ?? [:]
+    }
+
+    public static func setColor(_ hex: String?, for field: LiveBannerField, _ d: UserDefaults = .standard) {
+        var c = colors(d)
+        c[field.rawValue] = hex
+        if c.isEmpty { d.removeObject(forKey: colorsKey) } else { d.set(c, forKey: colorsKey) }
+    }
+
+    public static func colorHex(_ field: LiveBannerField, overrides: [String: String]) -> String {
+        overrides[field.rawValue] ?? field.defaultColorHex
     }
 
     private static func decode(_ raw: [Any]?) -> [LiveBannerField]? {

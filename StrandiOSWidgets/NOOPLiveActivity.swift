@@ -27,11 +27,15 @@ struct NOOPLiveActivity: Widget {
         return fields(state).first ?? .heartRate
     }
 
-    static func tint(_ f: LiveBannerField) -> Color {
-        switch f {
-        case .heartRate, .zone, .avgHr, .peakHr: return StrandPalette.statusCritical
-        default: return StrandPalette.accent
-        }
+    /// The field's icon colour: the user's pick sent with the state, else the field's own default.
+    static func tint(_ f: LiveBannerField, _ state: NOOPActivityAttributes.ContentState) -> Color {
+        hexColor(LiveBannerPrefs.colorHex(f, overrides: state.colors ?? [:]))
+    }
+
+    static func hexColor(_ hex: String) -> Color {
+        let v = UInt32(hex.trimmingCharacters(in: CharacterSet(charactersIn: "#")), radix: 16) ?? 0x0A84FF
+        return Color(red: Double((v >> 16) & 0xFF) / 255, green: Double((v >> 8) & 0xFF) / 255,
+                     blue: Double(v & 0xFF) / 255)
     }
 
     var body: some WidgetConfiguration {
@@ -50,7 +54,7 @@ struct NOOPLiveActivity: Widget {
                             ForEach(fields, id: \.self) { f in
                                 VStack(spacing: 3) {
                                     HStack(spacing: 4) {
-                                        Image(systemName: f.symbol).font(.caption).foregroundStyle(Self.tint(f))
+                                        Image(systemName: f.symbol).font(.caption).foregroundStyle(Self.tint(f, context.state))
                                         if labels {
                                             Text(f.label).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
                                                 .lineLimit(1).minimumScaleFactor(0.7)
@@ -68,7 +72,7 @@ struct NOOPLiveActivity: Widget {
                         if let primary = fields.first {
                             Image(systemName: primary.symbol)
                                 .font(.title2)
-                                .foregroundStyle(Self.tint(primary))
+                                .foregroundStyle(Self.tint(primary, context.state))
                             VStack(alignment: .leading, spacing: 2) {
                                 if labels {
                                     Text(state.title ?? state.workoutSport ?? primary.label)
@@ -84,7 +88,7 @@ struct NOOPLiveActivity: Widget {
                                     if labels {
                                         Text(f.label).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
                                     } else {
-                                        Image(systemName: f.symbol).font(.caption2).foregroundStyle(Self.tint(f))
+                                        Image(systemName: f.symbol).font(.caption2).foregroundStyle(Self.tint(f, context.state))
                                     }
                                     FieldValue(field: f, context: context, size: .small)
                                 }
@@ -108,7 +112,7 @@ struct NOOPLiveActivity: Widget {
                         Image(systemName: island.symbol)
                         FieldValue(field: island, context: context, size: .small)
                     }
-                    .foregroundStyle(Self.tint(island))
+                    .foregroundStyle(Self.tint(island, context.state))
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     HStack(spacing: 10) {
@@ -127,11 +131,11 @@ struct NOOPLiveActivity: Widget {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             } compactLeading: {
-                Image(systemName: island.symbol).foregroundStyle(Self.tint(island))
+                Image(systemName: island.symbol).foregroundStyle(Self.tint(island, context.state))
             } compactTrailing: {
                 FieldValue(field: island, context: context, size: .small)
             } minimal: {
-                Image(systemName: island.symbol).foregroundStyle(Self.tint(island))
+                Image(systemName: island.symbol).foregroundStyle(Self.tint(island, context.state))
             }
         }
     }

@@ -124,11 +124,13 @@ final class LiveActivityController {
         var layout: LiveBannerLayout
         var showLabels: Bool
         var title: String?
+        var colors: [String: String]
 
         static func load() -> BannerPrefs {
             BannerPrefs(fields: LiveBannerPrefs.load(), workoutFields: LiveBannerPrefs.loadWorkout(),
                         islandField: LiveBannerPrefs.islandField(), layout: LiveBannerPrefs.layout(),
-                        showLabels: LiveBannerPrefs.showLabels(), title: LiveBannerPrefs.title())
+                        showLabels: LiveBannerPrefs.showLabels(), title: LiveBannerPrefs.title(),
+                        colors: LiveBannerPrefs.colors())
         }
     }
     private var prefs = BannerPrefs.load()
@@ -154,6 +156,7 @@ final class LiveActivityController {
         var showLabels = true
         var title: String?
         var texts: [String: String] = [:]
+        var colors: [String: String] = [:]
     }
 
     /// Pre-formatted values for the later banner fields, only for the ones on show.
@@ -202,6 +205,9 @@ final class LiveActivityController {
         e.layout = prefs.layout
         e.showLabels = prefs.showLabels
         e.title = prefs.title
+        for f in e.fields + [e.islandField].compactMap({ $0 }) {
+            e.colors[f.rawValue] = LiveBannerPrefs.colorHex(f, overrides: prefs.colors)
+        }
         let today = model.repo.today
         if e.fields.contains(.steps) { e.steps = today?.steps ?? day?.steps }
         if e.fields.contains(.calories) {
@@ -305,7 +311,7 @@ final class LiveActivityController {
             setCount: extras.setCount,
             steps: extras.steps, calories: extras.calories, zone: extras.zone, hrv: extras.hrv,
             restingHr: extras.restingHr, islandField: extras.islandField, layout: extras.layout,
-            showLabels: extras.showLabels, title: extras.title, texts: extras.texts)
+            showLabels: extras.showLabels, title: extras.title, texts: extras.texts, colors: extras.colors)
 
         if step == .renew, activity != nil {
             // The fresh banner first, then the old one goes, so the Lock Screen is never without one; if iOS refuses

@@ -46,4 +46,40 @@ final class SetReadinessTests: XCTestCase {
         // Age 30: max 187, resting 60, 75% of reserve = 155.
         XCTAssertEqual(SetReadiness.assumedPeak(restingBpm: 60, age: 30), 155)
     }
+
+    /// A warm-up from 95 to 115: measured from where the set started, ready at about 104, not near resting.
+    func testWarmupMeasuresFromSetStart() {
+        let c = SetReadiness.Config(minRestS: 30)
+        let t = SetReadiness.thresholds(config: c, restingBpm: 60, setPeakBpm: 115, age: 30, hrvRatio: 1,
+                                        setStartBpm: 95)
+        XCTAssertEqual(t.greenBpm, 104)
+        // A rise of 20 isn't "light", so it still waits for 104.
+        XCTAssertEqual(SetReadiness.read(config: c, currentBpm: 108, restS: 40, restingBpm: 60, setPeakBpm: 115,
+                                         age: 30, hrvRatio: 1, setStartBpm: 95).light, .yellow)
+        XCTAssertEqual(SetReadiness.read(config: c, currentBpm: 103, restS: 40, restingBpm: 60, setPeakBpm: 115,
+                                         age: 30, hrvRatio: 1, setStartBpm: 95).light, .green)
+    }
+
+    /// A set that barely moved heart rate is ready once the minimum rest is up.
+    func testLightSetIsReadyAfterMinimumRest() {
+        let c = SetReadiness.Config(minRestS: 30)
+        let early = SetReadiness.read(config: c, currentBpm: 104, restS: 20, restingBpm: 60, setPeakBpm: 106,
+                                      age: 30, hrvRatio: 1, setStartBpm: 95)
+        XCTAssertNotEqual(early.light, .green)
+        let after = SetReadiness.read(config: c, currentBpm: 104, restS: 31, restingBpm: 60, setPeakBpm: 106,
+                                      age: 30, hrvRatio: 1, setStartBpm: 95)
+        XCTAssertEqual(after.light, .green)
+    }
+
+    /// Heart rate levelled off inside "almost": go rather than wait for a number it won't reach.
+    func testPlateauInsideYellowGoesGreen() {
+        let c = SetReadiness.Config(minRestS: 30)
+        let r = SetReadiness.read(config: c, currentBpm: 135, restS: 90, restingBpm: 60, setPeakBpm: 160,
+                                  age: 30, hrvRatio: 1, setStartBpm: 100, plateaued: true)
+        XCTAssertEqual(r.light, .green)
+        // Still well above "almost": a plateau there stays red.
+        let hot = SetReadiness.read(config: c, currentBpm: 150, restS: 90, restingBpm: 60, setPeakBpm: 160,
+                                    age: 30, hrvRatio: 1, setStartBpm: 100, plateaued: true)
+        XCTAssertEqual(hot.light, .red)
+    }
 }

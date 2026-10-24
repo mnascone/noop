@@ -185,9 +185,33 @@ final class LiveIntervalTracker: ObservableObject {
               let rest = s.currentRestS, let hr = model?.live.heartRate, hr > 0 else { return nil }
         let reps = LiveRepTracker.shared
         let peak = setsFromMotion ? reps.sets.last.flatMap { reps.peakHR($0) } : seg.intervals.last?.peakBpm
+        let startTs = setsFromMotion ? reps.sets.last.map { Int($0.start) } : seg.intervals.last?.startTs
         return SetReadiness.read(config: SetReadyPrefs.config, currentBpm: hr, restS: rest,
                                  restingBpm: basis.resting, setPeakBpm: peak,
-                                 age: basis.age, hrvRatio: basis.hrvRatio)
+                                 age: basis.age, hrvRatio: basis.hrvRatio,
+                                 setStartBpm: startTs.flatMap(heartRate(near:)),
+                                 plateaued: heartRatePlateaued())
+    }
+
+    /// Heart rate as a set began: the median of the 10 s before it to 3 s in.
+    private func heartRate(near ts: Int) -> Int? {
+        let v = hrHistory.filter { $0.ts >= ts - 10 && $0.ts <= ts + 3 }.map(\.bpm).sorted()
+        return v.isEmpty ? nil : v[v.count / 2]
+    }
+
+    /// Heart rate has stopped coming down: the last 20 s sit within 4 bpm, and the newest 10 s are no
+    /// lower than the 10 s before them.
+    private func heartRatePlateaued() -> Bool {
+        guard let last = hrHistory.last else { return false }
+        let recent = hrHistory.suffix(40).filter { last.ts - $0.ts <= 20 }
+        guard recent.count >= 10 else { return false }
+        let bpms = recent.map(\.bpm)
+        guard let hi = bpms.max(), let lo = bpms.min(), hi - lo <= 4 else { return false }
+        let newer = recent.filter { last.ts - $0.ts < 10 }.map(\.bpm)
+        let older = recent.filter { last.ts - $0.ts >= 10 }.map(\.bpm)
+        guard !newer.isEmpty, !older.isEmpty else { return false }
+        let mean = { (x: [Int]) in Double(x.reduce(0, +)) / Double(x.count) }
+        return mean(newer) >= mean(older) - 0.5
     }
 
     /// Sets and rests from the strap's motion, when rep counting is streaming it: a set is a steady run

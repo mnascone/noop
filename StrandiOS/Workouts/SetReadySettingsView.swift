@@ -70,7 +70,7 @@ struct SetReadySettingsView: View {
                 Text("Heart rate")
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Personal thresholds come from how high your heart rate went in the set you just finished: green once most of that rise has come back off. Shown here for a typical hard set. During a workout they follow your actual sets.")
+                    Text("Personal thresholds come from how far your heart rate rose in the set you just finished, from where it was when the set started: green once most of that rise has come back off. A warm-up that barely raised it is ready after the minimum rest, and so is a rest where heart rate has stopped dropping. Shown here for a typical hard set. During a workout they follow your actual sets.")
                     if let hrvLine { Text(hrvLine) }
                 }
             }

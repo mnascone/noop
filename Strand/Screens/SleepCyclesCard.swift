@@ -33,9 +33,12 @@ struct SleepCyclesCard: View {
             VStack(alignment: .leading, spacing: NoopMetrics.space3) {
                 Text("Cycles and REM").strandOverline()
                 if let r = result {
-                    HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space4) {
+                    // Three equal columns, centred, so the figures sit evenly however long each one is.
+                    HStack(spacing: 0) {
                         bigStat("\(r.cycles)", r.cycles == 1 ? String(localized: "cycle") : String(localized: "cycles"))
+                        Divider().frame(height: 34).overlay(StrandPalette.hairline)
                         bigStat(Self.minutes(r.cycleSpans.reduce(0) { $0 + $1.remMinutes }), String(localized: "REM in all"))
+                        Divider().frame(height: 34).overlay(StrandPalette.hairline)
                         bigStat(r.remLatencyMinutes.map(Self.minutes) ?? "–", String(localized: "to first REM"))
                     }
                     cycleStrip(r)
@@ -304,10 +307,19 @@ struct SleepCyclesCard: View {
     }
 
     private func bigStat(_ value: String, _ label: String) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(value).font(StrandFont.number(28)).foregroundStyle(StrandPalette.textPrimary)
-            Text(label).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+        VStack(spacing: 2) {
+            Text(value)
+                .font(StrandFont.number(24))
+                .foregroundStyle(StrandPalette.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Text(label)
+                .font(StrandFont.caption)
+                .foregroundStyle(StrandPalette.textTertiary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
+        .frame(maxWidth: .infinity)
     }
 
     static func minutes(_ m: Double) -> String {

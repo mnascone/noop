@@ -132,7 +132,8 @@ final class LiveIntervalTracker: ObservableObject {
     func notes(start: Int, end: Int) -> String? {
         guard let seg = segmenter, let m = mode, trackedStart == start else { return nil }
         let inWorkout = seg.intervals.filter { $0.endTs <= end }
-        guard !inWorkout.isEmpty else { return nil }
+        let reps = LiveRepTracker.shared.notesLine(start: start)
+        guard !inWorkout.isEmpty else { return reps }
         let rests = inWorkout.count > 1
             ? (1..<inWorkout.count).map { inWorkout[$0].startTs - inWorkout[$0 - 1].endTs } : []
         var parts = ["\(inWorkout.count) \(LiveIntervalModes.unitName(m, count: inWorkout.count))"]
@@ -143,7 +144,8 @@ final class LiveIntervalTracker: ObservableObject {
         }
         let work = inWorkout.map(\.durationS).reduce(0, +)
         parts.append(String(localized: "\(Self.clock(work)) working"))
-        return parts.joined(separator: " · ") + " " + String(localized: "(estimated from heart rate)")
+        let line = parts.joined(separator: " · ") + " " + String(localized: "(estimated from heart rate)")
+        return reps.map { line + "\n" + $0 } ?? line
     }
 
     static func clock(_ seconds: Int) -> String {

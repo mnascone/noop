@@ -97,6 +97,7 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         self.model = model
         registerCategories()
         LiveIntervalTracker.shared.attach(model: model)
+        LiveRepTracker.shared.attach(model: model)
 
         engine.config.restingBpm = Self.restingBpm(model.repo)
         model.repo.$days

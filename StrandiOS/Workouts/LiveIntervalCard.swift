@@ -6,6 +6,7 @@ import StrandAnalytics
 /// aren't tracked.
 struct LiveIntervalCard: View {
     @ObservedObject private var tracker = LiveIntervalTracker.shared
+    @ObservedObject private var reps = LiveRepTracker.shared
 
     var body: some View {
         if let mode = tracker.mode, let s = tracker.summary {
@@ -26,6 +27,9 @@ struct LiveIntervalCard: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                         .contentTransition(.numericText())
                         .monospacedDigit()
+                    if mode == .lifting, reps.active || !reps.sets.isEmpty {
+                        repRow
+                    }
                     HStack(spacing: NoopMetrics.space4) {
                         stat(String(localized: "Last rest"), s.lastRestS)
                         stat(String(localized: "Avg rest"), s.avgRestS)
@@ -40,6 +44,50 @@ struct LiveIntervalCard: View {
                 }
             }
             .accessibilityElement(children: .combine)
+        }
+    }
+
+    /// Reps per finished set from wrist motion, plus the set in progress.
+    private var repRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "hand.raised.fingers.spread")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.accent)
+                Text("Reps")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                if let now = reps.currentReps {
+                    Text(String(localized: "this set: \(now)"))
+                        .font(StrandFont.captionNumber)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                        .contentTransition(.numericText())
+                }
+                Spacer()
+            }
+            if !reps.sets.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(Array(reps.sets.enumerated()), id: \.offset) { i, set in
+                            VStack(spacing: 0) {
+                                Text("\(set.reps)")
+                                    .font(StrandFont.headline)
+                                    .foregroundStyle(StrandPalette.textPrimary)
+                                Text(String(localized: "set \(i + 1)"))
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(StrandPalette.textTertiary)
+                            }
+                            .frame(minWidth: 40)
+                            .padding(.vertical, 4)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(StrandPalette.surfaceInset))
+                        }
+                    }
+                }
+            } else {
+                Text("Counting from your strap's motion. Finished sets show here.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+            }
         }
     }
 

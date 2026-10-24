@@ -10,6 +10,7 @@ struct AutoTrackingSettingsView: View {
     @AppStorage(AutoTrackingPrefs.placesModeKey) private var placesModeRaw = AutoTrackingPrefs.Mode.auto.rawValue
     @AppStorage(AutoTrackingPrefs.walkModeKey) private var walkModeRaw = AutoTrackingPrefs.Mode.auto.rawValue
     @AppStorage(AutoTrackingPrefs.intervalSensitivityKey) private var sensitivity = 1.0
+    @AppStorage(LiveRepTracker.enabledKey) private var repCounting = false
 
     var body: some View {
         Form {
@@ -66,6 +67,14 @@ struct AutoTrackingSettingsView: View {
                 Text("Set and interval detection")
             } footer: {
                 Text("Counts sets and rests from heart rate for Strength, Weightlifting, Bodybuilding, Powerlifting and Calisthenics, and intervals for Assault bike, Sprints, HIIT, CrossFit, Spinning and machines. If it's merging sets, slide right. If it's splitting one set into two, slide left. Applies from the next workout.")
+            }
+
+            Section {
+                Toggle("Count reps from wrist motion", isOn: $repCounting)
+            } header: {
+                Text("Reps (experimental)")
+            } footer: {
+                Text("WHOOP 5.0 and MG only. During a lifting workout the strap streams its motion sensors, and NOOP counts reps in each set and splits sets where you stop moving. Works when your wrist moves with the weight (presses, curls, rows, pull-ups, bar squats and deadlifts), not when your hands stay still (leg press, leg extension). Uses more strap battery while you lift, and stops when the workout ends.")
             }
 
             if placesEnabled || walkEnabled {

@@ -1042,28 +1042,40 @@ struct SleepView: View {
     /// empty note rather than a fabricated flat zero trace.
     @ViewBuilder
     private func motionStrip(_ night: Night) -> some View {
-        // Label above the trace, plot inset 10pt to line up with the stage-timeline rows' strips
-        // (the old 44+12 gutter matched the removed Hypnogram's y-axis column). (ryanAtriumAi #988)
-        VStack(alignment: .leading, spacing: 2) {
-            // "Move" alone did not say what the height means. The trace is normalised to THIS night's
-            // peak, so the tallest spike is full height whatever its absolute size and heights do not
-            // compare between nights. The strap calibrates no absolute magnitude, so naming the scale
-            // is the honest axis label rather than a number. Twin of the Kotlin `MotionStrip` label.
-            Text("Move, relative to tonight")
-                .font(StrandFont.footnote)
+        // One slim line: the trace (scaled to this night's own peak, so heights don't compare across
+        // nights) with the time of the most movement beside it, instead of a captioned block.
+        HStack(alignment: .center, spacing: NoopMetrics.space2) {
+            Text("Movement")
+                .font(StrandFont.caption)
                 .foregroundStyle(StrandPalette.textTertiary)
+                .fixedSize()
             if night.motionEpochs.count >= 2 {
-                MotionTrace(epochs: night.motionEpochs, height: 40, tint: StrandPalette.restColor)
-                    .padding(.horizontal, 10)
+                MotionTrace(epochs: night.motionEpochs, height: 22, tint: StrandPalette.restColor)
+                if let peak = Self.peakMovementTime(night) {
+                    Text(String(localized: "most at \(peak.formatted(date: .omitted, time: .shortened))"))
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize()
+                }
             } else {
                 Text("No movement detail for this night")
-                    .font(StrandFont.footnote)
+                    .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
-                    .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
-                    .accessibilityLabel(Text("No movement detail recorded for this night"))
+                Spacer(minLength: 0)
             }
         }
-        .accessibilityElement(children: .contain)
+        .frame(minHeight: 22)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// When the strap saw the most movement in the night, from the per-epoch trace laid evenly across the
+    /// sleep window. nil without a trace.
+    static func peakMovementTime(_ night: Night) -> Date? {
+        let e = night.motionEpochs
+        guard e.count >= 2, let i = e.indices.max(by: { e[$0] < e[$1] }), e[i] > 0 else { return nil }
+        let start = Double(night.session.effectiveStartTs), end = Double(night.session.endTs)
+        guard end > start else { return nil }
+        return Date(timeIntervalSince1970: start + (end - start) * (Double(i) + 0.5) / Double(e.count))
     }
 
     /// H9 — true when this night's staging is LOW-CONFIDENCE: a high-efficiency night (lots of measured

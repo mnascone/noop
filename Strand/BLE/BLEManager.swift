@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import CoreBluetooth
 import WhoopProtocol
 import WhoopStore
@@ -2226,6 +2227,41 @@ public final class BLEManager: NSObject, ObservableObject {
             }
             self.log("Raw-accel capture: stopped + flushed")
         }
+    }
+
+    /// Live wrist-motion frames (WHOOP 5.0/MG raw IMU, 100 Hz accel + gyro, one frame a second). Only
+    /// published while `repImuActive`, so nothing is decoded otherwise.
+    public let imuFrames = PassthroughSubject<Whoop5ImuFrame, Never>()
+    public private(set) var repImuActive = false
+    /// True when rep counting started the stream itself (and so stops it). False when it rode along on a
+    /// raw-data session or the always-on research capture that was already streaming.
+    private var repImuOwnsStream = false
+
+    /// Whether this strap can stream raw motion (WHOOP 5.0/MG).
+    public var supportsLiveImu: Bool { selectedModel.deviceFamily == .whoop5 }
+
+    /// Stream raw motion for rep counting. The same reversible START_RAW_DATA + TOGGLE_IMU_MODE pair the
+    /// raw-data session sends, stopped by `stopRepImu`. Returns false on a strap that can't.
+    @discardableResult
+    public func startRepImu() -> Bool {
+        guard supportsLiveImu, state.connected else { return false }
+        if repImuActive { return true }
+        repImuActive = true
+        if rawCaptureInFlight || UserDefaults.standard.bool(forKey: "enableRawCapture") {
+            repImuOwnsStream = false
+        } else {
+            repImuOwnsStream = startGroundTruthRawCapture(sessionId: "rep-counting")
+        }
+        log("Rep counting: wrist motion stream on (owns stream: \(repImuOwnsStream))")
+        return true
+    }
+
+    public func stopRepImu() async {
+        guard repImuActive else { return }
+        repImuActive = false
+        if repImuOwnsStream { await stopGroundTruthRawCapture() }
+        repImuOwnsStream = false
+        log("Rep counting: wrist motion stream off")
     }
 
     /// Start a manually stopped 5/MG raw-data session. Returns false when another capture is active.
@@ -7534,6 +7570,10 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                     // BEFORE the offload branch so it catches the burst; no-op unless capture is on.
                     puffinDeepBufferLog.appendIfDeepBuffer(frame: frame, char: characteristic.uuid, isOffload: isOffload)
                     stopUnexpectedRealtimeImu(frame, isOffload: isOffload)
+                    if repImuActive, !isOffload, frame.count == Whoop5RawImu.bufferLength,
+                       let imu = Whoop5RawImu.decode(frame) {
+                        imuFrames.send(imu)
+                    }
                     // #423: the queryable twin of that diagnostics line — persist the decoded 100 Hz 6-axis
                     if isOffload {
                         // Same policy as WHOOP4: historical offload frames are bulk sync traffic.

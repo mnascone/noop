@@ -88,32 +88,61 @@ struct PacingDialCard: View {
             compactCard(short)
         case .both:
             NoopCard {
-                VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
-                    SectionHeader("Charge vs Effort", overline: "Pacing")
+                VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Charge vs Effort").font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
+                        Spacer()
+                        Text("Pacing").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                    }
                     if let overall = PacingMath.overall(short: short, long: long) {
                         Text(long == nil ? Self.shortHeadline(overall) : Self.longHeadline(overall))
-                            .font(StrandFont.subhead.weight(.semibold))
-                            .foregroundStyle(StrandPalette.textPrimary)
+                            .font(StrandFont.subhead)
+                            .foregroundStyle(StrandPalette.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
-                        HStack(alignment: .top, spacing: NoopMetrics.space3) {
-                            dialColumn(String(localized: "Short term"), String(localized: "3 days vs 11 before"),
-                                       short, left: "Under", right: "Too hard")
-                            dialColumn(String(localized: "Long term"), String(localized: "7 days vs 4 weeks before"),
-                                       long, left: "Recovering", right: "Overreaching")
-                        }
-                        if let p = long ?? short { figures(p) }
-                        Text(long == nil
-                             ? "Long term needs about 5 weeks of data. Until then this uses the short term."
-                             : "The overall read weighs long term more than short term.")
-                            .font(StrandFont.caption)
-                            .foregroundStyle(StrandPalette.textTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        paceRow(String(localized: "Short term"), String(localized: "3 days"), short)
+                        Divider().overlay(StrandPalette.hairline.opacity(0.5))
+                        paceRow(String(localized: "Long term"), String(localized: "7 vs 28 days"), long)
                     } else {
                         empty("Needs about 2 weeks of Charge and Effort to compare against your usual.")
                     }
                 }
             }
             .accessibilityElement(children: .combine)
+        }
+    }
+
+    /// One window: a small gauge, its name, a status chip, and the numbers against usual.
+    private func paceRow(_ title: String, _ window: String, _ p: PacingMath.Pacing?) -> some View {
+        HStack(alignment: .center, spacing: NoopMetrics.space3) {
+            PacingDial(balance: p?.balance ?? 0, compact: true, showsLabels: false)
+                .frame(width: 64, height: 38)
+                .opacity(p == nil ? 0.3 : 1)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(title).font(StrandFont.subhead.weight(.semibold)).foregroundStyle(StrandPalette.textPrimary)
+                    if let p {
+                        Text(Self.stateWord(p.balance))
+                            .font(StrandFont.caption.weight(.semibold))
+                            .foregroundStyle(Self.stateColor(p.balance))
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(Capsule().fill(Self.stateColor(p.balance).opacity(0.15)))
+                    }
+                    Spacer(minLength: 0)
+                    Text(window).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                        .lineLimit(1)
+                }
+                if let p {
+                    Text(String(localized: "Effort \(UnitFormatter.effortDisplay(p.effortRecent, scale: effortScale)) vs \(UnitFormatter.effortDisplay(p.effortUsual, scale: effortScale)) · Charge \(Int(p.chargeRecent.rounded())) vs \(Int(p.chargeUsual.rounded()))"))
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                } else {
+                    Text("Needs about 5 weeks of data.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
+            }
         }
     }
 
@@ -181,36 +210,6 @@ struct PacingDialCard: View {
         }
     }
 
-    private func dialColumn(_ title: String, _ sub: String, _ p: PacingMath.Pacing?,
-                            left: LocalizedStringKey, right: LocalizedStringKey) -> some View {
-        VStack(spacing: 4) {
-            Text(title).font(StrandFont.caption.weight(.semibold)).foregroundStyle(StrandPalette.textSecondary)
-            if let p {
-                PacingDial(balance: p.balance, leftLabel: left, rightLabel: right, compact: true)
-                    .frame(height: 78)
-            } else {
-                Text("Not enough data yet")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .frame(height: 78)
-            }
-            Text(sub).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func figures(_ p: PacingMath.Pacing) -> some View {
-        HStack {
-            figure(String(localized: "Charge"), now: "\(Int(p.chargeRecent.rounded()))",
-                   usual: "\(Int(p.chargeUsual.rounded()))", tint: StrandPalette.chargeColor)
-            Spacer()
-            figure(String(localized: "Effort"),
-                   now: UnitFormatter.effortDisplay(p.effortRecent, scale: effortScale),
-                   usual: UnitFormatter.effortDisplay(p.effortUsual, scale: effortScale),
-                   tint: StrandPalette.effortColor)
-        }
-    }
-
     private func empty(_ text: LocalizedStringKey) -> some View {
         Text(text)
             .font(StrandFont.subhead)
@@ -237,13 +236,6 @@ struct PacingDialCard: View {
         }
     }
 
-    private func figure(_ label: String, now: String, usual: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-            Text(now).font(StrandFont.headline).foregroundStyle(tint)
-            Text(String(localized: "usually \(usual)")).font(StrandFont.caption).foregroundStyle(StrandPalette.textSecondary)
-        }
-    }
 }
 
 /// A speedometer: half circle from green (left) to red (right) with ticks and a needle at `balance`

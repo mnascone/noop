@@ -15,6 +15,7 @@ import WhoopStore
 ///
 ///   D,yyyy-MM-dd,steps,activeKcal,restingHr,hrvMs,avgHr,asleepMin,vo2max,weightKg
 ///   W,startUnix,endUnix,sport,durationS,energyKcal,distanceM
+///   N,yyyy-MM-dd,kcalEaten,proteinG,carbsG,fatG      (food log totals, e.g. MacroFactor via Health)
 ///
 /// Empty fields keep their commas (fixed column positions); a missing optional is empty, not 0.
 ///
@@ -85,10 +86,22 @@ enum ShortcutHealthImport {
         var distanceM: Double? = nil
     }
 
+    /// A parsed nutrition line: the day's food-log totals. Its own record kind so a nutrition-only
+    /// Shortcut never writes the empty daily columns a `D` line would.
+    struct ParsedNutrition: Equatable {
+        let day: String
+        var kcal: Double? = nil
+        var proteinG: Double? = nil
+        var carbsG: Double? = nil
+        var fatG: Double? = nil
+        var hasAny: Bool { kcal != nil || proteinG != nil || carbsG != nil || fatG != nil }
+    }
+
     struct Parsed: Equatable {
         var days: [ParsedDay] = []
         var workouts: [ParsedWorkout] = []
-        var isEmpty: Bool { days.isEmpty && workouts.isEmpty }
+        var nutrition: [ParsedNutrition] = []
+        var isEmpty: Bool { days.isEmpty && workouts.isEmpty && nutrition.isEmpty }
     }
 
     struct PendingImport: Identifiable, Equatable {
@@ -98,6 +111,7 @@ enum ShortcutHealthImport {
 
         var daysCount: Int { parsed.days.count }
         var workoutsCount: Int { parsed.workouts.count }
+        var nutritionCount: Int { parsed.nutrition.count }
     }
 
     // MARK: - URL → outcome
@@ -160,6 +174,8 @@ enum ShortcutHealthImport {
                 if let d = parseDay(f) { out.days.append(d) }
             case "W":
                 if let w = parseWorkout(f) { out.workouts.append(w) }
+            case "N":
+                if let n = parseNutrition(f) { out.nutrition.append(n) }
             default:
                 continue   // forward-compatible: ignore record kinds this build doesn't know
             }
@@ -186,6 +202,27 @@ enum ShortcutHealthImport {
         d.vo2max     = field(f, 8).flatMap { Double($0) }
         d.weightKg   = field(f, 9).flatMap { Double($0) }
         return d.hasAnyMetric ? d : nil
+    }
+
+    private static func parseNutrition(_ f: [String]) -> ParsedNutrition? {
+        // N,day,kcal,proteinG,carbsG,fatG — Shortcuts may print a decimal comma-free number with units
+        // stripped; anything unparseable is simply absent.
+        guard let day = field(f, 1), isValidDay(day) else { return nil }
+        func num(_ i: Int) -> Double? { field(f, i).flatMap { Double($0) }.flatMap { $0 >= 0 ? $0 : nil } }
+        let n = ParsedNutrition(day: day, kcal: num(2), proteinG: num(3), carbsG: num(4), fatG: num(5))
+        return n.hasAny ? n : nil
+    }
+
+    static func nutritionPointRows(_ rows: [ParsedNutrition]) -> [MetricPoint] {
+        var out: [MetricPoint] = []
+        for n in rows {
+            func add(_ key: String, _ v: Double?) { if let v { out.append(MetricPoint(day: n.day, key: key, value: v)) } }
+            add(NutritionKeys.kcal, n.kcal)
+            add(NutritionKeys.protein, n.proteinG)
+            add(NutritionKeys.carbs, n.carbsG)
+            add(NutritionKeys.fat, n.fatG)
+        }
+        return out
     }
 
     private static func parseWorkout(_ f: [String]) -> ParsedWorkout? {
@@ -307,6 +344,9 @@ enum ShortcutHealthImport {
             }
             if !parsed.workouts.isEmpty {
                 try await store.upsertWorkouts(workoutRows(parsed.workouts), deviceId: source)
+            }
+            if !parsed.nutrition.isEmpty {
+                try await store.upsertMetricSeries(nutritionPointRows(parsed.nutrition), deviceId: source)
             }
             try? await store.checkpointWAL()   // a Shortcut import can still be sizeable (#590)
             return .imported(days: parsed.days.count, workouts: parsed.workouts.count)

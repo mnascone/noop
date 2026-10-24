@@ -12,6 +12,9 @@ struct FuelingCard: View {
     @State private var days: [FuelingCheck.Day] = []
     @State private var weightKg: Double?
     @State private var loaded = false
+    @State private var link: NutritionHealthLink.Status = .unavailable
+    @State private var connecting = false
+    @State private var refreshedOnce = false
 
     private var weight: Double { weightKg ?? profile.weightKg }
     private var result: FuelingCheck.Result? { FuelingCheck.evaluate(days, weightKg: weight) }
@@ -45,17 +48,92 @@ struct FuelingCard: View {
                     }
                     FuelingCoachRead(result: r, today: today, weightKg: weight)
                 } else if loaded {
-                    Text("No food log in Apple Health yet. In MacroFactor, turn on the Apple Health integration and NOOP picks up your daily calories, protein, carbs and fat.")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    emptyState
                 } else {
                     ProgressView().frame(maxWidth: .infinity)
                 }
             }
         }
-        .task(id: repo.refreshSeq) { await load() }
+        .task(id: repo.refreshSeq) {
+            link = NutritionHealthLink.status()
+            await load()
+            // Connected but nothing read yet: pull from Health once now instead of waiting for the next
+            // background pass (and pick up the nutrition permission if it hasn't been asked yet).
+            if result == nil, link == .connected, !refreshedOnce {
+                refreshedOnce = true
+                await NutritionHealthLink.refresh()
+                await load()
+            }
+        }
     }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        switch link {
+        case .notConnected:
+            note("Connect Apple Health so NOOP can read the calories and macros MacroFactor logs there.")
+            Button {
+                connecting = true
+                Task {
+                    await NutritionHealthLink.connect()
+                    link = NutritionHealthLink.status()
+                    await load()
+                    connecting = false
+                }
+            } label: {
+                Label(connecting ? "Connecting..." : "Connect Apple Health", systemImage: "heart.fill")
+                    .font(StrandFont.subhead.weight(.semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(StrandPalette.accent)
+            .disabled(connecting)
+        case .denied:
+            note("NOOP can't read Apple Health. In the Health app, open your profile, then Apps, then NOOP, and allow Dietary Energy, Protein, Carbohydrates and Total Fat.")
+        case .noHealthKit:
+            note("This install can't reach Apple Health: it was signed without the HealthKit permission, which is what free Apple ID sideloading does. Re-sign it with a paid developer account, or send the totals with a Shortcut:")
+            shortcutSteps
+        case .connected:
+            note("Apple Health has no food logged in the last week. In MacroFactor, turn on its Apple Health integration so it writes your calories and macros there, then reopen this.")
+            Button {
+                Task { await NutritionHealthLink.refresh(); await load() }
+            } label: {
+                Label("Check again", systemImage: "arrow.clockwise").font(StrandFont.subhead)
+            }
+            .buttonStyle(.bordered)
+        case .unavailable:
+            note("No Apple Health on this device. Nutrition can come in through the Shortcut import:")
+            shortcutSteps
+        }
+    }
+
+    private func note(_ text: LocalizedStringKey) -> some View {
+        Text(text)
+            .font(StrandFont.subhead)
+            .foregroundStyle(StrandPalette.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// The Shortcut that sends one day's totals: four Health sums into an N line, Base64, open the link.
+    private var shortcutSteps: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(Self.shortcutLines.enumerated()), id: \.offset) { i, line in
+                HStack(alignment: .top, spacing: 6) {
+                    Text("\(i + 1).").font(StrandFont.footnote.weight(.semibold))
+                        .foregroundStyle(StrandPalette.textSecondary)
+                    Text(line).font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    static let shortcutLines: [LocalizedStringKey] = [
+        "In Shortcuts, add Find Health Samples: Dietary Energy, start date is today. Then Calculate Statistics: Sum.",
+        "Do the same for Protein, Carbohydrates and Total Fat.",
+        "Add a Text action: N,(Current Date as yyyy-MM-dd),(energy),(protein),(carbs),(fat).",
+        "Base64 Encode the text, then Open URL: noop://import-health?v=1&payload=(Base64 result).",
+        "Make it a personal automation each evening so it runs on its own.",
+    ]
 
     private func load() async {
         async let kcalA = repo.series(key: NutritionKeys.kcal, source: "apple-health", days: 9)

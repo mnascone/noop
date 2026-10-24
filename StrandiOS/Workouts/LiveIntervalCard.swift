@@ -7,6 +7,9 @@ import StrandAnalytics
 struct LiveIntervalCard: View {
     @ObservedObject private var tracker = LiveIntervalTracker.shared
     @ObservedObject private var reps = LiveRepTracker.shared
+    @AppStorage(LiveRepTracker.enabledKey) private var repCounting = false
+    @AppStorage(SetReadyPrefs.targetRestKey) private var targetRest = 120
+    @State private var showSettings = false
 
     var body: some View {
         if let mode = tracker.mode, let s = tracker.summary {
@@ -21,14 +24,42 @@ struct LiveIntervalCard: View {
                         Text("\(s.count) \(LiveIntervalModes.unitName(mode, count: s.count))")
                             .font(StrandFont.captionNumber)
                             .foregroundStyle(StrandPalette.textSecondary)
+                        if mode == .lifting {
+                            Button { showSettings = true } label: {
+                                Image(systemName: "slider.horizontal.3")
+                                    .font(StrandFont.footnote)
+                                    .foregroundStyle(StrandPalette.accent)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Sets and rest settings")
+                        }
                     }
-                    Text(bigClock(s))
-                        .font(StrandFont.number(44))
-                        .foregroundStyle(StrandPalette.textPrimary)
-                        .contentTransition(.numericText())
-                        .monospacedDigit()
-                    if mode == .lifting, reps.active || !reps.sets.isEmpty {
-                        repRow
+                    HStack(alignment: .center, spacing: NoopMetrics.space3) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(bigClock(s))
+                                .font(StrandFont.number(44))
+                                .foregroundStyle(StrandPalette.textPrimary)
+                                .contentTransition(.numericText())
+                                .monospacedDigit()
+                            if mode == .lifting, let rest = s.currentRestS {
+                                restTarget(rest)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                        if let r = tracker.readiness {
+                            readyLight(r)
+                        }
+                    }
+                    if mode == .lifting {
+                        if reps.active || !reps.sets.isEmpty {
+                            repRow
+                        }
+                        Toggle(isOn: $repCounting) {
+                            Text("Count reps from wrist motion")
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textSecondary)
+                        }
+                        .tint(StrandPalette.accent)
                     }
                     HStack(spacing: NoopMetrics.space4) {
                         stat(String(localized: "Last rest"), s.lastRestS)
@@ -43,8 +74,62 @@ struct LiveIntervalCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .accessibilityElement(children: .combine)
+            .accessibilityElement(children: .contain)
+            .sheet(isPresented: $showSettings) {
+                NavigationStack {
+                    SetReadySettingsView()
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } }
+                        }
+                }
+            }
         }
+    }
+
+    /// Rest against the target: a thin bar and "1:10 of 2:00", or "+0:20 over".
+    private func restTarget(_ rest: Int) -> some View {
+        let target = max(1, targetRest)
+        let frac = min(1, Double(rest) / Double(target))
+        return VStack(alignment: .leading, spacing: 3) {
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(StrandPalette.surfaceInset)
+                    Capsule().fill(rest >= target ? StrandPalette.statusPositive : StrandPalette.accent)
+                        .frame(width: g.size.width * frac)
+                }
+            }
+            .frame(width: 140, height: 5)
+            Text(rest >= target
+                 ? String(localized: "Target \(LiveIntervalTracker.clock(target)) reached, +\(LiveIntervalTracker.clock(rest - target))")
+                 : String(localized: "\(LiveIntervalTracker.clock(target - rest)) to target rest"))
+                .font(StrandFont.caption)
+                .foregroundStyle(StrandPalette.textTertiary)
+                .monospacedDigit()
+        }
+    }
+
+    /// Green / yellow / red for the next set, with the heart rate it's waiting for.
+    private func readyLight(_ r: SetReadiness.Reading) -> some View {
+        let color: Color = r.light == .green ? StrandPalette.statusPositive
+            : (r.light == .yellow ? StrandPalette.recovery055 : StrandPalette.recovery000)
+        let word: String = r.light == .green ? String(localized: "Go")
+            : (r.light == .yellow ? String(localized: "Almost") : String(localized: "Rest"))
+        return VStack(spacing: 4) {
+            ZStack {
+                Circle().fill(color.opacity(0.2)).frame(width: 64, height: 64)
+                Circle().fill(color).frame(width: 40, height: 40)
+                    .shadow(color: color.opacity(0.6), radius: 8)
+                Text(word)
+                    .font(StrandFont.caption.weight(.bold))
+                    .foregroundStyle(Color.black.opacity(0.75))
+            }
+            Text(String(localized: "Go under \(r.thresholds.greenBpm)"))
+                .font(StrandFont.caption)
+                .foregroundStyle(StrandPalette.textTertiary)
+        }
+        .animation(.easeInOut(duration: 0.3), value: r.light)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("Next set: \(word). Ready under \(r.thresholds.greenBpm) beats per minute."))
     }
 
     /// Reps per finished set from wrist motion, plus the set in progress.

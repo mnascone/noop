@@ -1,6 +1,5 @@
 #if os(iOS)
 import SwiftUI
-import HealthKit
 import StrandDesign
 import UserNotifications
 
@@ -160,26 +159,6 @@ struct StrandiOSApp: App {
             noopDeviceId: model.deviceId
         )
         _health = StateObject(wrappedValue: bridge)
-        // The Fueling card reads the food log through the bridge, and can connect it in place.
-        NutritionHealthLink.status = { [weak bridge] in
-            guard HKHealthStore.isHealthDataAvailable() else { return .unavailable }
-            guard HealthKitBridge.hasHealthKitEntitlement else { return .noHealthKit }
-            switch bridge?.auth {
-            case .authorized: return .connected
-            case .denied: return .denied
-            case .entitlementMissing: return .noHealthKit
-            case .unavailable, nil: return .unavailable
-            case .unknown: return .notConnected
-            }
-        }
-        NutritionHealthLink.connect = { [weak bridge] in
-            guard let bridge else { return }
-            await bridge.requestAuthorization()
-            _ = await bridge.sync(days: 30)
-        }
-        NutritionHealthLink.refresh = { [weak bridge] in
-            _ = await bridge?.sync(days: 14)
-        }
         // Register a separate, always-on-while-authorized refresh task for Apple Health write-back.
         // The operation is write-only and bounded to the bridge's recent window; fresh BLE offloads still
         // use the immediate hook below. BGTaskScheduler chooses the actual wake time.
@@ -235,11 +214,7 @@ struct StrandiOSApp: App {
     @ViewBuilder
     private var healthImportAlertMessage: some View {
         if let pending = model.pendingShortcutHealthImport {
-            if pending.nutritionCount > 0, pending.daysCount == 0, pending.workoutsCount == 0 {
-                Text("A Shortcut wants to add \(pending.nutritionCount) days of nutrition totals.")
-            } else {
-                Text("A Shortcut wants to add \(pending.daysCount) days and \(pending.workoutsCount) workouts to the Apple Health import source.")
-            }
+            Text("A Shortcut wants to add \(pending.daysCount) days and \(pending.workoutsCount) workouts to the Apple Health import source.")
         } else {
             Text("A Shortcut wants to add data to the Apple Health import source.")
         }

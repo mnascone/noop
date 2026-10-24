@@ -137,6 +137,8 @@ struct SleepView: View {
     // Android SleepLayoutPrefs keys. Reordered via the Arrange sheet; display-only, no metric changes.
     @AppStorage(SleepLayoutPrefs.orderKey) private var sleepSectionOrderRaw = ""
     @AppStorage(SleepLayoutPrefs.hiddenKey) private var sleepHiddenSectionsRaw = ""
+    /// The mini calendar for jumping to any night.
+    @State private var showNightPicker = false
     @State private var showSleepCustomize = false
 
     /// The analytical cards to render, in saved order minus the hidden set.
@@ -251,6 +253,13 @@ struct SleepView: View {
                 }
             }
             .onChangeCompat(of: intelligence.computing) { _ in observeResultChange() }
+            .sheet(isPresented: $showNightPicker) {
+                NightPickerSheet(current: shownNightKey) { key in
+                    showNightPicker = false
+                    jump(toNight: key)
+                }
+            }
+            .onAppear { migrateCalendarMainOnce() }
             .sheet(item: $breakdownDay) { target in
                 NavigationStack {
                     SleepScoreBreakdownView(dayKey: target.day)
@@ -524,7 +533,7 @@ struct SleepView: View {
         case .sleepDebt:       SleepDebtLedgerCard(model: model)
         case .stagesVsTypical: StagesVsTypicalCard(model: model)
         case .asleepDuration:  durationTrend(model)
-        case .calendar:        SleepCalendarCard()
+        case .calendar:        SleepCalendarCard(selectedDay: shownNightKey, onSelect: { jump(toNight: $0) })
         case .alarms:          alarmsEntry
         case .naps:            if let night = shownNight(model) { napSection(night) }
         case .cycles:          SleepCyclesCard(intervals: shownIntervals(model), staged: shownIsStaged(model))
@@ -557,12 +566,12 @@ struct SleepView: View {
     /// the Today tab's arrange entry and the Android Sleep affordance.
     private var sleepArrangeAffordance: some View {
         HStack(spacing: 0) {
-            NavigationLink {
-                SleepCalendarView()
-            } label: {
-                Label("Calendar", systemImage: "calendar")
-                    .font(StrandFont.footnote)
-                    .foregroundStyle(StrandPalette.textTertiary)
+            Button { showNightPicker = true } label: {
+                Label("Pick a night", systemImage: "calendar")
+                    .font(StrandFont.subhead.weight(.semibold))
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(Capsule().fill(StrandPalette.restColor.opacity(0.55)))
             }
             .buttonStyle(.plain)
             Spacer()
@@ -758,6 +767,43 @@ struct SleepView: View {
         // Stale-highlight guard: browsing to another night clears the stage selection. Attached to
         // the always-present hero container (not a branch that gets swapped out mid-navigation).
         .onChange(of: nightOffset) { _ in selectedStage = nil }
+    }
+
+    /// Wake-day keys of every recorded night, newest first (index = night offset).
+    private var nightDayKeys: [String] {
+        navDays.map { g in g.first.map { Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0.endTs))) } ?? "" }
+    }
+
+    /// The wake day of the night on screen.
+    private var shownNightKey: String? {
+        let keys = nightDayKeys
+        return keys.indices.contains(nightOffset) ? keys[nightOffset] : keys.first
+    }
+
+    /// Show the night that ended on `key`, exactly as stepping back with the arrows would.
+    private func jump(toNight key: String) {
+        guard let i = nightDayKeys.firstIndex(of: key) else {
+            // A night known only from an import has no strap record to step to: show its breakdown.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { breakdownDay = SleepBreakdownTarget(day: key) }
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.2)) { nightOffset = i }
+    }
+
+    /// Once: the calendar becomes the main card (right under the score), and the cards it now covers
+    /// (night detail grid, asleep-duration trend) start hidden. Both stay one tap away in Customize.
+    private func migrateCalendarMainOnce() {
+        let flag = "noop.sleepLayout.calendarMain.v1"
+        guard !UserDefaults.standard.bool(forKey: flag) else { return }
+        UserDefaults.standard.set(true, forKey: flag)
+        var order = SleepLayoutPrefs.decodeOrder(sleepSectionOrderRaw)
+        order.removeAll { $0 == .calendar }
+        let at = (order.firstIndex(of: .lastNight).map { $0 + 1 }) ?? 0
+        order.insert(.calendar, at: min(at, order.count))
+        sleepSectionOrderRaw = SleepLayoutPrefs.encode(order)
+        var hidden = SleepLayoutPrefs.decodeHidden(sleepHiddenSectionsRaw)
+        for s in [SleepSection.nightDetail, .asleepDuration] where !hidden.contains(s) { hidden.append(s) }
+        sleepHiddenSectionsRaw = SleepLayoutPrefs.encodeHidden(hidden)
     }
 
     /// The night the hero is showing (latest, or the one navigated to), for the cards that follow it.
@@ -2123,11 +2169,16 @@ struct SleepView: View {
                             .foregroundStyle(StrandPalette.textPrimary)
                     }
                     Spacer(minLength: NoopMetrics.space2)
-                    Text(trailing)
-                        .font(StrandFont.caption.weight(.semibold))
-                        .foregroundStyle(StrandPalette.textSecondary)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                    // Tap the date to jump to any night.
+                    Button { showNightPicker = true } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "calendar").font(StrandFont.caption)
+                            Text(trailing)
+                                .font(StrandFont.caption.weight(.semibold))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        .foregroundStyle(StrandPalette.accent)
                         .padding(.horizontal, NoopMetrics.space3)
                         .padding(.vertical, NoopMetrics.space2)
                         .background(
@@ -2138,7 +2189,10 @@ struct SleepView: View {
                                         .stroke(StrandPalette.hairline, lineWidth: 1)
                                 }
                         )
-                        .padding(.bottom, 1)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint(Text("Pick another night"))
+                    .padding(.bottom, 1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 

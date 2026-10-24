@@ -70,6 +70,12 @@ struct AutoTrackingSettingsView: View {
             }
 
             Section {
+                NavigationLink("Ready-for-next-set light and rest timer") { SetReadySettingsView() }
+            } header: {
+                Text("Lifting")
+            }
+
+            Section {
                 Toggle("Count reps from wrist motion", isOn: $repCounting)
             } header: {
                 Text("Reps (experimental)")

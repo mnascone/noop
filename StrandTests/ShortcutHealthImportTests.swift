@@ -193,18 +193,4 @@ final class ShortcutHealthImportTests: XCTestCase {
         XCTAssertEqual(ShortcutHealthImport.targetSource, WorkoutSource.appleHealthSource)
         XCTAssertFalse(ShortcutHealthImport.forbiddenSources.contains(ShortcutHealthImport.targetSource))
     }
-
-    // MARK: - Nutrition (N lines)
-
-    func testParsesNutritionLinesSeparatelyFromDays() {
-        let p = ShortcutHealthImport.parse("N,2026-10-22,2450,165,280,72\nN,2026-10-23,,120,,\nN,bad,1,2,3,4")
-        XCTAssertTrue(p.days.isEmpty)
-        XCTAssertEqual(p.nutrition.count, 2)
-        XCTAssertEqual(p.nutrition[0].kcal, 2450)
-        XCTAssertEqual(p.nutrition[1].proteinG, 120)
-        XCTAssertNil(p.nutrition[1].kcal)
-        let points = ShortcutHealthImport.nutritionPointRows(p.nutrition)
-        XCTAssertEqual(points.count, 5)
-        XCTAssertTrue(points.contains { $0.key == NutritionKeys.fat && $0.value == 72 })
-    }
 }

@@ -38,6 +38,10 @@ public struct NOOPActivityAttributes: ActivityAttributes {
         public var texts: [String: String]?
         /// Icon colours for the fields on show, field raw value → RGB hex.
         public var colors: [String: String]?
+        /// The most recent heart rate and when it was read (to the minute), kept when the live one drops out,
+        /// so the banner can show the last number with its time instead of a dash.
+        public var lastBpm: Int?
+        public var lastBpmAt: Date?
 
         public init(bpm: Int?, recovery: Int?, bonded: Bool, effort: Int? = nil,
                     fields: [LiveBannerField]? = nil, rest: Int? = nil, workoutStart: Date? = nil,
@@ -45,7 +49,7 @@ public struct NOOPActivityAttributes: ActivityAttributes {
                     steps: Int? = nil, calories: Int? = nil, zone: Int? = nil, hrv: Int? = nil,
                     restingHr: Int? = nil, islandField: LiveBannerField? = nil, layout: LiveBannerLayout? = nil,
                     showLabels: Bool? = nil, title: String? = nil, texts: [String: String]? = nil,
-                    colors: [String: String]? = nil) {
+                    colors: [String: String]? = nil, lastBpm: Int? = nil, lastBpmAt: Date? = nil) {
             self.bpm = bpm
             self.recovery = recovery
             self.bonded = bonded
@@ -67,6 +71,8 @@ public struct NOOPActivityAttributes: ActivityAttributes {
             self.title = title
             self.texts = texts
             self.colors = colors
+            self.lastBpm = lastBpm
+            self.lastBpmAt = lastBpmAt
         }
     }
 

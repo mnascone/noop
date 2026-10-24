@@ -70,6 +70,12 @@ enum SleepCalendarColors {
 /// its breakdown. A Sleep tab card, a Today card, and the body of the full calendar page.
 struct SleepCalendarCard: View {
     var showsSummary = false
+    /// The night shown elsewhere on the screen (wake-day key), ringed in the grid.
+    var selectedDay: String? = nil
+    /// When set, tapping a night calls this instead of opening its score breakdown.
+    var onSelect: ((String) -> Void)? = nil
+    /// Just the grid and legend (the night picker sheet).
+    var gridOnly = false
 
     @EnvironmentObject private var repo: Repository
     @EnvironmentObject private var intelligence: IntelligenceEngine
@@ -108,23 +114,46 @@ struct SleepCalendarCard: View {
                 MonthGrid(monthStart: monthStart) { date, key in
                     let night = data[key]
                     if let night, night.score != nil || night.hours != nil {
-                        NavigationLink {
-                            SleepScoreBreakdownView(dayKey: key)
-                        } label: {
-                            cell(date: date, night: night)
+                        if let onSelect {
+                            Button { onSelect(key) } label: {
+                                cell(date: date, night: night, selected: key == selectedDay)
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            NavigationLink {
+                                SleepScoreBreakdownView(dayKey: key)
+                            } label: {
+                                cell(date: date, night: night, selected: key == selectedDay)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     } else {
-                        cell(date: date, night: nil)
+                        cell(date: date, night: nil, selected: false)
                     }
                 }
                 legend
-                if showsSummary { monthSummary(keys, data) }
+                if !gridOnly {
+                    if onSelect != nil, let sel = selectedDay {
+                        Divider().overlay(StrandPalette.hairline)
+                        selectedNight(sel, score: nights([sel])[sel]?.score)
+                    }
+                    monthSummary(keys, data)
+                    monthTrend(keys, data)
+                }
             }
         }
+        .onAppear { syncMonth() }
+        .onChangeCompat(of: selectedDay) { _ in syncMonth() }
     }
 
-    private func cell(date: Date, night: Night?) -> some View {
+    /// Follow the shown night into its month.
+    private func syncMonth() {
+        guard let sel = selectedDay, let d = MonthMath.date(fromKey: sel) else { return }
+        let m = MonthMath.startOfMonth(d)
+        if m != monthStart { monthStart = m }
+    }
+
+    private func cell(date: Date, night: Night?, selected: Bool) -> some View {
         let isToday = Calendar.current.isDateInToday(date)
         let rgb = night?.score.map { SleepCalendarColors.mix(poor, good, SleepCalendarColors.fraction($0)) }
         let ink = rgb.map(SleepCalendarColors.ink)
@@ -146,8 +175,90 @@ struct SleepCalendarCard: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(isToday ? StrandPalette.accent : Color.clear, lineWidth: 1.5)
+                .strokeBorder(selected ? StrandPalette.textPrimary
+                              : (isToday ? StrandPalette.accent : Color.clear),
+                              lineWidth: selected ? 2 : 1.5)
         )
+    }
+
+    /// The shown night's key figures, one row, with its breakdown one tap away.
+    private func selectedNight(_ key: String, score: Int?) -> some View {
+        let d = repo.days.last { $0.day == key }
+        let eff: Double? = d?.efficiency.map { $0 > 1.5 ? $0 : $0 * 100 }
+        let deepRem: Double? = {
+            guard let d, d.deepMin != nil || d.remMin != nil else { return nil }
+            return (d.deepMin ?? 0) + (d.remMin ?? 0)
+        }()
+        let date = MonthMath.date(fromKey: key)
+        return VStack(alignment: .leading, spacing: NoopMetrics.space2) {
+            HStack {
+                Text(date.map { $0.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()) } ?? key)
+                    .font(StrandFont.subhead.weight(.semibold))
+                    .foregroundStyle(StrandPalette.textPrimary)
+                Spacer()
+                NavigationLink {
+                    SleepScoreBreakdownView(dayKey: key)
+                } label: {
+                    Label("Breakdown", systemImage: "chevron.right")
+                        .labelStyle(.titleOnly)
+                        .font(StrandFont.footnote.weight(.semibold))
+                        .foregroundStyle(StrandPalette.accent)
+                }
+                .buttonStyle(.plain)
+            }
+            HStack(alignment: .top, spacing: 0) {
+                figure("Score", score.map(String.init))
+                figure("Asleep", d?.totalSleepMin.map { Self.hm($0) })
+                figure("Efficiency", eff.map { "\(Int($0.rounded()))%" })
+                figure("Deep+REM", deepRem.map { Self.hm($0) })
+                figure("RHR", d?.restingHr.map(String.init))
+                figure("HRV", d?.avgHrv.map { "\(Int($0.rounded()))" })
+            }
+        }
+    }
+
+    private func figure(_ label: String, _ value: String?) -> some View {
+        VStack(spacing: 1) {
+            Text(value ?? "–")
+                .font(StrandFont.captionNumber.weight(.semibold))
+                .foregroundStyle(StrandPalette.textPrimary)
+                .lineLimit(1).minimumScaleFactor(0.7)
+            Text(LocalizedStringKey(label))
+                .font(.system(size: 9))
+                .foregroundStyle(StrandPalette.textTertiary)
+                .lineLimit(1).minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private static func hm(_ min: Double) -> String {
+        let m = Int(min.rounded())
+        return "\(m / 60)h\(String(format: "%02d", m % 60))"
+    }
+
+    /// This month against the month before: score and sleep, with the direction.
+    @ViewBuilder
+    private func monthTrend(_ keys: [String], _ data: [String: Night]) -> some View {
+        if let prevStart = Calendar.current.date(byAdding: .month, value: -1, to: monthStart) {
+            let prevKeys = MonthMath.dayKeys(in: MonthMath.startOfMonth(prevStart))
+            let prev = nights(Set(prevKeys))
+            let cur = keys.compactMap { data[$0]?.score }
+            let old = prevKeys.compactMap { prev[$0]?.score }
+            let curH = keys.compactMap { data[$0]?.hours }
+            let oldH = prevKeys.compactMap { prev[$0]?.hours }
+            if cur.count >= 3, old.count >= 3 {
+                let ds = Double(cur.reduce(0, +)) / Double(cur.count) - Double(old.reduce(0, +)) / Double(old.count)
+                let dh = (curH.isEmpty || oldH.isEmpty) ? 0
+                    : (curH.reduce(0, +) / Double(curH.count) - oldH.reduce(0, +) / Double(oldH.count)) * 60
+                HStack(spacing: 6) {
+                    Image(systemName: ds >= 0 ? "arrow.up.right" : "arrow.down.right")
+                        .foregroundStyle(ds >= 0 ? StrandPalette.recovery100 : StrandPalette.recovery030)
+                    Text(String(format: String(localized: "Score %+.0f and sleep %+.0f min a night vs last month"), ds, dh))
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                }
+            }
+        }
     }
 
     private var legend: some View {
@@ -191,6 +302,33 @@ struct SleepCalendarCard: View {
                 Text("\(hours.count)").font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
             }
         }
+    }
+}
+
+/// A month grid of recorded nights, coloured by score. Picking one shows that night on the Sleep tab.
+struct NightPickerSheet: View {
+    let current: String?
+    let onPick: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                SleepCalendarCard(selectedDay: current, onSelect: onPick, gridOnly: true)
+                    .padding(.horizontal, NoopMetrics.space4)
+                    .padding(.top, NoopMetrics.space2)
+            }
+            .navigationTitle("Pick a night")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+            }
+        }
+        #if os(iOS)
+        .presentationDetents([.medium, .large])
+        #endif
     }
 }
 
@@ -304,5 +442,12 @@ enum MonthMath {
 
     static func dayKeys(in monthStart: Date) -> [String] {
         days(in: monthStart).map { Repository.localDayKey($0) }
+    }
+
+    /// Local midnight of a "yyyy-MM-dd" key.
+    static func date(fromKey key: String) -> Date? {
+        let p = key.split(separator: "-").compactMap { Int($0) }
+        guard p.count == 3 else { return nil }
+        return Calendar.current.date(from: DateComponents(year: p[0], month: p[1], day: p[2]))
     }
 }

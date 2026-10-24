@@ -876,7 +876,7 @@ struct LiquidTodayView: View {
                 }
             }
         case .asleepDuration: AsleepDurationCard(data: AsleepDurationData.build(days: repo.days))
-        case .pacingBoth, .chargeCalendar, .trainingLoad, .sleepCalendar, .restWeek, .fueling:
+        case .pacingBoth, .chargeCalendar, .trainingLoad, .sleepCalendar, .restWeek:
             ExtraHostedCardView(card: card, effortScale: effortScale)
         case .stagesVsTypical:
             // Renders from the shared SleepModel built in load() (same inputs as the Sleep tab). Until that
@@ -3013,7 +3013,7 @@ private struct LiquidBatteryButton: View {
         if case .notActiveDevice = batteryDisplay {
             EmptyView()
         } else {
-            Button { router.openDevices() } label: {
+            Button { router.openBattery() } label: {
                 ChargeSyncIndicator(
                     batteryState: indicatorState,
                     syncing: syncing,

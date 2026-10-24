@@ -33,6 +33,12 @@ final class SleepArchitectureTests: XCTestCase {
         XCTAssertGreaterThan(r.deepFirstThirdShare ?? 0, 0.6)
         XCTAssertEqual(r.patterns, [.typical])
         XCTAssertEqual(r.awakenings, 0)
+        XCTAssertEqual(r.cycleSpans.count, 5)
+        XCTAssertEqual(r.cycleSpans[0].minutes, 88, accuracy: 0.01)
+        XCTAssertEqual(r.cycleSpans[0].deepMinutes, 50, accuracy: 0.01)
+        XCTAssertEqual(r.cycleSpans.map { $0.remMinutes.rounded() }, [8, 15, 22, 28, 32])
+        XCTAssertFalse(r.cycleSpans.contains { $0.interrupted })
+        XCTAssertEqual(r.trailingMinutes, 0, accuracy: 0.01)
     }
 
     /// REM split by a 2-minute light blip is one episode; a 1-minute REM sliver is not an episode.
@@ -61,6 +67,8 @@ final class SleepArchitectureTests: XCTestCase {
         XCTAssertEqual(r.wasoMinutes, 8, accuracy: 0.01)
         // Longest unbroken stretch: from falling asleep to the first wake.
         XCTAssertEqual(r.longestStretchMinutes, 110, accuracy: 0.01)
+        XCTAssertEqual(r.wakeBouts.count, 2)
+        XCTAssertEqual(r.cycleSpans.map(\.interrupted), [true, true, false])
     }
 
     func testTooShortReturnsNil() {

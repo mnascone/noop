@@ -28,6 +28,10 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
     case peakHr
     case distance
     case pace
+    /// Battery drawn as a gauge with the time left under it.
+    case batteryFull
+    /// Lifting: green / yellow / red for starting the next set, from heart-rate recovery.
+    case setReady
 
     public var label: String {
         switch self {
@@ -54,6 +58,19 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
         case .peakHr: return "Peak HR"
         case .distance: return "Distance"
         case .pace: return "Pace"
+        case .batteryFull: return "Complete battery"
+        case .setReady: return "Ready for next set"
+        }
+    }
+
+    /// The name on the banner itself, where space is tight. Same as `label` except where that runs long.
+    public var bannerLabel: String {
+        switch self {
+        case .battery, .batteryTime, .batteryFull: return "Battery"
+        case .restingHr: return "RHR"
+        case .workoutEffort: return "Effort"
+        case .setReady: return "Next set"
+        default: return label
         }
     }
 
@@ -82,6 +99,8 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
         case .peakHr: return "arrow.up.heart.fill"
         case .distance: return "point.topleft.down.to.point.bottomright.curvepath"
         case .pace: return "speedometer"
+        case .batteryFull: return "battery.100percent"
+        case .setReady: return "light.beacon.max"
         }
     }
 
@@ -104,13 +123,15 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
         case .respiration: return "64D2FF"
         case .spo2: return "0A84FF"
         case .distance, .pace: return "66D4CF"
+        case .batteryFull: return "34C759"
+        case .setReady: return "30D158"
         }
     }
 
     /// Fields that only have a value during a workout. Shown only while one is running.
     public var workoutOnly: Bool {
         switch self {
-        case .workoutTime, .restTimer, .sets, .workoutEffort, .avgHr, .peakHr, .distance, .pace: return true
+        case .workoutTime, .restTimer, .sets, .workoutEffort, .avgHr, .peakHr, .distance, .pace, .setReady: return true
         default: return false
         }
     }
@@ -121,8 +142,9 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
         case .heartRate, .zone: return "Live"
         case .charge, .effort, .rest, .steps, .calories: return "Today"
         case .hrv, .restingHr, .sleepTime, .skinTemp, .respiration, .spo2: return "Last night"
-        case .battery, .batteryTime: return "WHOOP strap"
-        case .workoutTime, .restTimer, .sets, .workoutEffort, .avgHr, .peakHr, .distance, .pace: return "Workout"
+        case .battery, .batteryTime, .batteryFull: return "WHOOP strap"
+        case .workoutTime, .restTimer, .sets, .workoutEffort, .avgHr, .peakHr, .distance, .pace, .setReady:
+            return "Workout"
         }
     }
 
@@ -130,7 +152,7 @@ public enum LiveBannerField: String, CaseIterable, Codable, Hashable, Sendable {
     public var usesText: Bool {
         switch self {
         case .battery, .batteryTime, .sleepTime, .skinTemp, .respiration, .spo2, .workoutEffort, .avgHr,
-             .peakHr, .distance, .pace: return true
+             .peakHr, .distance, .pace, .batteryFull, .setReady: return true
         default: return false
         }
     }

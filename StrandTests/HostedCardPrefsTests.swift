@@ -53,7 +53,7 @@ final class HostedCardPrefsTests: XCTestCase {
         // second meaning behind the same press.
         XCTAssertNil(HostedCard.sleepMarks.route)
         // The calendars and dials are their own tap targets (or have none), so they carry no route.
-        let selfContained: Set<HostedCard> = [.sleepMarks, .pacingBoth, .chargeCalendar, .sleepCalendar, .fueling]
+        let selfContained: Set<HostedCard> = [.sleepMarks, .pacingBoth, .chargeCalendar, .sleepCalendar]
         for card in HostedCard.allCases where !selfContained.contains(card) {
             XCTAssertNotNil(card.route, "\(card.rawValue) taps through to nothing")
         }

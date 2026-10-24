@@ -37,6 +37,11 @@ final class LiveIntervalTracker: ObservableObject {
 
     @Published private(set) var mode: WorkRestSegmenter.Mode?
     @Published private(set) var summary: WorkRestSegmenter.Summary?
+    /// Lifting, between sets: whether heart rate has come down enough for the next one.
+    @Published private(set) var readiness: SetReadiness.Reading?
+    /// The inputs that don't change during a workout: resting heart rate, age, today's HRV against baseline.
+    private(set) var readyBasis: (resting: Int, age: Int?, hrvRatio: Double?)?
+    private var buzzedForRest: Int?
 
     private var segmenter: WorkRestSegmenter?
     private weak var model: AppModel?
@@ -96,6 +101,8 @@ final class LiveIntervalTracker: ObservableObject {
         for s in w.samples { seg.ingest(ts: s.ts, bpm: s.bpm) }
         segmenter = seg
         mode = m
+        readyBasis = m == .lifting ? Self.basis(model) : nil
+        buzzedForRest = nil
         trackedStart = start
         trackedSport = w.sport
         refresh()
@@ -106,6 +113,8 @@ final class LiveIntervalTracker: ObservableObject {
         segmenter = nil
         mode = nil
         summary = nil
+        readiness = nil
+        readyBasis = nil
         trackedStart = nil
         trackedSport = nil
         ticker?.invalidate()
@@ -116,6 +125,36 @@ final class LiveIntervalTracker: ObservableObject {
         guard let seg = segmenter else { return }
         let next = seg.summary(now: Int(Date().timeIntervalSince1970))
         if next != summary { summary = next }
+        let ready = readingNow(seg, next)
+        if ready != readiness {
+            if ready?.light == .green, readiness?.light != .green, SetReadyPrefs.buzz,
+               case .resting(let since) = next.phase, buzzedForRest != since {
+                buzzedForRest = since
+                model?.ble.buzzStrapOnce()
+            }
+            readiness = ready
+        }
+    }
+
+    private func readingNow(_ seg: WorkRestSegmenter, _ s: WorkRestSegmenter.Summary) -> SetReadiness.Reading? {
+        guard mode == .lifting, SetReadyPrefs.enabled, let basis = readyBasis,
+              let rest = s.currentRestS, let hr = model?.live.heartRate, hr > 0 else { return nil }
+        return SetReadiness.read(config: SetReadyPrefs.config, currentBpm: hr, restS: rest,
+                                 restingBpm: basis.resting, setPeakBpm: seg.intervals.last?.peakBpm,
+                                 age: basis.age, hrvRatio: basis.hrvRatio)
+    }
+
+    /// Resting heart rate (latest night), age, and last night's HRV against the 30-night median.
+    static func basis(_ model: AppModel?) -> (resting: Int, age: Int?, hrvRatio: Double?)? {
+        guard let model else { return nil }
+        let days = model.repo.days
+        guard let resting = days.last(where: { ($0.restingHr ?? 0) > 0 })?.restingHr else { return nil }
+        let hrvs = days.suffix(30).compactMap(\.avgHrv).filter { $0 > 0 }.sorted()
+        var ratio: Double?
+        if hrvs.count >= 7, let last = days.last(where: { ($0.avgHrv ?? 0) > 0 })?.avgHrv {
+            ratio = last / hrvs[hrvs.count / 2]
+        }
+        return (resting, model.profile.age, ratio)
     }
 
     /// Once a second in the foreground, so the rest timer counts up even when heart rate is flat.

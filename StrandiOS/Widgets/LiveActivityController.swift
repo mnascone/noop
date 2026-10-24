@@ -17,6 +17,8 @@ final class LiveActivityController {
     private var standsAside: () -> Bool = { false }
     private var cancellables: Set<AnyCancellable> = []
     private var lastPush: Date = .distantPast
+    /// The newest heart rate seen while connected, stamped to the minute, for the banner's fallback.
+    private var lastReading: (bpm: Int, at: Date)?
     /// What the banner was last pushed with, so an unchanged banner is not pushed again
     /// (`LiveHRBannerPushPolicy`). Nil until this controller pushes, and again once it ends the activity.
     private var shownState: NOOPActivityAttributes.ContentState?
@@ -159,6 +161,16 @@ final class LiveActivityController {
         var colors: [String: String] = [:]
     }
 
+    static func compactLeft(_ hours: Double) -> String {
+        hours < 48 ? "\(max(0, Int(hours.rounded())))h" : String(format: "%.1fd", hours / 24)
+    }
+
+    /// Under the battery gauge: "4.5 days" or "18 hrs".
+    static func daysLeft(_ hours: Double) -> String {
+        hours < 48 ? String(localized: "\(max(0, Int(hours.rounded()))) hrs")
+            : String(format: String(localized: "%.1f days"), hours / 24)
+    }
+
     /// Pre-formatted values for the later banner fields, only for the ones on show.
     private func bannerTexts(_ model: AppModel, day: DailyMetric?, wanted: Set<LiveBannerField>) -> [String: String] {
         var t: [String: String] = [:]
@@ -168,9 +180,18 @@ final class LiveActivityController {
             system: system, override: UserDefaults.standard.string(forKey: UnitPrefs.distanceSystemKey) ?? "")
 
         if let pct = model.live.batteryPct {
-            put(.battery, "\(Int(pct.rounded()))%" + (model.live.charging == true ? " ⚡︎" : ""))
+            put(.battery, "\(Int(pct.rounded()))%")
+            // The banner draws the battery icons at this level (and with a bolt while charging).
+            if !wanted.isDisjoint(with: [.battery, .batteryTime, .batteryFull]) {
+                t["batteryLevel"] = "\(Int(pct.rounded()))|\(model.live.charging == true ? 1 : 0)"
+            }
         }
-        put(.batteryTime, model.live.batteryEstimate.map { BatteryEstimator.label(hours: $0.remainingHours) })
+        // Compact: "4.5d" or "18h", no tilde or word, so it sits beside other fields without crowding them.
+        put(.batteryTime, model.live.batteryEstimate.map { Self.compactLeft($0.remainingHours) })
+        if let pct = model.live.batteryPct {
+            let left = model.live.batteryEstimate.map { Self.daysLeft($0.remainingHours) } ?? ""
+            put(.batteryFull, "\(Int(pct.rounded()))|\(left)|\(model.live.charging == true ? 1 : 0)")
+        }
         if let mins = day?.totalSleepMin, mins > 0 {
             let m = Int(mins.rounded())
             put(.sleepTime, "\(m / 60)h \(m % 60)m")
@@ -240,6 +261,17 @@ final class LiveActivityController {
                 e.setCount = s.count
                 if case .resting(let since) = s.phase { e.restSince = Date(timeIntervalSince1970: TimeInterval(since)) }
             }
+            let wantsReady = e.fields.contains(.setReady) || e.islandField == .setReady
+            if wantsReady {
+                // The light: "Go" once heart rate is back down, coloured to match.
+                if let r = tracker.readiness {
+                    e.texts[LiveBannerField.setReady.rawValue] = r.light.rawValue
+                    e.colors[LiveBannerField.setReady.rawValue] = r.light == .green ? "30D158"
+                        : (r.light == .yellow ? "FFD60A" : "FF453A")
+                } else if tracker.mode == .lifting, case .working? = tracker.summary?.phase {
+                    e.texts[LiveBannerField.setReady.rawValue] = "working"
+                }
+            }
         }
         return e
     }
@@ -303,6 +335,9 @@ final class LiveActivityController {
         // left a fabricated "live" HR standing). No timed end: a timer in a suspended app fires at its next wake,
         // which is typically the strap coming back — exactly when the banner should stay.
         // Timers are sent as start dates, so the Lock Screen counts them itself without a push per second.
+        if connected, let bpm, bpm > 0 {
+            lastReading = (bpm, Date(timeIntervalSince1970: (now.timeIntervalSince1970 / 60).rounded(.down) * 60))
+        }
         let state = NOOPActivityAttributes.ContentState(
             bpm: connected ? bpm : nil, recovery: recovery, bonded: connected, effort: effort,
             fields: extras.fields, rest: extras.rest, workoutStart: extras.workoutStart,
@@ -311,7 +346,8 @@ final class LiveActivityController {
             setCount: extras.setCount,
             steps: extras.steps, calories: extras.calories, zone: extras.zone, hrv: extras.hrv,
             restingHr: extras.restingHr, islandField: extras.islandField, layout: extras.layout,
-            showLabels: extras.showLabels, title: extras.title, texts: extras.texts, colors: extras.colors)
+            showLabels: extras.showLabels, title: extras.title, texts: extras.texts, colors: extras.colors,
+            lastBpm: lastReading?.bpm, lastBpmAt: lastReading?.at)
 
         if step == .renew, activity != nil {
             // The fresh banner first, then the old one goes, so the Lock Screen is never without one; if iOS refuses

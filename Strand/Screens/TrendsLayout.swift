@@ -3,7 +3,7 @@ import StrandDesign
 
 /// The Trends cards the user can reorder and hide. Raw values are stored, so they never change.
 enum TrendsSection: String, CaseIterable, Identifiable {
-    case weekly, trio, pacing, charge, multiples, trainingLoad, year, report, fueling
+    case weekly, trio, pacing, charge, multiples, trainingLoad, year, report
     var id: String { rawValue }
 
     var title: LocalizedStringKey {
@@ -16,7 +16,6 @@ enum TrendsSection: String, CaseIterable, Identifiable {
         case .trainingLoad: return "Training load"
         case .year: return "Charge calendar"
         case .report: return "Export report"
-        case .fueling: return "Fueling (nutrition)"
         }
     }
 }
@@ -24,7 +23,7 @@ enum TrendsSection: String, CaseIterable, Identifiable {
 enum TrendsLayoutPrefs {
     static let orderKey = "noop.trends.order"
     static let hiddenKey = "noop.trends.hidden"
-    static let defaultOrder: [TrendsSection] = [.weekly, .trio, .pacing, .fueling, .charge, .multiples,
+    static let defaultOrder: [TrendsSection] = [.weekly, .trio, .pacing, .charge, .multiples,
                                                 .trainingLoad, .year, .report]
 
     /// Saved order, with any card added since appended in its default place.

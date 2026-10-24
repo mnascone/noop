@@ -36,8 +36,10 @@ struct CoachView: View {
     /// The id typed in the "Custom…" field.
     @State private var customModelDraft: String = ""
     @FocusState private var composerFocused: Bool
-    /// The conversation's natural height, so the transcript card is only as tall as it needs to be.
-    @State private var transcriptHeight: CGFloat = 220
+    @Environment(\.tabBarBottomClearance) private var tabBarBottomClearance
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var hSizeClass
+    #endif
 
     /// K2: confirmation gate for the destructive "Clear conversation" toolbar action.
     @State private var showClearConfirm = false
@@ -60,40 +62,7 @@ struct CoachView: View {
     private var suggestions: [String] { coach.suggestions }
 
     var body: some View {
-        ScreenScaffold(title: "Coach",
-                       subtitle: "Ask about your charge, effort, rest and workouts, grounded in your own numbers.",
-                       // Liquid finish: the same full-bleed day-of-sky backdrop Today + the other liquid
-                       // tabs carry, so Coach sits in one atmosphere. Static + non-interactive; the frosted
-                       // message/setup cards below sit on the opaque canvas and stay legible.
-                       topBackground: liquidScaffoldSky()) {
-            if coach.isConfigured {
-                connectedHeader
-                // Typing re-renders this screen on every key; the transcript (Markdown in every bubble)
-                // only re-renders when the conversation itself changes.
-                TranscriptGate(key: transcriptKey) { transcript }.equatable()
-                if let error = coach.errorText, !error.isEmpty {
-                    errorBanner(error)
-                }
-                if coach.keyRejected || showKeyEditor { keyRepairPanel }
-                // K7: show follow-up chips after each assistant reply (when the transcript is
-                // non-empty and the last message is from the assistant and not mid-send);
-                // otherwise show the initial contextual chips.
-                if showFollowUpChips {
-                    followUpChips
-                } else {
-                    suggestionChips
-                }
-                composer
-                // K12: show a rough token estimate when the draft is non-empty.
-                if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                   let tokens = coach.estimatedTokens(forDraft: draft) {
-                    tokenEstimateBar(tokens)
-                }
-                privacyFootnote
-            } else {
-                setupCard
-            }
-        }
+        chatLayout
         // macOS only. On iOS these actions live in `connectionMenu` instead, because this bar is hidden for
         // a primary tab root and VISIBLE in the pillar sheet, so leaving them here would render nothing
         // on the Coach tab and a duplicate of the menu in the sheet. One control per platform, reachable
@@ -481,59 +450,127 @@ struct CoachView: View {
     }
     #endif
 
+    /// A chat screen: header and conversation scroll together, the composer stays pinned at the bottom so
+    /// it's always in reach, and the conversation follows new messages.
+    private var chatLayout: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+                    titleRow
+                    if coach.isConfigured {
+                        connectedHeader
+                        // Typing re-renders this screen on every key; the conversation (Markdown in every
+                        // bubble) only re-renders when it changes.
+                        TranscriptGate(key: transcriptKey) { messagesList }.equatable()
+                        if let error = coach.errorText, !error.isEmpty {
+                            errorBanner(error)
+                        }
+                        if coach.keyRejected || showKeyEditor { keyRepairPanel }
+                        // K7: follow-up chips after a reply, the opening chips otherwise.
+                        if showFollowUpChips {
+                            followUpChips
+                        } else {
+                            suggestionChips
+                        }
+                        privacyFootnote
+                        Color.clear.frame(height: 1).id(Self.bottomAnchor)
+                    } else {
+                        setupCard
+                    }
+                }
+                .padding(.horizontal, NoopMetrics.screenHPadding)
+                .padding(.top, NoopMetrics.space3)
+                .padding(.bottom, NoopMetrics.space3)
+                #if os(iOS)
+                .frame(maxWidth: hSizeClass == .regular ? 700 : .infinity)
+                .frame(maxWidth: .infinity)
+                #endif
+            }
+            #if os(iOS)
+            .scrollDismissesKeyboard(.interactively)
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            #endif
+            .background(alignment: .top) {
+                ZStack(alignment: .top) {
+                    StrandPalette.surfaceBase
+                    liquidScaffoldSky()
+                }
+                .ignoresSafeArea()
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if coach.isConfigured { composerBar }
+            }
+            .onChangeCompat(of: transcriptKey) { _ in scrollToBottom(proxy) }
+            .onChangeCompat(of: composerFocused) { focused in if focused { scrollToBottom(proxy) } }
+            .onAppear { scrollToBottom(proxy, animated: false) }
+        }
+    }
+
+    private static let bottomAnchor = "coach.bottom"
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        guard !coach.messages.isEmpty else { return }
+        if animated {
+            withAnimation(StrandMotion.fade) { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
+        } else {
+            proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+        }
+    }
+
+    /// "Coach" with its one-line description beside it, not under it.
+    private var titleRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space2) {
+            Text("Coach")
+                .font(StrandFont.rounded(28))
+                .foregroundStyle(StrandPalette.textPrimary)
+            Text("grounded in your own numbers")
+                .font(StrandFont.footnote)
+                .foregroundStyle(StrandPalette.textTertiary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// The composer and its token estimate, pinned above the tab bar.
+    private var composerBar: some View {
+        VStack(spacing: 4) {
+            composer
+            // K12: show a rough token estimate when the draft is non-empty.
+            if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let tokens = coach.estimatedTokens(forDraft: draft) {
+                tokenEstimateBar(tokens)
+            }
+        }
+        .padding(.horizontal, NoopMetrics.screenHPadding)
+        .padding(.top, NoopMetrics.space2)
+        .padding(.bottom, max(NoopMetrics.space2, (tabBarBottomClearance ?? NoopMetrics.tabBarClearance) - 6))
+        .background(.bar)
+    }
+
+    /// The conversation: bubbles directly on the page, no box around them.
+    @ViewBuilder
+    private var messagesList: some View {
+        if coach.messages.isEmpty {
+            StrandCard(padding: 12) { emptyTranscript }
+        } else {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(coach.messages) { message in
+                    bubble(message).id(message.id)
+                }
+                if coach.sending {
+                    typingIndicator.id("typing")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     /// What the transcript draws from: changes only when a message is added, streams more text, or the
     /// sending state flips.
     private var transcriptKey: String {
         let last = coach.messages.last
-        return "\(coach.messages.count)|\(last?.id.uuidString ?? "")|\(last?.text.count ?? 0)|\(coach.sending)|\(Int(transcriptHeight))"
-    }
-
-    private var transcript: some View {
-        StrandCard(padding: 12) {
-            if coach.messages.isEmpty {
-                emptyTranscript
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        // Lazy so off-screen bubbles aren't all resident/laid-out at once; with the
-                        // `maxStoredMessages` cap the transcript is already bounded, this keeps render cost flat.
-                        LazyVStack(alignment: .leading, spacing: 10) {
-                            ForEach(coach.messages) { message in
-                                bubble(message).id(message.id)
-                            }
-                            if coach.sending {
-                                typingIndicator.id("typing")
-                            }
-                        }
-                        .padding(.vertical, 2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        // The card hugs a short conversation instead of holding a fixed tall box.
-                        .background(GeometryReader { g in
-                            Color.clear.preference(key: TranscriptHeightKey.self, value: g.size.height)
-                        })
-                    }
-                    .onPreferenceChange(TranscriptHeightKey.self) { h in
-                        let rounded = (h / 8).rounded(.up) * 8
-                        if abs(rounded - transcriptHeight) >= 8 { transcriptHeight = rounded }
-                    }
-                    // #697 parity: this screen builds its OWN ScrollView rather than going through
-                    // ScreenScaffold, so it never inherited the scaffold's horizontal-bounce suppression and
-                    // could still rubber-band left-right on a purely vertical scroll. Same modifier, same
-                    // guard. `.basedOnSize` permits horizontal bounce only when content genuinely overflows
-                    // the width, so nothing that is meant to scroll sideways is affected. (#1532 follow-up)
-                    #if os(iOS)
-                    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-                    #endif
-                    .frame(height: min(max(transcriptHeight, 56), 520))
-                    .onChangeCompat(of: coach.messages.count) { _ in
-                        scrollToEnd(proxy)
-                    }
-                    .onChangeCompat(of: coach.sending) { _ in
-                        scrollToEnd(proxy)
-                    }
-                }
-            }
-        }
+        return "\(coach.messages.count)|\(last?.id.uuidString ?? "")|\(last?.text.count ?? 0)|\(coach.sending)"
     }
 
     private var emptyTranscript: some View {
@@ -968,15 +1005,6 @@ struct CoachView: View {
         }
     }
 
-    private func scrollToEnd(_ proxy: ScrollViewProxy) {
-        withAnimation(StrandMotion.fade) {
-            if coach.sending {
-                proxy.scrollTo("typing", anchor: .bottom)
-            } else if let last = coach.messages.last {
-                proxy.scrollTo(last.id, anchor: .bottom)
-            }
-        }
-    }
 }
 
 /// Draws `content` only when `key` changes, so unrelated state (the draft being typed) doesn't rebuild an
@@ -986,9 +1014,4 @@ private struct TranscriptGate<Content: View>: View, Equatable {
     @ViewBuilder let content: () -> Content
     static func == (a: Self, b: Self) -> Bool { a.key == b.key }
     var body: some View { content() }
-}
-
-private struct TranscriptHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }

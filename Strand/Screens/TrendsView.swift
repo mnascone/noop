@@ -365,7 +365,6 @@ struct TrendsView: View {
         case .trainingLoad: TrainingLoadCard(days: repo.days)
         case .year: yearStrip
         case .report: exportReportRow
-        case .fueling: FuelingCard()
         }
     }
 

@@ -60,12 +60,19 @@ final class NavRouter: ObservableObject {
     /// The #238 "a workout just started" transition trigger never fires for a session that is already in
     /// flight, so this is the one path that re-opens the live workout for an existing session.
     @Published var presentActiveWorkout = false
+    /// Set by `openBattery()`: the Devices sheet opens on its Battery side. Cleared when it closes.
+    var devicesOpensBattery = false
 
     /// Ask the shell to open the quick-action sheet (Live HR · workout · journal · breathe).
     func requestQuickActions() { quickActionsRequested = true }
 
     /// Ask the shell to open the Devices manager (pair / switch bands). The shell decides how.
     func openDevices() { requestedDestination = .devices }
+    /// Open the battery page (iPhone: the Battery side of Battery / Devices; elsewhere, Devices).
+    func openBattery() {
+        devicesOpensBattery = true
+        requestedDestination = .devices
+    }
     /// #1862: open Coach, optionally with a question the launcher already collected.
     func openCoach() { requestedDestination = .coach }
     /// Open the existing wake-alarm and wind-down settings from Sleep.

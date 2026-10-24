@@ -27,6 +27,18 @@ public enum SleepArchitecture {
         public var minutes: Double { (end - start) / 60 }
     }
 
+    /// One cycle: non-REM sleep through the REM episode that closes it.
+    public struct Cycle: Sendable, Equatable {
+        /// Seconds since sleep onset.
+        public let start: Double
+        public let end: Double
+        public let deepMinutes: Double
+        public let remMinutes: Double
+        /// A wake of 2 minutes or more fell inside this cycle.
+        public let interrupted: Bool
+        public var minutes: Double { (end - start) / 60 }
+    }
+
     public enum Pattern: String, Sendable, Equatable {
         /// REM gets longer through the night, most of it in the second half.
         case typical
@@ -65,6 +77,12 @@ public enum SleepArchitecture {
         /// Longest stretch asleep without a 2-minute wake.
         public let longestStretchMinutes: Double
         public let patterns: [Pattern]
+        /// Each complete cycle in order.
+        public let cycleSpans: [Cycle]
+        /// Wake bouts of 2 minutes or more between falling asleep and the final wake (seconds since onset).
+        public let wakeBouts: [Episode]
+        /// Sleep after the last REM episode that didn't reach another REM (an unfinished cycle), minutes.
+        public let trailingMinutes: Double
     }
 
     public static let remMergeGapS: Double = 5 * 60
@@ -94,16 +112,19 @@ public enum SleepArchitecture {
         // A cycle ends with each REM episode preceded by enough non-REM sleep.
         var cycles = 0
         var cycleLengths: [Double] = []
+        var bounds: [(start: Double, end: Double)] = []
         var cycleStart = 0.0
         for e in episodes {
             let nremBefore = e.start - cycleStart
             if nremBefore >= minNremBeforeCycleS || cycles == 0 {
                 cycles += 1
                 cycleLengths.append(e.end - cycleStart)
+                bounds.append((cycleStart, e.end))
                 cycleStart = e.end
             } else if !cycleLengths.isEmpty {
                 // Too close to the last one: treat as the same REM period.
                 cycleLengths[cycleLengths.count - 1] += e.end - cycleStart
+                bounds[bounds.count - 1].end = e.end
                 cycleStart = e.end
             }
         }
@@ -123,12 +144,14 @@ public enum SleepArchitecture {
         var longest = 0.0
         var stretchStart = onset
         var wakeRun: (start: Double, end: Double)?
+        var bouts: [Episode] = []
         func closeWake() {
             guard let w = wakeRun else { return }
             let len = w.end - w.start
             waso += len
             if len >= awakeningMinS {
                 awakenings += 1
+                bouts.append(Episode(start: w.start - onset, end: w.end - onset))
                 longest = max(longest, w.start - stretchStart)
                 stretchStart = w.end
             }
@@ -161,6 +184,15 @@ public enum SleepArchitecture {
         if episodes.count >= 2 && !builds { patterns.append(.flatRem) }
         if patterns.isEmpty && builds { patterns.append(.typical) }
 
+        let spans: [Cycle] = bounds.map { b in
+            let a = onset + b.start, z = onset + b.end
+            let deep = inSleep.filter { $0.stage == .deep }.reduce(0) { $0 + overlap($1, a, z) }
+            let rem = inSleep.filter { $0.stage == .rem }.reduce(0) { $0 + overlap($1, a, z) }
+            let broken = bouts.contains { $0.start < b.end && $0.end > b.start }
+            return Cycle(start: b.start, end: b.end, deepMinutes: deep / 60, remMinutes: rem / 60, interrupted: broken)
+        }
+        let trailing = max(0, span - (bounds.last?.end ?? 0)) / 60
+
         return Result(
             sleepOnset: onset, sleepEnd: end, asleepMinutes: asleep / 60,
             cycles: cycles,
@@ -173,6 +205,9 @@ public enum SleepArchitecture {
             awakenings: awakenings,
             wasoMinutes: waso / 60,
             longestStretchMinutes: longest / 60,
-            patterns: patterns)
+            patterns: patterns,
+            cycleSpans: spans,
+            wakeBouts: bouts,
+            trailingMinutes: trailing)
     }
 }

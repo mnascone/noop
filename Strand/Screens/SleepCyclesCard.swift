@@ -33,31 +33,24 @@ struct SleepCyclesCard: View {
                     HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space4) {
                         bigStat("\(r.cycles)", r.cycles == 1 ? String(localized: "cycle") : String(localized: "cycles"))
                         bigStat(r.averageCycleMinutes.map { "\(Int($0.rounded()))" } ?? "–", String(localized: "min each"))
-                        bigStat("\(r.remEpisodes.count)", String(localized: "REM periods"))
+                        bigStat(r.remLatencyMinutes.map { "\(Int($0.rounded()))" } ?? "–", String(localized: "min to first REM"))
                     }
-                    remStrip(r)
-                    VStack(alignment: .leading, spacing: 6) {
-                        row(String(localized: "First REM"), r.remLatencyMinutes.map { Self.minutes($0) + " " + String(localized: "after falling asleep") } ?? "–")
-                        row(String(localized: "Longest REM"), r.longestRemMinutes.map(Self.minutes) ?? "–")
-                        row(String(localized: "REM in the second half"), r.remSecondHalfShare.map(Self.pct) ?? "–")
-                        row(String(localized: "Deep in the first third"), r.deepFirstThirdShare.map(Self.pct) ?? "–")
-                        row(String(localized: "Wake-ups"), r.awakenings == 0
-                            ? String(localized: "None over 2 min")
-                            : String(localized: "\(r.awakenings), \(Self.minutes(r.wasoMinutes)) awake in total"))
-                        row(String(localized: "Longest unbroken sleep"), Self.minutes(r.longestStretchMinutes))
-                    }
-                    ForEach(r.patterns, id: \.self) { p in
-                        HStack(alignment: .top, spacing: 6) {
-                            Image(systemName: p == .typical ? "checkmark.circle.fill" : "info.circle")
-                                .foregroundStyle(p == .typical ? StrandPalette.statusPositive : StrandPalette.restColor)
-                                .font(StrandFont.footnote)
-                            Text(Self.explain(p))
-                                .font(StrandFont.footnote)
-                                .foregroundStyle(StrandPalette.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                    cycleTimeline(r)
+                    if r.cycleSpans.count >= 2 { remGrowth(r) }
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(insights(r).enumerated()), id: \.offset) { _, line in
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: line.good ? "checkmark.circle.fill" : "exclamationmark.circle")
+                                    .foregroundStyle(line.good ? StrandPalette.statusPositive : StrandPalette.recovery055)
+                                    .font(StrandFont.footnote)
+                                Text(line.text)
+                                    .font(StrandFont.footnote)
+                                    .foregroundStyle(StrandPalette.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                     }
-                    Text("A cycle is a stretch of light and deep sleep that ends in REM. Most nights run 4 to 6 of them, about 90 minutes each. Stages here come from heart rate and motion, so treat these as estimates.")
+                    Text("A cycle is light and deep sleep ending in REM, about 90 minutes. Most nights run 4 to 6. Stages come from heart rate and motion, so treat these as estimates.")
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -73,47 +66,159 @@ struct SleepCyclesCard: View {
         }
     }
 
-    /// The night as a bar with each REM period marked where it fell.
-    private func remStrip(_ r: SleepArchitecture.Result) -> some View {
+    /// The night as stage bands (deep low, REM high), cycle boundaries numbered above, wake-ups marked.
+    private func cycleTimeline(_ r: SleepArchitecture.Result) -> some View {
         let span = max(1, r.sleepEnd - r.sleepOnset)
-        return VStack(alignment: .leading, spacing: 3) {
+        let segs = intervals.filter { $0.end > r.sleepOnset && $0.start < r.sleepEnd }
+        return VStack(alignment: .leading, spacing: 4) {
             GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(StrandPalette.surfaceInset)
-                    ForEach(Array(r.remEpisodes.enumerated()), id: \.offset) { _, e in
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(StrandPalette.sleepStageColor(.rem))
-                            .frame(width: max(3, geo.size.width * (e.end - e.start) / span))
-                            .offset(x: geo.size.width * e.start / span)
+                let w = geo.size.width
+                ZStack(alignment: .topLeading) {
+                    // Alternating cycle shading with the cycle number.
+                    ForEach(Array(r.cycleSpans.enumerated()), id: \.offset) { i, c in
+                        let x = w * c.start / span
+                        let cw = max(2, w * (c.end - c.start) / span)
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(StrandPalette.restColor.opacity(i % 2 == 0 ? 0.10 : 0.18))
+                            .frame(width: cw, height: 54)
+                            .offset(x: x, y: 12)
+                        Text("\(i + 1)")
+                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .foregroundStyle(c.interrupted ? StrandPalette.recovery030 : StrandPalette.textTertiary)
+                            .frame(width: cw)
+                            .offset(x: x, y: 0)
+                    }
+                    // Stages: REM on top, light in the middle, deep at the bottom.
+                    ForEach(segs, id: \.id) { iv in
+                        let a = max(iv.start, r.sleepOnset) - r.sleepOnset
+                        let b = min(iv.end, r.sleepEnd) - r.sleepOnset
+                        let lane = Self.lane(iv.stage)
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(StrandPalette.sleepStageColor(iv.stage))
+                            .frame(width: max(1, w * (b - a) / span), height: 11)
+                            .offset(x: w * a / span, y: 14 + CGFloat(lane) * 13)
                     }
                 }
             }
-            .frame(height: 12)
+            .frame(height: 68)
             HStack {
-                Text("Asleep").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                Text(Date(timeIntervalSince1970: r.sleepOnset), style: .time)
                 Spacer()
-                Text("REM periods").font(StrandFont.caption).foregroundStyle(StrandPalette.sleepStageColor(.rem))
+                legendDot(.rem, "REM")
+                legendDot(.light, "Light")
+                legendDot(.deep, "Deep")
+                legendDot(.awake, "Awake")
                 Spacer()
-                Text("Wake").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                Text(Date(timeIntervalSince1970: r.sleepEnd), style: .time)
             }
+            .font(StrandFont.caption)
+            .foregroundStyle(StrandPalette.textTertiary)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text("\(r.remEpisodes.count) REM periods across the night"))
+        .accessibilityLabel(Text("\(r.cycles) cycles. \(r.awakenings) wake-ups."))
+    }
+
+    private static func lane(_ s: SleepStage) -> Int {
+        switch s {
+        case .awake: return 0
+        case .rem: return 1
+        case .light: return 2
+        case .deep: return 3
+        }
+    }
+
+    private func legendDot(_ s: SleepStage, _ label: LocalizedStringKey) -> some View {
+        HStack(spacing: 2) {
+            Circle().fill(StrandPalette.sleepStageColor(s)).frame(width: 6, height: 6)
+            Text(label).font(.system(size: 9))
+        }
+    }
+
+    /// REM and deep minutes in each cycle as paired bars, so REM building toward morning is plain to see.
+    private func remGrowth(_ r: SleepArchitecture.Result) -> some View {
+        let cycles = r.cycleSpans
+        let top = max(10, cycles.map { max($0.remMinutes, $0.deepMinutes) }.max() ?? 10)
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("REM and deep by cycle").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+            HStack(alignment: .bottom, spacing: 8) {
+                ForEach(Array(cycles.enumerated()), id: \.offset) { i, c in
+                    VStack(spacing: 2) {
+                        Text("\(Int(c.remMinutes.rounded()))")
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .foregroundStyle(StrandPalette.sleepStageColor(.rem))
+                        HStack(alignment: .bottom, spacing: 2) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(StrandPalette.sleepStageColor(.deep))
+                                .frame(width: 7, height: max(2, 44 * c.deepMinutes / top))
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(StrandPalette.sleepStageColor(.rem))
+                                .frame(width: 11, height: max(2, 44 * c.remMinutes / top))
+                        }
+                        Text("\(i + 1)").font(.system(size: 9)).foregroundStyle(StrandPalette.textTertiary)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .frame(height: 70, alignment: .bottom)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("REM by cycle: \(cycles.map { "\(Int($0.remMinutes.rounded()))" }.joined(separator: ", ")) minutes"))
+    }
+
+    private struct Insight { let good: Bool; let text: String }
+
+    /// The few things that matter about this night's structure, each against the usual range.
+    private func insights(_ r: SleepArchitecture.Result) -> [Insight] {
+        var out: [Insight] = []
+        if let l = r.remLatencyMinutes {
+            let m = Int(l.rounded())
+            if l < 50 {
+                out.append(Insight(good: false, text: String(localized: "First REM came \(m) min after falling asleep, early against the usual 70 to 120. That tends to follow short or broken sleep the night before.")))
+            } else if l > 120 {
+                out.append(Insight(good: false, text: String(localized: "First REM took \(m) min, later than the usual 70 to 120. Alcohol, late caffeine, a late hard session or a warm room push it back.")))
+            } else {
+                out.append(Insight(good: true, text: String(localized: "First REM at \(m) min, inside the usual 70 to 120.")))
+            }
+        }
+        let c = r.cycleSpans
+        if c.count >= 2, let first = c.first, let peak = c.max(by: { $0.remMinutes < $1.remMinutes }),
+           let peakIdx = c.firstIndex(of: peak) {
+            let a = Int(first.remMinutes.rounded()), b = Int(peak.remMinutes.rounded())
+            if peakIdx >= c.count - 2, b > a {
+                out.append(Insight(good: true, text: String(localized: "REM built from \(a) min in the first cycle to \(b) min in cycle \(peakIdx + 1), the pattern a well-rested night shows.")))
+            } else {
+                out.append(Insight(good: false, text: String(localized: "REM peaked at \(b) min in cycle \(peakIdx + 1), then shortened. The longest REM usually comes last, so the end of the night was cut short or disturbed.")))
+            }
+        }
+        if let d = r.deepFirstThirdShare {
+            let p = Int((d * 100).rounded())
+            out.append(d >= 0.5
+                ? Insight(good: true, text: String(localized: "\(p)% of deep sleep came in the first third of the night, where it belongs."))
+                : Insight(good: false, text: String(localized: "Only \(p)% of deep sleep came in the first third. A late meal, alcohol or a late workout can delay it.")))
+        }
+        let broken = c.enumerated().filter { $0.element.interrupted }.map { $0.offset + 1 }
+        if !broken.isEmpty {
+            let list = broken.map(String.init).joined(separator: ", ")
+            out.append(Insight(good: false, text: String(localized: "Wake-ups broke cycle \(list) (\(r.awakenings) over 2 min, \(Self.minutes(r.wasoMinutes)) awake in all). Longest unbroken stretch \(Self.minutes(r.longestStretchMinutes)).")))
+        } else if r.cycles > 0 {
+            out.append(Insight(good: true, text: String(localized: "No cycle was broken by a wake-up. Longest unbroken stretch \(Self.minutes(r.longestStretchMinutes)).")))
+        }
+        if r.trailingMinutes >= 25, r.trailingMinutes <= 80 {
+            out.append(Insight(good: false, text: String(localized: "You woke \(Int(r.trailingMinutes.rounded())) min into a new cycle, which can feel groggy. Waking about \(Int(r.trailingMinutes.rounded())) min earlier, or at the end of that cycle, lands between cycles.")))
+        }
+        if r.patterns.contains(.fragmentedRem) {
+            out.append(Insight(good: false, text: Self.explain(.fragmentedRem)))
+        }
+        if r.patterns.contains(.fewCycles) {
+            out.append(Insight(good: false, text: Self.explain(.fewCycles)))
+        }
+        return out
     }
 
     private func bigStat(_ value: String, _ label: String) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(value).font(StrandFont.number(28)).foregroundStyle(StrandPalette.textPrimary)
             Text(label).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-        }
-    }
-
-    private func row(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label).font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
-            Spacer(minLength: 8)
-            Text(value).font(StrandFont.footnote.weight(.semibold)).foregroundStyle(StrandPalette.textPrimary)
-                .multilineTextAlignment(.trailing)
         }
     }
 

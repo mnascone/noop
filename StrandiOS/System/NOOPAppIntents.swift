@@ -125,38 +125,6 @@ struct AskCoachIntent: AppIntent {
     }
 }
 
-/// Log a day's food totals (from MacroFactor via Apple Health, or typed in) straight into NOOP. The
-/// Shortcuts route for installs that can't read Apple Health themselves: Find Health Samples and
-/// Calculate Statistics for each macro, then this one action. No text, encoding or confirmation.
-struct LogNutritionIntent: AppIntent {
-    static var title: LocalizedStringResource = "Log Nutrition in NOOP"
-    static var description = IntentDescription("Save a day's calories, protein, carbs and fat to NOOP's Fueling card.")
-    static var openAppWhenRun = false
-
-    @Parameter(title: "Calories (kcal)") var calories: Double?
-    @Parameter(title: "Protein (g)") var protein: Double?
-    @Parameter(title: "Carbs (g)") var carbs: Double?
-    @Parameter(title: "Fat (g)") var fat: Double?
-    @Parameter(title: "Day", description: "Leave empty for today.") var day: Date?
-
-    static var parameterSummary: some ParameterSummary {
-        Summary("Log \(\.$calories) kcal, \(\.$protein) g protein, \(\.$carbs) g carbs, \(\.$fat) g fat") {
-            \.$day
-        }
-    }
-
-    @MainActor
-    func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard let model = AppModel.shared else {
-            return .result(dialog: "Open NOOP once, then run this again.")
-        }
-        let key = Repository.localDayKey(day ?? Date())
-        let saved = await model.logNutrition(day: key, kcal: calories, proteinG: protein, carbsG: carbs, fatG: fat)
-        guard saved else { return .result(dialog: "NOOP couldn't save that. Open NOOP and try again.") }
-        return .result(dialog: "Logged to NOOP.")
-    }
-}
-
 /// Surfaces NOOP's intents to Siri, Spotlight, and the Shortcuts gallery without any user setup.
 struct NOOPShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
@@ -167,10 +135,6 @@ struct NOOPShortcuts: AppShortcutsProvider {
                     ],
                     shortTitle: "Sync Strap",
                     systemImageName: "arrow.triangle.2.circlepath")
-        AppShortcut(intent: LogNutritionIntent(),
-                    phrases: ["Log nutrition in \(.applicationName)"],
-                    shortTitle: "Log Nutrition",
-                    systemImageName: "fork.knife")
         AppShortcut(intent: MarkMomentIntent(),
                     phrases: ["Mark a moment in \(.applicationName)"],
                     shortTitle: "Mark a Moment",

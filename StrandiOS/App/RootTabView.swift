@@ -381,7 +381,8 @@ struct RootTabView: View {
     /// dismisses the dedicated `showDevices` sheet rather than the quick-action item).
     private var devicesScreen: some View {
         NavigationStack {
-            DevicesView()
+            BatteryDevicesView(tab: router.devicesOpensBattery ? .battery : .devices)
+                .onDisappear { router.devicesOpensBattery = false }
                 .background(StrandPalette.surfaceBase.ignoresSafeArea())
                 .navigationBarTitleDisplayMode(.inline)
                 // #1027: same fix as quickScreen — Devices draws the full-bleed liquid sky, so a transparent

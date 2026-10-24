@@ -18,7 +18,11 @@ struct WorkoutsHubView: View {
     @State private var rules = RestDayRules.Snapshot.current()
     @State private var trained: [String: [WorkoutRow]] = [:]
     @State private var week = RestDayRules.Week(restDays: 0, trainingStreak: 0, trainedToday: false)
+    /// Days run from waking to the next sleep, so the log is "since you last slept".
+    @State private var wakeDays = RestDayRules.WakeDays.calendar
     @State private var selectedDay = Repository.localDayKey(Date())
+    /// Whether the user picked a day; until then the log follows the current day.
+    @State private var pickedDay = false
     @State private var monthStart = MonthMath.startOfMonth(Date())
     @State private var detail: WorkoutDetailTarget?
 
@@ -28,7 +32,8 @@ struct WorkoutsHubView: View {
     }
 
     private var effortScale: EffortScale { UnitPrefs.resolveEffortScale(effortScaleRaw) }
-    private var todayKey: String { Repository.localDayKey(Date()) }
+    /// The day you're in now: since your last sleep.
+    private var todayKey: String { wakeDays.currentDayKey() }
 
     var body: some View {
         ScreenScaffold(title: "Workouts") {
@@ -40,6 +45,7 @@ struct WorkoutsHubView: View {
                     dayLog.id("dayLog")
                     calendarCard { key in
                         selectedDay = key
+                        pickedDay = true
                         withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo("dayLog", anchor: .top) }
                     }
                     autoTrackingCard
@@ -63,10 +69,18 @@ struct WorkoutsHubView: View {
 
     private func load() async {
         let loaded = await repo.workoutRows(days: 400)
+        let now = Int(Date().timeIntervalSince1970)
+        let from = now - 400 * 86_400
+        // Main sleeps only (3 h or more), so a nap doesn't start a new day.
+        var sleeps = await repo.sleepSessions(from: from, to: now, limit: 1000)
+        if sleeps.isEmpty { sleeps = await repo.computedSleepSessions(from: from, to: now, limit: 1000) }
+        let wakes = sleeps.filter { $0.endTs - $0.effectiveStartTs >= 3 * 3600 && $0.endTs <= now }.map(\.endTs)
+        wakeDays = RestDayRules.WakeDays(wakes: wakes)
+        if !pickedDay { selectedDay = wakeDays.currentDayKey() }
         rows = loaded
         var grouped: [String: [WorkoutRow]] = [:]
         for r in loaded {
-            grouped[Self.dayKey(r), default: []].append(r)
+            grouped[wakeDays.dayKey(r.startTs), default: []].append(r)
         }
         for k in grouped.keys { grouped[k]?.sort { $0.startTs > $1.startTs } }
         byDay = grouped
@@ -77,8 +91,8 @@ struct WorkoutsHubView: View {
         let now = RestDayRules.Snapshot.current()
         guard force || now != rules else { return }
         rules = now
-        trained = RestDayRules.trainingDays(rows, rules: now)
-        week = RestDayRules.week(rows, rules: now)
+        trained = RestDayRules.trainingDays(rows, rules: now, days: wakeDays)
+        week = RestDayRules.week(rows, rules: now, days: wakeDays)
     }
 
     /// "Tue Oct 21", or "Today".
@@ -97,10 +111,6 @@ struct WorkoutsHubView: View {
         return f
     }()
 
-    static func dayKey(_ r: WorkoutRow) -> String {
-        Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(r.startTs)))
-    }
-
     // MARK: - Day log
 
     private var dayLog: some View {
@@ -109,12 +119,12 @@ struct WorkoutsHubView: View {
         return NoopCard(padding: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(Self.dayTitle(selectedDay))
+                    Text(isToday ? String(localized: "Today") : Self.dayTitle(selectedDay))
                         .font(StrandFont.headline)
                         .foregroundStyle(StrandPalette.textPrimary)
                     Spacer()
                     if !isToday {
-                        Button("Back to today") { selectedDay = todayKey }
+                        Button("Back to today") { selectedDay = todayKey; pickedDay = false }
                             .font(StrandFont.footnote)
                             .foregroundStyle(StrandPalette.accent)
                             .buttonStyle(.plain)

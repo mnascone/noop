@@ -45,6 +45,9 @@ struct TrendsView: View {
     }
 
     @State private var range: Range = .quarter
+    @State private var showingLayoutEditor = false
+    @AppStorage(TrendsLayoutPrefs.orderKey) private var trendsOrderRaw = ""
+    @AppStorage(TrendsLayoutPrefs.hiddenKey) private var trendsHiddenRaw = ""
 
     // #436 — shareable offline trends report (PDF over a date range). The sheet owns its
     // own range picker; this just presents it with the loaded history.
@@ -296,7 +299,16 @@ struct TrendsView: View {
                        // section reveal is unchanged; this only defers building that stack until it scrolls in.
                        onRefresh: { await repo.refresh() },
                        lazy: true,
-                       topBackground: liquidScaffoldSky()) {
+                       topBackground: liquidScaffoldSky(),
+                       trailing: {
+                           Button { showingLayoutEditor = true } label: {
+                               Image(systemName: "slider.horizontal.3")
+                                   .font(StrandFont.headline)
+                                   .foregroundStyle(StrandPalette.textSecondary)
+                           }
+                           .buttonStyle(.plain)
+                           .accessibilityLabel("Edit Trends")
+                       }) {
             if repo.days.isEmpty {
                 ComingSoon(what: repo.loaded
                     ? "Trends need history to draw. Import your WHOOP export in Data Sources to see weeks, months and years instantly."
@@ -307,32 +319,20 @@ struct TrendsView: View {
                 let metrics = resolvedMetrics
                 VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                     // The main card list ripples in once on appear (Reduce-Motion safe).
-                    Group {
-                        // Week-in-review digest (#208) with prev/next week browsing (#710) — self-hides
-                        // only when NO week in history has data. Past weeks render in the same format.
-                        weeklyDigestNav
-                            .staggeredAppear(index: 0)
-                        // The Charge / Effort / Rest trio, presented in NOOP's pip language.
-                        weekInReview(charge: metrics.recovery, effort: metrics.strain, rest: metrics.rest)
-                            .staggeredAppear(index: 1)
-                        rangeBar(recovery: metrics.recovery)
-                            .staggeredAppear(index: 2)
-                        heroRecovery(recovery: metrics.recovery)
-                            .staggeredAppear(index: 3)
-                        smallMultiples(hrv: metrics.hrv, rhr: metrics.rhr, strain: metrics.strain)
-                            .staggeredAppear(index: 4)
-                        // Long-horizon training load (CTL/ATL/TSB). Uses the FULL history, not the
-                        // range window — chronic load is inherently a 42-day horizon. Self-hides its
-                        // chart behind an honest "needs N more days" state until enough history exists.
-                        TrainingLoadCard(days: repo.days)
-                            .staggeredAppear(index: 5)
-                        yearStrip
-                            .staggeredAppear(index: 6)
-                        exportReportRow
-                            .staggeredAppear(index: 7)
+                    // The range control stays on top; every card below follows the user's order.
+                    rangeBar(recovery: metrics.recovery)
+                        .staggeredAppear(index: 0)
+                    let hidden = TrendsLayoutPrefs.hidden(trendsHiddenRaw)
+                    let order = TrendsLayoutPrefs.order(trendsOrderRaw).filter { !hidden.contains($0) }
+                    ForEach(Array(order.enumerated()), id: \.element) { idx, section in
+                        trendsSection(section, metrics: metrics)
+                            .staggeredAppear(index: idx + 1)
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showingLayoutEditor) {
+            TrendsLayoutEditor()
         }
         // #436 — present the offline trends-report exporter (range picker + PDF export).
         .sheet(isPresented: $showingReport) {
@@ -346,6 +346,24 @@ struct TrendsView: View {
             let s = await repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
             sleepPerfByDay = Dictionary(s.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
             sleepPerfRevision += 1
+        }
+    }
+
+    @ViewBuilder
+    private func trendsSection(_ section: TrendsSection, metrics: ResolvedMetrics) -> some View {
+        switch section {
+        // Week-in-review digest (#208) with prev/next week browsing (#710) — self-hides only when NO
+        // week in history has data. Past weeks render in the same format.
+        case .weekly: weeklyDigestNav
+        // The Charge / Effort / Rest trio, presented in NOOP's pip language.
+        case .trio: weekInReview(charge: metrics.recovery, effort: metrics.strain, rest: metrics.rest)
+        case .pacing: PacingDialCard(days: repo.days, effortScale: effortScale)
+        case .charge: heroRecovery(recovery: metrics.recovery)
+        case .multiples: smallMultiples(hrv: metrics.hrv, rhr: metrics.rhr, strain: metrics.strain)
+        // Long-horizon training load (CTL/ATL/TSB). Uses the FULL history, not the range window.
+        case .trainingLoad: TrainingLoadCard(days: repo.days)
+        case .year: yearStrip
+        case .report: exportReportRow
         }
     }
 

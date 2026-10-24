@@ -50,20 +50,51 @@ enum RestDayRules {
         }
     }
 
+    /// Puts each workout on the day it belongs to: the day you last woke up before it. A workout late at
+    /// night before bed stays on that day instead of rolling onto the next date.
+    struct WakeDays: Equatable {
+        /// Ends of the main sleeps (3 h or longer), ascending.
+        let wakes: [Int]
+        /// A wake older than this before the workout (a night with no data) falls back to the date.
+        static let maxGapS = 30 * 3600
+        static let calendar = WakeDays(wakes: [])
+
+        init(wakes: [Int]) { self.wakes = wakes.sorted() }
+
+        func dayKey(_ ts: Int) -> String {
+            var lo = 0, hi = wakes.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if wakes[mid] <= ts { lo = mid + 1 } else { hi = mid }
+            }
+            if lo > 0, ts - wakes[lo - 1] < Self.maxGapS {
+                return Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(wakes[lo - 1])))
+            }
+            return Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(ts)))
+        }
+
+        /// The day you're in now: since your last sleep.
+        func currentDayKey(now: Date = Date()) -> String { dayKey(Int(now.timeIntervalSince1970)) }
+    }
+
     /// Day key → that day's counted workouts. Days missing from the result are rest days.
-    static func trainingDays(_ rows: [WorkoutRow], rules: Snapshot) -> [String: [WorkoutRow]] {
+    static func trainingDays(_ rows: [WorkoutRow], rules: Snapshot,
+                             days: WakeDays = .calendar) -> [String: [WorkoutRow]] {
         var out: [String: [WorkoutRow]] = [:]
         for r in rows where rules.isTraining(r) {
-            out[Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(r.startTs))), default: []].append(r)
+            out[days.dayKey(r.startTs), default: []].append(r)
         }
         return out
     }
 
-    /// The last `count` finished days, newest first (yesterday, the day before, ...). Today isn't over, so
-    /// it never counts as a rest day yet.
-    static func pastDayKeys(count: Int, now: Date = Date()) -> [String] {
+    /// The `count` days before `todayKey`, newest first. The current day isn't over, so it never counts as
+    /// a rest day yet.
+    static func pastDayKeys(count: Int, todayKey: String) -> [String] {
         let cal = Calendar.current
-        let today = cal.startOfDay(for: now)
+        let parts = todayKey.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3,
+              let today = cal.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2], hour: 12))
+        else { return [] }
         return (1...max(1, count)).compactMap { cal.date(byAdding: .day, value: -$0, to: today) }
             .map(Repository.localDayKey)
     }
@@ -76,14 +107,14 @@ enum RestDayRules {
         var trainedToday: Bool
     }
 
-    static func week(_ rows: [WorkoutRow], rules: Snapshot, now: Date = Date()) -> Week {
-        let trained = trainingDays(rows, rules: rules)
-        let past = pastDayKeys(count: 7, now: now)
-        let rest = past.filter { trained[$0] == nil }.count
-        let todayKey = Repository.localDayKey(now)
+    static func week(_ rows: [WorkoutRow], rules: Snapshot, days: WakeDays = .calendar,
+                     now: Date = Date()) -> Week {
+        let trained = trainingDays(rows, rules: rules, days: days)
+        let todayKey = days.currentDayKey(now: now)
+        let rest = pastDayKeys(count: 7, todayKey: todayKey).filter { trained[$0] == nil }.count
         let trainedToday = trained[todayKey] != nil
         var streak = trainedToday ? 1 : 0
-        for key in pastDayKeys(count: 60, now: now) {
+        for key in pastDayKeys(count: 60, todayKey: todayKey) {
             guard trained[key] != nil else { break }
             streak += 1
         }

@@ -157,4 +157,20 @@ final class RepCounterTests: XCTestCase {
         XCTAssertEqual(a.counted.count, c.sets.first?.reps)
         XCTAssertFalse(a.trace.isEmpty)
     }
+
+    /// A pause inside a set joins it up, an arm swinging while walking isn't a set, and a lone few reps
+    /// aren't one either.
+    func testConsolidateJoinsPausesAndDropsWalking() {
+        typealias S = RepCounter.RepSet
+        let runs = [
+            S(start: 0, end: 20, reps: 6, tempoS: 2.5, movement: .vertical),
+            S(start: 35, end: 45, reps: 4, tempoS: 2.5, movement: .vertical),     // 15 s pause: same set
+            S(start: 60, end: 75, reps: 14, tempoS: 1.1, movement: .horizontal),  // walking to the rack
+            S(start: 160, end: 185, reps: 10, tempoS: 2.0, movement: .horizontal), // a row
+            S(start: 300, end: 306, reps: 3, tempoS: 2.0, movement: .vertical),    // three reps alone
+        ]
+        let sets = RepCounter.consolidate(runs)
+        XCTAssertEqual(sets.map(\.reps), [10, 10])
+        XCTAssertEqual(sets.first?.end, 45)
+    }
 }

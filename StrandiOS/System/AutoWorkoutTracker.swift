@@ -298,21 +298,29 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         syncLocationUpdates()
     }
 
-    /// GPS speed, only in the window after leaving a place, so a walk away can start without waiting
-    /// for a long motion bout. Off the rest of the time: continuous location costs phone battery.
+    /// GPS speed while the engine wants it: during a walk or run (so it can tell when you've stopped, even
+    /// when the motion classifier still says walking), while a walking bout is being judged, and in the
+    /// window after leaving a place. Off the rest of the time: continuous location costs phone battery.
     private var watchingSpeed = false
+    /// The last good fix, for working out speed when a fix carries none.
+    private var lastSpeedFix: CLLocation?
     private func syncLocationUpdates() {
         let want = engine.wantsLocationUpdates && AutoTrackingPrefs.walkEnabled
             && (locationAuth == .authorizedAlways || locationAuth == .authorizedWhenInUse)
         if want, !watchingSpeed {
             watchingSpeed = true
             if locationAuth == .authorizedAlways { locationManager.allowsBackgroundLocationUpdates = true }
+            // Keep fixes coming while standing still: a stop is exactly what this watches for.
+            locationManager.pausesLocationUpdatesAutomatically = false
+            locationManager.activityType = .fitness
+            lastSpeedFix = nil
             locationManager.startUpdatingLocation()
-            log("auto: watching walking pace after leaving")
+            log("auto: watching walking pace by GPS")
         } else if !want, watchingSpeed {
             watchingSpeed = false
             locationManager.stopUpdatingLocation()
             locationManager.allowsBackgroundLocationUpdates = false
+            lastSpeedFix = nil
         }
     }
 
@@ -697,11 +705,38 @@ extension AutoWorkoutTracker: @preconcurrency CLLocationManagerDelegate {
             return
         }
         if watchingSpeed {
-            for loc in locations where loc.speed >= 0 && loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy < 50 {
-                feed(.speed(loc.speed), at: loc.timestamp)
+            for loc in locations where loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy < 50 {
+                if let mps = Self.speed(of: loc, after: lastSpeedFix) { feed(.speed(mps), at: loc.timestamp) }
+                // The reference fix for derived speed moves on only every 45 s, so the distance between
+                // them outruns GPS noise.
+                if lastSpeedFix.map({ loc.timestamp.timeIntervalSince($0.timestamp) >= 45 }) ?? true,
+                   loc.horizontalAccuracy < 20 {
+                    lastSpeedFix = loc
+                }
             }
         }
-        wake()
+        // Fixes can come every second while watching; motion history only needs replaying once a minute.
+        feed(.tick)
+        if Date().timeIntervalSince(lastCatchUp) > 60 { catchUpMotion() }
+        startForegroundTimerIfNeeded()
+    }
+
+    /// The fix's own speed, or distance over time from the fix before when it has none (indoors, weak
+    /// signal). nil when neither can be trusted.
+    private static func speed(of loc: CLLocation, after prev: CLLocation?) -> Double? {
+        if loc.speed >= 0, loc.speedAccuracy < 0 || loc.speedAccuracy < 1.5 { return loc.speed }
+        guard let prev, loc.horizontalAccuracy < 20 else { return nil }
+        let dt = loc.timestamp.timeIntervalSince(prev.timestamp)
+        guard dt >= 45, dt <= 180 else { return nil }
+        let d = loc.distance(from: prev)
+        // Movement within the fixes' own uncertainty is no movement.
+        let noise = loc.horizontalAccuracy + prev.horizontalAccuracy
+        return d <= noise ? 0 : (d - noise) / dt
+    }
+
+    /// iOS paused updates because the phone stopped moving: that's a stop.
+    func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
+        if watchingSpeed { feed(.speed(0)) }
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {

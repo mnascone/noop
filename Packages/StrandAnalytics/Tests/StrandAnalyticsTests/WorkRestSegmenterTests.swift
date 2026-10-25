@@ -88,6 +88,23 @@ final class WorkRestSegmenterTests: XCTestCase {
         XCTAssertEqual(seg.phase, .warmingUp)
     }
 
+    /// Optical spikes (a few seconds 25 bpm high, every minute) and a slow wobble while resting are not sets.
+    func testSpikesAndWobbleCountNothing() {
+        var noise = Noise()
+        let samples = (0..<1200).map { i -> (Int, Int) in
+            let spike = i % 60 < 3 ? 25.0 : 0
+            let wobble = 3 * sin(Double(i) / 20)
+            return (1_000 + i, Int((100 + spike + wobble + noise.next(3)).rounded()))
+        }
+        XCTAssertEqual(run(.lifting, samples).intervals.count, 0)
+    }
+
+    /// A pause inside a set, or the walk to the next station, doesn't split one set into two.
+    func testPauseInsideASetIsOneSet() {
+        let (samples, _) = session(restBpm: 95, riseBpm: 30, works: [25, 25], rests: [28], lagS: 6)
+        XCTAssertEqual(run(.lifting, samples).intervals.count, 1)
+    }
+
     func testAssaultBikeIntervals() {
         let works = Array(repeating: 20, count: 8)
         let rests = Array(repeating: 40, count: 7)

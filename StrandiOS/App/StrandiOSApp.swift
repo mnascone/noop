@@ -331,6 +331,12 @@ struct StrandiOSApp: App {
                 .onOpenURL { url in
                     if url.host == "import-health" {
                         model.handleHealthImportURL(url)
+                    } else if url.host == "lift", liftSession.isActive {
+                        // The gym banner: straight into the session.
+                        liftSession.isPresented = true
+                    } else if url.host == "workout" {
+                        // The live banner: the running workout's own screen, if one is running.
+                        router.openActiveWorkout()
                     }
                 }
                 .alert("Import Apple Health data?", isPresented: healthImportAlertPresented) {

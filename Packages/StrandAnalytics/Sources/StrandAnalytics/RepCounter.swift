@@ -22,10 +22,13 @@ import Foundation
 /// weight. Each set is labelled `vertical` (its line of movement within ~45 degrees of gravity: presses,
 /// curls, squats, pull-ups) or `horizontal` (rows, flyes, cable work across the body).
 ///
-/// WHAT DOESN'T: walking between stations (steps come faster than `minRepS` and the arm barely moves
-/// along one line), racking, unracking, loading plates and adjusting a seat (single swings, out of step),
+/// WHAT DOESN'T: walking between stations (an arm swinging across the body faster than `walkTempoS` a
+/// swing), racking, unracking, loading plates and adjusting a seat (single swings, out of step),
 /// small fidgets (under `minAmpShare`), holds and carries (no excursion), and machines where the hands
 /// stay still (leg press, leg extension, leg curl, calf raise), which the wrist can't see.
+///
+/// WHAT MAKES A SET (`consolidate`): runs less than `mergeGapS` apart are one set with a pause in it
+/// (a rest-pause, re-gripping, a breath at the top), and a set needs `minSetReps`.
 /// Experimental: the thresholds are first guesses to tune against real sessions.
 public struct RepCounter: Sendable {
     public struct Sample: Sendable, Equatable {
@@ -91,6 +94,36 @@ public struct RepCounter: Sendable {
     public static let gapRatioMax = 1.6
     /// A swing smaller than this share of the run's median swing is noise, and ends the run.
     public static let minAmpShare = 0.4
+    /// Runs closer together than this (seconds) are one set.
+    public static let mergeGapS = 30.0
+    /// A horizontal run quicker than this per swing is an arm swinging while walking.
+    public static let walkTempoS = 1.3
+    /// Fewer reps than this, after joining, isn't a set.
+    public static let minSetReps = 4
+
+    /// An arm swinging while walking: across the body, at walking pace.
+    public static func looksLikeWalking(_ s: RepSet) -> Bool {
+        s.movement == .horizontal && (s.tempoS ?? .infinity) < walkTempoS
+    }
+
+    /// Runs of reps as sets: walking dropped, runs under `mergeGapS` apart joined, short ones dropped.
+    public static func consolidate(_ runs: [RepSet]) -> [RepSet] {
+        var out: [RepSet] = []
+        for r in runs where !looksLikeWalking(r) {
+            if let last = out.last, r.start - last.end < mergeGapS {
+                let reps = last.reps + r.reps
+                let tempo: Double? = {
+                    guard let a = last.tempoS, let b = r.tempoS else { return last.tempoS ?? r.tempoS }
+                    return (a * Double(last.reps) + b * Double(r.reps)) / Double(reps)
+                }()
+                out[out.count - 1] = RepSet(start: last.start, end: r.end, reps: reps, tempoS: tempo,
+                                            movement: last.movement, rangeG: last.rangeG ?? r.rangeG)
+            } else {
+                out.append(r)
+            }
+        }
+        return out.filter { $0.reps >= minSetReps }
+    }
 
     private struct Point { let t: Double; let a: (Double, Double, Double); let g: Double }
 

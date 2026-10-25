@@ -11,6 +11,11 @@ import Foundation
 // Rest is the time from one set's end (peak) to the next set's start (trough). The live rest timer runs
 // from the last peak, so it reads correctly as soon as the drop is confirmed.
 //
+// Raw heart rate first goes through a 7-sample running median, so a few seconds of optical spike (a hard
+// grip on the bar, the strap shifting) can't pass for a set. A set must also run `minWorkS`, and a rest
+// shorter than `minRestS` joins the bouts either side into one set: a pause inside a set, or walking to
+// the next machine, isn't a new set.
+//
 // Limits, stated plainly: heart rate lags effort by several seconds, and with short rests (under about a
 // minute) it may not fall far enough to split two sets, which then count as one. Very light sets (warm-ups)
 // may not raise it enough to count. These are estimates, shown as such.
@@ -41,7 +46,7 @@ public struct WorkRestSegmenter: Sendable {
         let s = min(2.0, max(0.5, sensitivity))
         switch mode {
         case .lifting:
-            return Params(riseBPM: 8 / s, fallBPM: 6 / s, minWorkS: 10, minRestS: 20, smoothS: 4)
+            return Params(riseBPM: 11 / s, fallBPM: 8 / s, minWorkS: 15, minRestS: 35, smoothS: 4)
         case .assaultBike:
             return Params(riseBPM: 12 / s, fallBPM: 8 / s, minWorkS: 8, minRestS: 10, smoothS: 3)
         case .sprints:
@@ -95,6 +100,9 @@ public struct WorkRestSegmenter: Sendable {
 
     private var smoothed: Double?
     private var lastTs: Int?
+    /// The last few raw samples, for the spike-rejecting median.
+    private var recentRaw: [Int] = []
+    static let medianWindow = 7
     private var trough: (ts: Int, v: Double)?
     private var peak: (ts: Int, v: Double, raw: Int)?
     private var currentStart: Int?
@@ -109,7 +117,12 @@ public struct WorkRestSegmenter: Sendable {
     public mutating func ingest(ts: Int, bpm: Int) {
         guard bpm >= 30, bpm <= 230 else { return }
         if let last = lastTs, ts <= last { return }
-        let v = Double(bpm)
+        // A long gap starts the median afresh, so stale beats don't hold it back.
+        if let last = lastTs, ts - last > 30 { recentRaw.removeAll() }
+        recentRaw.append(bpm)
+        if recentRaw.count > Self.medianWindow { recentRaw.removeFirst(recentRaw.count - Self.medianWindow) }
+        let sortedRaw = recentRaw.sorted()
+        let v = Double(sortedRaw[sortedRaw.count / 2])
         if let prev = smoothed, let last = lastTs {
             let dt = Double(min(ts - last, 30))
             let alpha = 1 - exp(-dt / params.smoothS)

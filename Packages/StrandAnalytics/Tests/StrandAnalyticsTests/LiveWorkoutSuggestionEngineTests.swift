@@ -423,4 +423,60 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
         }
         XCTAssertTrue(starts(got).isEmpty)
     }
+
+    // MARK: - Walk ends from GPS and heart rate
+
+    /// Feed one HR sample a second and a GPS speed every 5 s over [from, to).
+    @discardableResult
+    private func feedWalk(_ e: inout E, from: Int, to: Int, bpm: Int, mps: Double?) -> [E.Action] {
+        var out: [E.Action] = []
+        for t in from..<to {
+            out += e.handle(.heartRate(bpm), at: t)
+            if let mps, t % 5 == 0 { out += e.handle(.speed(mps), at: t) }
+        }
+        return out
+    }
+
+    /// The classifier sticks on walking, but GPS stops moving: the walk ends where GPS went still.
+    func testGPSStillEndsAWalkTheClassifierMissed() {
+        var e = engine()
+        _ = e.handle(.motion(.walking), at: 0)
+        _ = e.handle(.workoutStarted(context: .walk), at: 300)
+        XCTAssertTrue(e.wantsLocationUpdates, "GPS watches the walk")
+        feedWalk(&e, from: 300, to: 1_200, bpm: 95, mps: 1.3)
+        let out = feedWalk(&e, from: 1_200, to: 1_200 + E.walkStopGraceS + 10, bpm: 68, mps: 0.1)
+        XCTAssertEqual(ends(out).count, 1)
+        XCTAssertEqual(ends(out).first?.0, 1_200)
+        XCTAssertEqual(ends(out).first?.1, .stoppedMoving)
+    }
+
+    /// No GPS, classifier still on walking, heart rate back near resting: the walk ends at the last
+    /// sample above the walk floor.
+    func testCalmHeartRateEndsAWalkWithoutGPS() {
+        var e = engine()
+        _ = e.handle(.motion(.walking), at: 0)
+        _ = e.handle(.workoutStarted(context: .walk), at: 300)
+        feedWalk(&e, from: 300, to: 1_200, bpm: 95, mps: nil)
+        var out = feedWalk(&e, from: 1_200, to: 1_200 + E.walkCalmEndS - 30, bpm: 64, mps: nil)
+        XCTAssertTrue(ends(out).isEmpty, "not calm for long enough yet")
+        out = feedWalk(&e, from: 1_200 + E.walkCalmEndS - 30, to: 1_200 + E.walkCalmEndS + 10, bpm: 64, mps: nil)
+        XCTAssertEqual(ends(out).first?.0, 1_199)
+    }
+
+    /// A gentle stroll, heart rate barely up, but GPS shows you going somewhere: keep the walk.
+    func testSlowStrollMovingByGPSKeepsTheWalk() {
+        var e = engine()
+        _ = e.handle(.motion(.walking), at: 0)
+        _ = e.handle(.workoutStarted(context: .walk), at: 300)
+        let out = feedWalk(&e, from: 300, to: 300 + 3 * E.walkCalmEndS, bpm: 66, mps: 0.9)
+        XCTAssertTrue(ends(out).isEmpty)
+    }
+
+    /// Walking around the house: the classifier says walking and heart rate is up, but GPS never moves.
+    func testPacingIndoorsDoesNotStartAWalk() {
+        var e = engine()
+        _ = e.handle(.motion(.walking), at: 0)
+        let out = feedWalk(&e, from: 0, to: E.walkMinBoutS + 120, bpm: 95, mps: 0.2)
+        XCTAssertTrue(starts(out).isEmpty)
+    }
 }

@@ -133,6 +133,8 @@ struct NOOPLiveActivity: Widget {
             .padding()
             .activityBackgroundTint(StrandPalette.surfaceBase)
             .activitySystemActionForegroundColor(StrandPalette.textPrimary)
+            // A tap opens the running workout's screen when there is one (the app decides).
+            .widgetURL(URL(string: "noop://workout"))
         } dynamicIsland: { context in
             let state = context.state
             let island = Self.islandField(state)
@@ -168,6 +170,7 @@ struct NOOPLiveActivity: Widget {
             } minimal: {
                 Image(systemName: Self.symbol(island, context.state)).foregroundStyle(Self.tint(island, context.state))
             }
+            .widgetURL(URL(string: "noop://workout"))
         }
     }
 }

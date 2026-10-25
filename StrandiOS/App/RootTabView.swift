@@ -40,6 +40,9 @@ struct RootTabView: View {
     @State private var quickAction: QuickAction?
     /// Presents the Devices manager (pair / switch bands) when a screen asks the shell to open it.
     @State private var showDevices = false
+    /// The running workout's in-exercise screen, opened from the Lock Screen banner or Today.
+    @State private var showWorkoutScreen = false
+    @EnvironmentObject private var model: AppModel
     /// A routed v5 pillar screen (Insights hub / Lab Book / fused record / Rhythm) presented as a sheet
     /// when a hub row deep-links to it via NavRouter. nil = closed.
     @State private var routedPillar: NavRouter.Destination?
@@ -191,11 +194,12 @@ struct RootTabView: View {
                 withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 1 }
                 router.requestedDestination = nil
             case .activeWorkout:
-                // The Today active-workout indicator opens Live through the quick-action Live sheet; once
-                // it's up, LiveView consumes the one-shot `presentActiveWorkout` flag and presents the
-                // in-exercise screen. Calm sheet easing, matching the other quick-action presents.
-                withAnimation(Self.sheetEase) { quickAction = .live }
+                // The running workout's own screen, presented directly: the gym session when one is
+                // running, else the in-exercise screen. It used to go through the Live sheet, which then
+                // had to present the workout over itself and often left you on the Live console instead.
                 router.requestedDestination = nil
+                router.presentActiveWorkout = false
+                openRunningWorkout()
             case .liveSession:
                 // Live Sessions is presented from Today's own Start entry (a cover, not a routed sheet),
                 // so a deep-link lands on the Today tab where that entry lives.
@@ -251,6 +255,35 @@ struct RootTabView: View {
         // thrown in the user's face; they open it when they want it.
         .sheet(isPresented: $liftSession.isPresented) {
             LiftSessionView { }
+        }
+        .sheet(isPresented: $showWorkoutScreen) {
+            LiveWorkoutView(onClose: { showWorkoutScreen = false })
+        }
+        // A workout that ends while its screen is up closes it.
+        .onChange(of: model.activeWorkout == nil) { _, ended in if ended { showWorkoutScreen = false } }
+    }
+
+    /// Close whatever shell sheet is up, then show the running gym session or workout. With neither
+    /// running, the Workouts tab.
+    private func openRunningWorkout() {
+        let covered = quickAction != nil || showDevices || routedPillar != nil
+        quickAction = nil
+        showDevices = false
+        routedPillar = nil
+        let present = {
+            if liftSession.isActive {
+                liftSession.isPresented = true
+            } else if model.activeWorkout != nil {
+                withAnimation(Self.sheetEase) { showWorkoutScreen = true }
+            } else {
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 5 }
+            }
+        }
+        // A sheet asked for while another is still leaving is dropped, so wait for the first to go.
+        if covered {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { present() }
+        } else {
+            present()
         }
     }
 

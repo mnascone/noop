@@ -96,17 +96,21 @@ struct PacingDialCard: View {
     let days: [DailyMetric]
     let effortScale: EffortScale
     var mode: Mode = .both
-    /// Tapping the pace side calls this. The stress side opens the Stress screen.
+    /// Tapping the pace side opens its breakdown, which offers this as a way on to the long-term trends.
+    /// The stress side opens the Stress screen.
     var onOpen: (() -> Void)? = nil
 
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var repo: Repository
     @State private var showStress = false
+    @State private var showPace = false
 
     static let ringDiameter: CGFloat = 84
 
     /// Daily stress (0-3) from resting HR and HRV against your own baseline, plus any imported values.
-    private var stressByDay: [String: Double] {
+    private var stressByDay: [String: Double] { Self.stressByDay(days) }
+
+    static func stressByDay(_ days: [DailyMetric]) -> [String: Double] {
         guard let m = StressModel(days: days, stored: []) else { return [:] }
         return Dictionary(m.fullTrend.map { (Self.utcDay.string(from: $0.date), $0.value) },
                           uniquingKeysWith: { _, last in last })
@@ -132,7 +136,9 @@ struct PacingDialCard: View {
                 HStack(alignment: .top, spacing: 0) {
                     paceColumn(overall, sub: long == nil ? String(localized: "3 days") : String(localized: "7 vs 28 days"))
                         .contentShape(Rectangle())
-                        .onTapGesture { onOpen?() }
+                        .onTapGesture { showPace = true }
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityHint(Text("Shows what's driving your pace"))
                     Rectangle()
                         .fill(StrandPalette.hairline.opacity(0.6))
                         .frame(width: 1, height: Self.ringDiameter)
@@ -161,6 +167,17 @@ struct PacingDialCard: View {
         .accessibilityElement(children: .contain)
         .onAppear { StressNow.shared.attach(model: model) }
         .task(id: repo.refreshSeq) { await StressNow.shared.refreshStored(repo: repo) }
+        .sheet(isPresented: $showPace) {
+            NavigationStack {
+                PaceBreakdownView(days: days, effortScale: effortScale,
+                                  onOpenTrends: openTrendsFromPace)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showPace = false }
+                        }
+                    }
+            }
+        }
         .sheet(isPresented: $showStress) {
             NavigationStack {
                 StressView()
@@ -170,6 +187,15 @@ struct PacingDialCard: View {
                         }
                     }
             }
+        }
+    }
+
+    /// Close the breakdown, then go on to the trends once the sheet has gone.
+    private var openTrendsFromPace: (() -> Void)? {
+        guard let onOpen else { return nil }
+        return {
+            showPace = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { onOpen() }
         }
     }
 

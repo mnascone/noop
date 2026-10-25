@@ -20,6 +20,8 @@ struct LiftLiveActivity: Widget {
             lockScreen(context.state)
                 .activityBackgroundTint(StrandPalette.surfaceBase)
                 .activitySystemActionForegroundColor(StrandPalette.textPrimary)
+                // A tap opens the gym session itself.
+                .widgetURL(URL(string: "noop://lift"))
         } dynamicIsland: { context in
             let tint = tint(context.state)
             return DynamicIsland {
@@ -76,6 +78,7 @@ struct LiftLiveActivity: Widget {
             } minimal: {
                 Image(systemName: "dumbbell.fill").foregroundStyle(tint)
             }
+            .widgetURL(URL(string: "noop://lift"))
         }
     }
 

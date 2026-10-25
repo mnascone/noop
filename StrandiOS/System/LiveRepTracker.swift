@@ -29,7 +29,7 @@ final class LiveRepTracker: ObservableObject {
     private var lastAnalysisAt = Date.distantPast
 
     /// Heart rate must climb this far above its level at the set's start.
-    static let hrRiseBPM = 6
+    static let hrRiseBPM = 8
     /// How long after a set ends its heart-rate rise may still arrive.
     static let confirmWindowS = 60.0
 
@@ -142,8 +142,9 @@ final class LiveRepTracker: ObservableObject {
 
     private func publish() {
         guard let c = counter else { return }
-        // A set shows once its heart rate has risen; one that never rises within the window never shows.
-        let confirmed = c.sets.filter { set in
+        // Runs close together are one set, walking isn't one, and a set shows once its heart rate has
+        // risen; one that never rises within the window never shows.
+        let confirmed = RepCounter.consolidate(c.sets).filter { set in
             guard let rise = hrRise(set) else {
                 // No heart rate at all: keep motion's call rather than lose every set.
                 return hr.isEmpty

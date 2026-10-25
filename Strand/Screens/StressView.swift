@@ -217,6 +217,11 @@ struct StressView: View {
     private func content(_ model: StressModel) -> some View {
         VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
 
+            // 0. RIGHT NOW: the same reading as the Today ring, labelled with its source, and a
+            //    one-minute measurement.
+            StressRightNowCard()
+                .staggeredAppear(index: 0)
+
             // 1. HERO — the liquid stress-level vessel + band + one plain-English line, all in one card.
             heroCard(model)
                 .staggeredAppear(index: 0)
@@ -427,7 +432,7 @@ struct StressView: View {
         NoopCard(tint: StressRamp.calm) {
             VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
                 HStack {
-                    Text("Stress monitor").strandOverline()
+                    Text("Today's score").strandOverline()
                     Spacer()
                     StatePill("\(model.band.title)", tone: model.band.tone, showsDot: true)
                 }

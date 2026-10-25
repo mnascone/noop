@@ -1011,6 +1011,11 @@ struct MetricDetailView: View {
                     // scores) or a big SF-Rounded headline, floated over the domain's starfield,
                     // with the range pill. Then the frosted chart / stat tiles / correlations.
                     heroHeader(effectiveRange: effRange, windowed: win, windowFellBack: fellBack)
+                    // Charge: which overnight inputs moved it, since it's scored once per wake rather
+                    // than filling and draining like a battery.
+                    if metric.key == HeroRingMetric.charge {
+                        ChargeChangeCard(days: repo.days)
+                    }
                     heroChart(effectiveRange: effRange, windowed: win, windowFellBack: fellBack)
                     // #1848: the skin-temp explorer's explanatory note (nil for every other metric and
                     // for a skin-temp screen that needs no explanation). Sits between the chart and the

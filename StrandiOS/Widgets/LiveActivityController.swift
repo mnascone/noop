@@ -171,33 +171,30 @@ final class LiveActivityController {
         return snap
     }
 
-    /// Stress 0-100 for the banner, and its colour: live from the strap's beat-to-beat intervals against
-    /// your nightly HRV, "Active" while heart rate is up from moving, else today's latest scored hour.
+    /// Stress 0-100 for the banner, and its colour, from the same reading as the Today ring and the
+    /// Stress screen. "Active" while heart rate is up from moving. Only readings that describe now or the
+    /// last couple of hours are shown: the day's overall score, or an hours-old stored hour, would read as
+    /// current on the Lock Screen.
     private func stressText(_ model: AppModel) -> (text: String, hex: String)? {
-        let days = model.repo.days
-        let hrvs = days.suffix(30).compactMap(\.avgHrv).filter { $0 > 0 }.sorted()
-        let resting = days.last(where: { ($0.restingHr ?? 0) > 0 })?.restingHr
-        // Live only when beats are arriving now: the R-R buffer keeps old beats until the link drops.
-        let beatsFresh = model.live.rrUpdatedAt.map { Date().timeIntervalSince($0) < 15 } ?? false
-        if model.live.connected, beatsFresh, let hr = model.live.heartRate {
-            if let r = resting, hr > r + 35 { return (String(localized: "Active"), "8E8E93") }
-            if hrvs.count >= 5, let v = LiveStressGauge.level(rr: model.live.rrRecent, hrvBaseline: hrvs[hrvs.count / 2]) {
-                return ("\(Int(v.rounded()))", Self.stressHex(v))
-            }
+        let meter = StressNow.shared
+        meter.attach(model: model)
+        if let r = meter.reading(), r.kind != .today {
+            if r.active { return (String(localized: "Active"), "8E8E93") }
+            return ("\(Int(r.value.rounded()))", Self.stressHex(r.value))
         }
-        // Today's stored hour, only while it's recent: an hours-old number on the Lock Screen reads as now.
-        guard let last = storedGlance(Date())?.latestStress(),
-              Date().timeIntervalSince(last.at) < 3 * 3600 else { return nil }
+        // Before the in-app reading has loaded: today's stored hour from the widget snapshot, if recent.
+        guard meter.hourly == nil, let last = storedGlance(Date())?.latestStress(),
+              Date().timeIntervalSince(last.at) < 2 * 3600 else { return nil }
         let v = min(100, max(0, last.level / 3 * 100))
         return ("\(Int(v.rounded()))", Self.stressHex(v))
     }
 
+    /// The Stress screen's bands: blue when low, green at medium, amber when high.
     static func stressHex(_ v: Double) -> String {
         switch v {
-        case ..<26: return "4FA3F7"
-        case ..<51: return "8CC0F2"
-        case ..<76: return "FFB340"
-        default: return "FF453A"
+        case ..<33.3: return "60A0E0"
+        case ..<66.7: return "03E095"
+        default: return "F0A020"
         }
     }
 

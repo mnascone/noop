@@ -402,7 +402,7 @@ struct LiquidTodayView: View {
                         case .pacing:
                             if selectedDayOffset == 0 {
                                 // The pace side opens Performance, where the long-term read lives; the stress
-                                // gauge beside it starts a live measurement on tap.
+                                // ring beside it opens the Stress screen, which can measure now.
                                 PacingDialCard(days: repo.days, effortScale: effortScale, mode: .short,
                                                onOpen: { router.requestedDestination = .trends })
                             }

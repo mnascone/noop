@@ -222,6 +222,8 @@ struct SettingsView: View {
 
     /// "How your scores work" explainer sheet, reachable any time from About.
     @State private var showScoringGuide = false
+    /// The Information section's Charge / Effort / Rest rows: the scoring guide, opened at that score.
+    @State private var guideSection: ScoreSection?
 
     /// "How NOOP works" primer sheet (the four-section explainability primer), reachable any
     /// time from About — covers how sleep is sorted, how scores + calibration work, what
@@ -277,6 +279,7 @@ struct SettingsView: View {
                 #if os(iOS)
                 syncCard.staggeredAppear(index: 6)
                 #endif
+                informationCard.staggeredAppear(index: 6)
 
                 // Lower-frequency sections collapse behind a single default-closed disclosure so the
                 // screen opens at ~6 sections instead of 11. Nothing is removed; every section here
@@ -344,6 +347,9 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $showScoringGuide) {
             ScoringGuideView(onClose: { showScoringGuide = false })
+        }
+        .sheet(item: $guideSection) { section in
+            NavigationStack { ScoringGuideView(initialSection: section, onClose: { guideSection = nil }) }
         }
         .sheet(isPresented: $showHowNoopWorks) {
             HowNoopWorksView(onClose: { showHowNoopWorks = false })
@@ -2431,6 +2437,70 @@ struct SettingsView: View {
     /// Swift constant can. Mirrors how Android's pill reads BuildConfig.VERSION_NAME. Falls back to
     /// the hand-maintained changelog version only if the Info.plist key is somehow missing.
     private var bundleVersionString: String { UpdateWatch.installedVersion }
+
+    // MARK: - Information
+
+    /// How each score and dial on Today is worked out: the explainers the Today rings used to open.
+    private var informationCard: some View {
+        SettingsSection(
+            icon: "book.closed.fill",
+            title: "Information",
+            blurb: "How Charge, Effort, Rest, stress and pace are worked out."
+        ) {
+            VStack(alignment: .leading, spacing: 14) {
+                Button { guideSection = .charge } label: {
+                    infoRow("bolt.heart", "Charge",
+                            String(localized: "How recovered you are: HRV, resting heart rate, sleep and breathing against your baseline. Scored once when you wake."))
+                }
+                .buttonStyle(LiquidPressStyle())
+                Button { guideSection = .effort } label: {
+                    infoRow("flame", "Effort",
+                            String(localized: "How hard your heart worked, from time in heart-rate zones."))
+                }
+                .buttonStyle(LiquidPressStyle())
+                Button { guideSection = .rest } label: {
+                    infoRow("moon.zzz", "Rest",
+                            String(localized: "How restorative your sleep was: duration against need, efficiency, deep and REM, consistency."))
+                }
+                .buttonStyle(LiquidPressStyle())
+                NavigationLink { InfoArticleView.stress } label: {
+                    infoRow("waveform.path.ecg", "Stress",
+                            String(localized: "Live, measured, hourly and daily stress, and which one the ring is showing."))
+                }
+                .buttonStyle(LiquidPressStyle())
+                NavigationLink { InfoArticleView.pace } label: {
+                    infoRow("gauge.with.needle", "Pace",
+                            String(localized: "Whether your Effort is keeping step with your Charge."))
+                }
+                .buttonStyle(LiquidPressStyle())
+            }
+        }
+    }
+
+    private func infoRow(_ icon: String, _ title: LocalizedStringKey, _ detail: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .foregroundStyle(StrandPalette.accent)
+                .frame(width: 22)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(StrandFont.body)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                Text(detail)
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(StrandPalette.textTertiary)
+                .accessibilityHidden(true)
+        }
+        .contentShape(Rectangle())
+    }
 
     private var aboutCard: some View {
         SettingsSection(

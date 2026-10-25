@@ -248,6 +248,12 @@ struct StrandiOSApp: App {
                 // fixed-geometry tiles/gauges stay legible at the largest accessibility sizes rather than
                 // clipping; the common Larger-Text range still scales fully.
                 .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+                // One stress reading for Today, the Stress screen and the Lock Screen, collecting beats
+                // from launch so a live reading needs no screen open.
+                .task {
+                    StressNow.shared.attach(model: model)
+                    await StressNow.shared.refreshStored(repo: model.repo)
+                }
                 // `hr` is the value being written: this runs in willSet, when `live.heartRate` still holds the old one.
                 .onReceive(model.live.$heartRate) { hr in
                     // The gym banner's own cheap path: no presentation is built here, and a heart rate moves

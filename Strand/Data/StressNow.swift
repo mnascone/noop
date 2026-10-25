@@ -23,9 +23,12 @@ import WhoopStore
 ///   1. Live: beats arriving in the last 15 s, with enough of them for HRV.
 ///   2. Estimate: measuring, before there are enough beats for HRV: heart rate alone.
 ///   3. Measured: the result of a measurement in the last 30 minutes.
-///   4. This hour: today's daytime stress curve, when its latest scored hour ended under 2 hours ago.
-///   5. This morning's score: from last night's resting heart rate and HRV (the Stress screen's daily card).
-/// All are on the Stress screen's 0-100 scale (its 0-3 score times 33.3) and its Low / Medium / High bands.
+///   4. This morning's score: from last night's resting heart rate and HRV (the Stress screen's daily card).
+/// Today's hourly timeline is NOT a "right now" reading: an hour scored against the day's calmest hours
+/// reads High for an ordinary busy hour (a meal, errands), and shown as "now" it looked random. It stays
+/// on the Stress screen as the day's timeline.
+/// All are on the Stress screen's 0-100 scale (its 0-3 score times 33.3) and its Low / Medium / High bands,
+/// coloured as its band pills are: green, amber, red.
 @MainActor
 final class StressNow: ObservableObject {
     static let shared = StressNow()
@@ -33,7 +36,6 @@ final class StressNow: ObservableObject {
     enum Kind: Equatable {
         case live, estimate
         case measured(Date)
-        case hour(Date)
         case today
     }
 
@@ -63,7 +65,6 @@ final class StressNow: ObservableObject {
     @Published private(set) var measured: (value: Double, at: Date)?
     /// Bumped on each beat packet, so views showing live values redraw.
     @Published private(set) var beatTick = 0
-    @Published private(set) var hourly: (value: Double, end: Date)?
     @Published private(set) var daily: Double?
     /// What today's hours were scored against, for scoring the live window on the same curve.
     private(set) var reference: DaytimeStress.Reference?
@@ -176,15 +177,10 @@ final class StressNow: ObservableObject {
 
     /// Re-read the stored readings: today's daytime curve and the daily score. Call when data changes.
     func refreshStored(repo: Repository) async {
-        // The same lens the Stress screen scores its hours with, so the latest hour matches its timeline.
+        // The same lens the Stress screen scores its hours with, so live sits on its curve.
         let day = await StressDayCurve.today(repo: repo,
                                              personalBaseline: PuffinExperiment.stressPersonalBaselineEnabled)
         reference = day?.result.reference
-        if let h = day?.result.hours.last(where: { $0.level != nil }), let l = h.level {
-            hourly = (min(100, max(0, l / 3 * 100)), Date(timeIntervalSince1970: TimeInterval(h.startTs + 3600)))
-        } else {
-            hourly = nil
-        }
         let series = await repo.series(key: "stress", source: "my-whoop")
         daily = StressModel(days: repo.days, stored: series).map { min(100, max(0, $0.score / 3 * 100)) }
     }
@@ -202,9 +198,6 @@ final class StressNow: ObservableObject {
         }
         if let m = measured, now.timeIntervalSince(m.at) < 1800 {
             return Reading(value: m.value, kind: .measured(m.at))
-        }
-        if let h = hourly, now.timeIntervalSince(h.end) < 2 * 3600 {
-            return Reading(value: h.value, kind: .hour(h.end))
         }
         if let d = daily { return Reading(value: d, kind: .today) }
         return nil
@@ -282,18 +275,15 @@ final class StressNow: ObservableObject {
     /// The Stress screen's bands and colours, on its 0-3 scale: Low under 1, Medium under 2, High above.
     static func band(_ v: Double) -> StressBand { StressBand(score: v / 100 * 3) }
 
-    static func color(_ v: Double) -> Color { StressRamp.color(v / 100 * 3) }
+    /// The band's own colour, as on the Stress screen's pills: green Low, amber Medium, red High.
+    static func color(_ v: Double) -> Color { band(v).tone.color }
 
-    /// "Live", "Measured 11:58", "This hour", "This morning's score".
+    /// "Live", "Measured 11:58", "This morning's score".
     static func label(_ k: Kind) -> String {
         switch k {
         case .live: return String(localized: "Live")
         case .estimate: return String(localized: "From heart rate")
         case .measured(let at): return String(localized: "Measured \(at.formatted(date: .omitted, time: .shortened))")
-        case .hour(let end):
-            return Date().timeIntervalSince(end) < 0
-                ? String(localized: "This hour")
-                : String(localized: "Up to \(end.formatted(date: .omitted, time: .shortened))")
         case .today: return String(localized: "This morning's score")
         }
     }

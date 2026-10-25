@@ -172,29 +172,22 @@ final class LiveActivityController {
     }
 
     /// Stress 0-100 for the banner, and its colour, from the same reading as the Today ring and the
-    /// Stress screen. "Active" while heart rate is up from moving. Only readings that describe now or the
-    /// last couple of hours are shown: the day's overall score, or an hours-old stored hour, would read as
-    /// current on the Lock Screen.
+    /// Stress screen. "Active" while heart rate is up from moving. Only a live or recently measured
+    /// reading is shown: this morning's score would read as current on the Lock Screen.
     private func stressText(_ model: AppModel) -> (text: String, hex: String)? {
         let meter = StressNow.shared
         meter.attach(model: model)
-        if let r = meter.reading(), r.kind != .today {
-            if r.active { return (String(localized: "Active"), "8E8E93") }
-            return ("\(Int(r.value.rounded()))", Self.stressHex(r.value))
-        }
-        // Before the in-app reading has loaded: today's stored hour from the widget snapshot, if recent.
-        guard meter.hourly == nil, let last = storedGlance(Date())?.latestStress(),
-              Date().timeIntervalSince(last.at) < 2 * 3600 else { return nil }
-        let v = min(100, max(0, last.level / 3 * 100))
-        return ("\(Int(v.rounded()))", Self.stressHex(v))
+        guard let r = meter.reading(), r.kind != .today else { return nil }
+        if r.active { return (String(localized: "Active"), "8E8E93") }
+        return ("\(Int(r.value.rounded()))", Self.stressHex(r.value))
     }
 
-    /// The Stress screen's bands: blue when low, green at medium, amber when high.
+    /// The Stress screen's band colours: green Low, amber Medium, red High.
     static func stressHex(_ v: Double) -> String {
         switch v {
-        case ..<33.3: return "60A0E0"
-        case ..<66.7: return "03E095"
-        default: return "F0A020"
+        case ..<33.3: return "03E095"
+        case ..<66.7: return "F0A020"
+        default: return "E0662F"
         }
     }
 

@@ -12,7 +12,8 @@ struct StressRightNowCard: View {
     var body: some View {
         NoopCard(tint: StressRamp.calm) {
             TimelineView(.periodic(from: .now, by: stress.measureEnd != nil ? 1 : 10)) { ctx in
-                let r = stress.reading()
+                // This morning's score has its own card below; up here it's either now or nothing.
+                let r = stress.reading().flatMap { $0.kind == .today ? nil : $0 }
                 HStack(alignment: .center, spacing: NoopMetrics.space4) {
                     StressRing(reading: r, diameter: 76)
                     VStack(alignment: .leading, spacing: NoopMetrics.space1) {
@@ -37,11 +38,20 @@ struct StressRightNowCard: View {
                 }
             }
         }
-        .onAppear { stress.attach(model: model) }
+        .onAppear {
+            stress.attach(model: model)
+            // Opening Stress is asking how you are now: measure straight away when nothing current exists.
+            if live.connected, stress.measureEnd == nil,
+               stress.reading().map({ $0.kind == .today }) ?? true {
+                stress.start()
+            }
+        }
     }
 
     private func headline(_ r: StressNow.Reading?) -> String {
-        guard let r else { return String(localized: "No reading yet") }
+        guard let r else {
+            return stress.measureEnd != nil ? String(localized: "Measuring…") : String(localized: "Not measured yet")
+        }
         if r.active { return String(localized: "Active · \(StressNow.label(r.kind))") }
         let band = StressNow.band(r.value).title.capitalized
         return "\(band) · \(StressNow.label(r.kind))"
@@ -61,10 +71,8 @@ struct StressRightNowCard: View {
             return String(localized: "From heart rate while beats for the HRV reading arrive. Firms up in a few seconds.")
         case .measured:
             return String(localized: "Your last measurement. Measure again any time.")
-        case .hour:
-            return String(localized: "The latest scored hour of today's timeline below.")
         case .today:
-            return String(localized: "Nothing recent today yet, so this is this morning's score from last night. Measure to see now.")
+            return String(localized: "Measure to see how your nervous system is doing now.")
         }
     }
 

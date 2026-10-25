@@ -24,6 +24,12 @@ struct StressRightNowCard: View {
                             .font(StrandFont.caption)
                             .foregroundStyle(StrandPalette.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
+                        if let note = Self.differsNote(r, daily: stress.daily) {
+                            Text(note)
+                                .font(StrandFont.caption)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         measureButton(now: ctx.date)
                             .padding(.top, 2)
                     }
@@ -50,16 +56,25 @@ struct StressRightNowCard: View {
         }
         switch r.kind {
         case .live:
-            return String(localized: "From the beat-to-beat intervals of the last two minutes, against your usual awake HRV.")
+            return String(localized: "Your heart rate and beat-to-beat intervals over the last two minutes, scored like the hours below: against today's calm hours.")
         case .estimate:
             return String(localized: "From heart rate while beats for the HRV reading arrive. Firms up in a few seconds.")
         case .measured:
             return String(localized: "Your last one-minute measurement. Measure again any time.")
         case .hour:
-            return String(localized: "Today's daytime stress from your stored heart rate, the latest scored hour.")
+            return String(localized: "The latest scored hour of today's timeline below.")
         case .today:
-            return String(localized: "Today's score from last night's resting heart rate and HRV against your baseline. Not a live reading: measure to see now.")
+            return String(localized: "Nothing recent today yet, so this is this morning's score from last night. Measure to see now.")
         }
+    }
+
+    /// When now and this morning's score sit in different bands, say why both can be true.
+    static func differsNote(_ r: StressNow.Reading?, daily: Double?) -> String? {
+        guard let r, !r.active, r.kind != .today, let d = daily,
+              StressNow.band(r.value) != StressNow.band(d) else { return nil }
+        let morning = StressNow.band(d).title.capitalized
+        let now = StressNow.band(r.value).title.capitalized
+        return String(localized: "This morning's score below is \(morning): it's set once from last night. \(now) here is your heart rate and HRV now against today's calm hours.")
     }
 
     @ViewBuilder

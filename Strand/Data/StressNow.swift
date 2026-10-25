@@ -8,10 +8,14 @@ import WhoopStore
 /// Screen, so they can't disagree. Every reading carries its kind and its time, and only a reading from
 /// beats arriving now is ever called live.
 ///
+/// Live readings are scored on the SAME curve as the Stress screen's hours: the last two minutes' mean
+/// heart rate and RMSSD against the reference today's hours were scored with (`DaytimeStress.score`),
+/// so the ring and the timeline can't tell different stories. Before today has a scored hour to give a
+/// reference, live falls back to RMSSD against an awake share of your nightly HRV.
+///
 /// In order, the first that exists wins:
-///   1. Live: a measurement in progress, or beats streaming in the last 15 s, read from the last two
-///      minutes of beat-to-beat intervals against an awake HRV reference.
-///   2. Estimate: a measurement just started, before there are enough beats, from heart rate alone.
+///   1. Live: a measurement in progress, or beats streaming in the last 15 s.
+///   2. Estimate: a measurement just started, before there are enough beats for HRV: heart rate alone.
 ///   3. Measured: the result of a measurement in the last 30 minutes.
 ///   4. This hour: today's daytime stress curve, when its latest scored hour ended under 2 hours ago.
 ///   5. Today: the daily score from last night's resting heart rate and HRV against your baseline (the
@@ -46,8 +50,11 @@ final class StressNow: ObservableObject {
     @Published private(set) var beatTick = 0
     @Published private(set) var hourly: (value: Double, end: Date)?
     @Published private(set) var daily: Double?
+    /// What today's hours were scored against, for scoring the live window on the same curve.
+    private(set) var reference: DaytimeStress.Reference?
 
     private var beats: [(t: Date, ms: Int)] = []
+    private var heartRates: [(t: Date, bpm: Int)] = []
     private weak var model: AppModel?
     private var cancellables: Set<AnyCancellable> = []
     private var endTask: Task<Void, Never>?
@@ -69,6 +76,17 @@ final class StressNow: ObservableObject {
                 self.beatTick &+= 1
             }
             .store(in: &cancellables)
+        model.live.$heartRate
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] bpm in
+                guard let self, let bpm, bpm >= 30, bpm <= 230 else { return }
+                let now = Date()
+                self.heartRates.append((now, bpm))
+                if let f = self.heartRates.first, now.timeIntervalSince(f.t) > 150 {
+                    self.heartRates.removeAll { now.timeIntervalSince($0.t) > 150 }
+                }
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: Measuring
@@ -83,6 +101,13 @@ final class StressNow: ObservableObject {
         return beats.filter { $0.t >= from }.map(\.ms)
     }
 
+    /// Mean heart rate over the same window as `freshBeats`, from at least 10 readings.
+    var freshMeanHR: Double? {
+        let from = max(Date().addingTimeInterval(-120), measureStartedAt ?? .distantPast)
+        let v = heartRates.filter { $0.t >= from }.map(\.bpm)
+        return v.count >= 10 ? Double(v.reduce(0, +)) / Double(v.count) : nil
+    }
+
     /// The last beat arrived in the last 15 seconds.
     var streaming: Bool { beats.last.map { Date().timeIntervalSince($0.t) < 15 } ?? false }
 
@@ -93,6 +118,7 @@ final class StressNow: ObservableObject {
     func start() {
         guard let model, measureEnd == nil else { return }
         beats = []
+        heartRates = []
         model.startRealtimeHR()
         let end = Date().addingTimeInterval(Self.measureSeconds)
         measureEnd = end
@@ -106,8 +132,8 @@ final class StressNow: ObservableObject {
 
     func finish() {
         guard measureEnd != nil else { return }
-        if let b = hrvBaseline, let v = Self.level(rr: freshBeats, hrvBaseline: b, minBeats: 12) {
-            measured = (v, Date())
+        if let v = liveValue(minBeats: 12), v.withHRV {
+            measured = (v.value, Date())
         }
         measureEnd = nil
         endTask?.cancel()
@@ -130,8 +156,11 @@ final class StressNow: ObservableObject {
 
     /// Re-read the stored readings: today's daytime curve and the daily score. Call when data changes.
     func refreshStored(repo: Repository) async {
-        if let day = await StressDayCurve.today(repo: repo),
-           let h = day.result.hours.last(where: { $0.level != nil }), let l = h.level {
+        // The same lens the Stress screen scores its hours with, so the latest hour matches its timeline.
+        let day = await StressDayCurve.today(repo: repo,
+                                             personalBaseline: PuffinExperiment.stressPersonalBaselineEnabled)
+        reference = day?.result.reference
+        if let h = day?.result.hours.last(where: { $0.level != nil }), let l = h.level {
             hourly = (min(100, max(0, l / 3 * 100)), Date(timeIntervalSince1970: TimeInterval(h.startTs + 3600)))
         } else {
             hourly = nil
@@ -147,11 +176,11 @@ final class StressNow: ObservableObject {
         let hr = model?.live.heartRate.map(Double.init)
         let fresh = streaming || measureEnd != nil
         let active = fresh && (hr.map { h in restingHR.map { h > $0 + 35 } ?? (h > 110) } ?? false)
-        if fresh, let b = hrvBaseline,
-           let v = Self.level(rr: freshBeats, hrvBaseline: b, minBeats: measureEnd != nil ? 12 : 20) {
-            return Reading(value: v, kind: .live, active: active)
+        if fresh, let v = liveValue(minBeats: measureEnd != nil ? 12 : 20) {
+            if v.withHRV { return Reading(value: v.value, kind: .live, active: active) }
+            if measureEnd != nil { return Reading(value: v.value, kind: .estimate, active: active) }
         }
-        if measureEnd != nil, let h = hr, let r = restingHR {
+        if measureEnd != nil, reference == nil, let h = hr, let r = restingHR {
             return Reading(value: Self.heartRateEstimate(hr: h, restingHR: r), kind: .estimate, active: active)
         }
         if let m = measured, Date().timeIntervalSince(m.at) < 1800 {
@@ -165,6 +194,20 @@ final class StressNow: ObservableObject {
     }
 
     // MARK: Maths
+
+    /// Stress (0-100) from the live window. On today's curve when there's a reference: mean heart rate
+    /// and, with enough clean beats, RMSSD (`withHRV`). Without a reference, RMSSD against the awake
+    /// share of your nightly HRV.
+    private func liveValue(minBeats: Int) -> (value: Double, withHRV: Bool)? {
+        let rr = freshBeats
+        if let ref = reference, ref.heartRate != nil {
+            let rmssd = rr.count >= minBeats ? HRVAnalyzer.analyze(rawRR: rr.map(Double.init)).rmssd : nil
+            guard let s = DaytimeStress.score(meanHR: freshMeanHR, rmssd: rmssd, against: ref) else { return nil }
+            return (min(100, max(0, s / 3 * 100)), rmssd != nil)
+        }
+        guard let b = hrvBaseline, let v = Self.level(rr: rr, hrvBaseline: b, minBeats: minBeats) else { return nil }
+        return (v, true)
+    }
 
     /// Stress, 0-100, from the most recent beats (up to the last 120): RMSSD against an awake reference
     /// (`awakeShare` of the nightly average). At the reference it reads about 12; at 40% of the nightly
@@ -193,7 +236,7 @@ final class StressNow: ObservableObject {
 
     static func color(_ v: Double) -> Color { StressRamp.color(v / 100 * 3) }
 
-    /// "Live", "Measured 11:58", "This hour", "Today's score".
+    /// "Live", "Measured 11:58", "This hour", "This morning's score".
     static func label(_ k: Kind) -> String {
         switch k {
         case .live: return String(localized: "Live")
@@ -203,7 +246,7 @@ final class StressNow: ObservableObject {
             return Date().timeIntervalSince(end) < 0
                 ? String(localized: "This hour")
                 : String(localized: "Up to \(end.formatted(date: .omitted, time: .shortened))")
-        case .today: return String(localized: "Today's score")
+        case .today: return String(localized: "This morning's score")
         }
     }
 }

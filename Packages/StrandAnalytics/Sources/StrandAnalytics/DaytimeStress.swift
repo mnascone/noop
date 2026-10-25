@@ -198,6 +198,23 @@ public enum DaytimeStress {
         }
     }
 
+    /// What the day's hours were scored against: the calm reference and spread for heart rate and RMSSD.
+    /// Exposed so a shorter window read now (the live stress ring) lands on the SAME curve as the hours.
+    public struct Reference: Equatable, Sendable {
+        public let heartRate: Double?
+        public let heartRateSD: Double
+        public let rmssd: Double?
+        public let rmssdSD: Double
+    }
+
+    /// Stress (0-3) for any window, scored exactly as an hour is: mean heart rate and RMSSD against the
+    /// day's `reference`. nil without heart rate or a reference to score it against.
+    public static func score(meanHR: Double?, rmssd: Double?, against ref: Reference?) -> Double? {
+        guard let ref, let hr = meanHR, ref.heartRate != nil else { return nil }
+        return squash(rawScore(hr: hr, meanHR: ref.heartRate, sdHR: ref.heartRateSD,
+                               rmssd: rmssd, meanRMSSD: ref.rmssd, sdRMSSD: ref.rmssdSD))
+    }
+
     /// The full daytime read: the hourly timeline plus the sustained-high summary.
     public struct Result: Equatable, Sendable {
         /// Waking-hour timeline, earliest → latest. Hours with no signal carry `level == nil`.
@@ -238,12 +255,15 @@ public enum DaytimeStress {
         /// `highStressMinutes`, `dayMean` and `peak` all stay on the non-overlapping `hours`, because
         /// overlapping windows would count the same minute more than once.
         public let timeline: [HourPoint]
+        /// ADDITIVE — the reference the hours were scored against, nil for `.empty`.
+        public let reference: Reference?
 
         public init(hours: [HourPoint], sustainedHigh: Bool, sustainedRun: Int,
                     dayMean: Double?, peak: HourPoint?, activityMaskedHours: Int = 0,
                     highStressMinutes: Int = 0, hrOnlyFallback: Bool = false,
-                    timeline: [HourPoint]? = nil) {
+                    timeline: [HourPoint]? = nil, reference: Reference? = nil) {
             self.hours = hours
+            self.reference = reference
             self.timeline = timeline ?? hours
             self.sustainedHigh = sustainedHigh
             self.sustainedRun = sustainedRun
@@ -528,6 +548,8 @@ public enum DaytimeStress {
             }
         }
 
+        let reference = Reference(heartRate: refHR, heartRateSD: sdHR, rmssd: refRMSSD, rmssdSD: sdRMSSD)
+
         // 4) Score each waking-hour bucket on the shared 0–3 curve.
         //
         // Written against a supplied bucket grid so the SAME expression scores the on-the-hour pass
@@ -591,7 +613,8 @@ public enum DaytimeStress {
             return points.isEmpty ? .empty
                 : Result(hours: points, sustainedHigh: false, sustainedRun: 0,
                          dayMean: nil, peak: nil, activityMaskedHours: activityMaskedHours,
-                         highStressMinutes: 0, hrOnlyFallback: hrOnlyFallback, timeline: timeline)
+                         highStressMinutes: 0, hrOnlyFallback: hrOnlyFallback, timeline: timeline,
+                         reference: reference)
         }
 
         // 5) Sustained-high flag: walk back from the latest SCORED hour while each is HIGH.
@@ -613,7 +636,7 @@ public enum DaytimeStress {
         return Result(hours: points, sustainedHigh: sustained, sustainedRun: run,
                       dayMean: dayMean, peak: peak, activityMaskedHours: activityMaskedHours,
                       highStressMinutes: highStressMinutes, hrOnlyFallback: hrOnlyFallback,
-                      timeline: timeline)
+                      timeline: timeline, reference: reference)
     }
 
     // MARK: - Helpers

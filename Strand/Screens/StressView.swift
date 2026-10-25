@@ -432,7 +432,7 @@ struct StressView: View {
         NoopCard(tint: StressRamp.calm) {
             VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
                 HStack {
-                    Text("Today's score").strandOverline()
+                    Text("This morning's score").strandOverline()
                     Spacer()
                     StatePill("\(model.band.title)", tone: model.band.tone, showsDot: true)
                 }
@@ -455,6 +455,10 @@ struct StressView: View {
                     }
                     Spacer(minLength: 0)
                 }
+                Text("Set once a day from last night's resting heart rate and HRV. Right now, above, is how today is going.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

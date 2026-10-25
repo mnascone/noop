@@ -226,6 +226,19 @@ final class DaytimeStressTests: XCTestCase {
         XCTAssertGreaterThan(tense, relaxed)
     }
 
+    /// A shorter window read now (the live ring) scored with an hour's own mean HR and RMSSD lands on
+    /// that hour's level: one curve, whatever the window.
+    func testScoringAWindowAgainstTheReferenceMatchesTheHour() {
+        let (hr, rr) = wornMorning()
+        let r = DaytimeStress.analyze(hr: hr, rr: rr)
+        XCTAssertNotNil(r.reference)
+        for h in r.scored {
+            let s = DaytimeStress.score(meanHR: h.meanHR, rmssd: h.rmssd, against: r.reference)
+            XCTAssertEqual(s ?? -1, h.level!, accuracy: 1e-9)
+        }
+        XCTAssertNil(DaytimeStress.score(meanHR: 70, rmssd: nil, against: DaytimeStress.Result.empty.reference))
+    }
+
     /// R-R for one hour with a controllable beat-to-beat jitter (drives RMSSD).
     private func hourRRVariable(_ hour: Int, rrMs: Int, jitter: Int, n: Int = 60) -> [RRInterval] {
         let base = hour * 3_600

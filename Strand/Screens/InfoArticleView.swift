@@ -40,13 +40,13 @@ struct InfoArticleView: View {
             subtitle: String(localized: "How the stress ring and the Stress screen are worked out"),
             parts: [
                 Part(heading: String(localized: "One reading, always labelled"),
-                     body: String(localized: "The Today ring, the Stress screen and the Lock Screen show the same reading, and say where it came from. Live, Measured with a time, the latest scored hour, or Today's score. Only beats arriving now are ever called live.")),
+                     body: String(localized: "The Today ring, the Stress screen and the Lock Screen show the same reading, and say where it came from. Live, Measured with a time, the latest scored hour, or This morning's score. Only beats arriving now are ever called live.")),
                 Part(heading: String(localized: "Live and Measure now"),
-                     body: String(localized: "While your strap streams heart rate, stress comes from the beat-to-beat intervals of the last two minutes (RMSSD) against an awake reference: about 65% of your usual overnight HRV, since awake HRV runs lower even when calm. Measure now streams for a minute and keeps the result for half an hour. While heart rate is up from moving it shows Active, because HRV can't tell stress apart from effort then.")),
+                     body: String(localized: "While your strap streams heart rate, the last two minutes' mean heart rate and beat-to-beat variability (RMSSD) are scored exactly like an hour of today's timeline, against today's calm hours, so the ring and the timeline agree. Before today has a scored hour, it uses about 65% of your usual overnight HRV as the calm reference instead. Measure now streams for a minute and keeps the result for half an hour. While heart rate is up from moving it shows Active, because HRV can't tell stress apart from effort then.")),
                 Part(heading: String(localized: "Today's hours"),
                      body: String(localized: "Through the day, stored heart rate is scored hour by hour on the same 0 to 3 scale as the daily number. The ring uses the latest scored hour when it ended within the last two hours.")),
-                Part(heading: String(localized: "Today's score"),
-                     body: String(localized: "The daily number compares last night's resting heart rate and HRV with your last 30 days: a higher resting heart rate and lower HRV than usual mean more stress. It's the fallback when there's nothing more recent, and it's labelled Today's score so it never passes as live.")),
+                Part(heading: String(localized: "This morning's score"),
+                     body: String(localized: "The daily number compares last night's resting heart rate and HRV with your last 30 days: a higher resting heart rate and lower HRV than usual mean more stress. It's set once a day, so it can read Low while right now reads High, or the other way round: they measure different things. It's the fallback when there's nothing more recent, and it's labelled This morning's score so it never passes as live.")),
                 Part(heading: String(localized: "The scale"),
                      body: String(localized: "0 to 100 on the ring is the Stress screen's 0 to 3 scale. Low is under 33 (under 1), Medium under 67 (under 2), High above.")),
             ])

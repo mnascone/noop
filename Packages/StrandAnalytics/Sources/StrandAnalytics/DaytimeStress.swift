@@ -205,6 +205,13 @@ public enum DaytimeStress {
         public let heartRateSD: Double
         public let rmssd: Double?
         public let rmssdSD: Double
+
+        public init(heartRate: Double?, heartRateSD: Double, rmssd: Double?, rmssdSD: Double) {
+            self.heartRate = heartRate
+            self.heartRateSD = heartRateSD
+            self.rmssd = rmssd
+            self.rmssdSD = rmssdSD
+        }
     }
 
     /// Stress (0-3) for any window, scored exactly as an hour is: mean heart rate and RMSSD against the

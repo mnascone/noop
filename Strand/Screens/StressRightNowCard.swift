@@ -3,7 +3,7 @@ import StrandDesign
 import WhoopStore
 
 /// The top of the Stress screen: the same reading as the Today ring, what it's based on, and a button to
-/// take a fresh one-minute measurement. The day's score below it stays the daily number.
+/// take a fresh measurement. The day's score below it stays the daily number.
 struct StressRightNowCard: View {
     @ObservedObject private var stress = StressNow.shared
     @EnvironmentObject private var model: AppModel
@@ -49,18 +49,18 @@ struct StressRightNowCard: View {
 
     static func explain(_ r: StressNow.Reading?) -> String {
         guard let r else {
-            return String(localized: "Measure for a minute to see how your nervous system is doing now.")
+            return String(localized: "Measure to see how your nervous system is doing now. It takes about 30 seconds.")
         }
         if r.active {
             return String(localized: "Your heart rate is up from moving, where HRV can't tell stress apart from effort. Measure again once you're still.")
         }
         switch r.kind {
         case .live:
-            return String(localized: "Your heart rate and beat-to-beat intervals over the last two minutes, scored like the hours below: against today's calm hours.")
+            return String(localized: "Your heart rate and beat-to-beat intervals over the last couple of minutes, scored like the hours below, against today's calm hours.")
         case .estimate:
             return String(localized: "From heart rate while beats for the HRV reading arrive. Firms up in a few seconds.")
         case .measured:
-            return String(localized: "Your last one-minute measurement. Measure again any time.")
+            return String(localized: "Your last measurement. Measure again any time.")
         case .hour:
             return String(localized: "The latest scored hour of today's timeline below.")
         case .today:

@@ -49,11 +49,13 @@ public struct RepCounter: Sendable {
         public var movement: Movement = .unknown
         /// Typical size of one rep's swing, in g (peak to trough of the filtered signal).
         public var rangeG: Double?
+        /// When each counted rep landed.
+        public var repTimes: [Double] = []
 
         public init(start: Double, end: Double, reps: Int, tempoS: Double?,
-                    movement: Movement = .unknown, rangeG: Double? = nil) {
+                    movement: Movement = .unknown, rangeG: Double? = nil, repTimes: [Double] = []) {
             self.start = start; self.end = end; self.reps = reps; self.tempoS = tempoS
-            self.movement = movement; self.rangeG = rangeG
+            self.movement = movement; self.rangeG = rangeG; self.repTimes = repTimes
         }
     }
 
@@ -81,7 +83,8 @@ public struct RepCounter: Sendable {
     }
 
     public static let rateHz = 25.0
-    public static let enterDps = 30.0
+    /// Wrist rotation that starts a stretch of motion (deg/s). Adjustable in Detection settings.
+    public static var enterDps = 30.0
     public static let exitDps = 15.0
     public static let quietExitS = 6.0
     public static let minSetS = 6.0
@@ -91,7 +94,7 @@ public struct RepCounter: Sendable {
     public static let minReps = 3
     /// Neighbouring reps, and each rep against the run's median, may differ in length by at most this
     /// factor (1.6 = a rep can take 60% longer or 38% less time than the one before).
-    public static let gapRatioMax = 1.6
+    public static var gapRatioMax = 1.6
     /// A swing smaller than this share of the run's median swing is noise, and ends the run.
     public static let minAmpShare = 0.4
     /// Runs closer together than this (seconds) are one set.
@@ -117,7 +120,8 @@ public struct RepCounter: Sendable {
                     return (a * Double(last.reps) + b * Double(r.reps)) / Double(reps)
                 }()
                 out[out.count - 1] = RepSet(start: last.start, end: r.end, reps: reps, tempoS: tempo,
-                                            movement: last.movement, rangeG: last.rangeG ?? r.rangeG)
+                                            movement: last.movement, rangeG: last.rangeG ?? r.rangeG,
+                                            repTimes: last.repTimes + r.repTimes)
             } else {
                 out.append(r)
             }
@@ -208,7 +212,8 @@ public struct RepCounter: Sendable {
         guard a.counted.count >= Self.minReps else { return }
         let tempo = a.tempoS ?? 0
         sets.append(RepSet(start: (a.counted.first ?? first.t) - tempo, end: a.counted.last ?? last.t,
-                           reps: a.counted.count, tempoS: a.tempoS, movement: a.movement, rangeG: a.rangeG))
+                           reps: a.counted.count, tempoS: a.tempoS, movement: a.movement, rangeG: a.rangeG,
+                           repTimes: a.counted))
     }
 
     /// The analysis of the set in progress, or of the last stretch of motion when between sets.

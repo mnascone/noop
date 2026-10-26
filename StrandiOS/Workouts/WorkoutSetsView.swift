@@ -3,15 +3,23 @@ import StrandDesign
 import StrandAnalytics
 import WhoopStore
 
-/// On a workout's detail screen: the sets it counted, drawn over the session's heart rate, and the way
-/// into correcting them. Shown for workouts whose sport counts sets or intervals.
+extension SetTimeline {
+    var segmenterMode: WorkRestSegmenter.Mode { WorkRestSegmenter.Mode(rawValue: mode) ?? .lifting }
+}
+
+/// On a workout's detail screen: its sets over the session's heart rate, what they add up to (with push /
+/// pull / legs), and the way into the editor. Shown for workouts whose sport counts sets or intervals,
+/// and for any workout you've entered sets for.
 struct WorkoutSetsCard: View {
     let row: WorkoutRow
     /// Raised by the detail screen's Edit sets button too.
     @Binding var editing: Bool
     @EnvironmentObject private var repo: Repository
-    @State private var record: WorkoutSetsRecord?
+    @ObservedObject private var categories = ExerciseCategoryStore.shared
+    @State private var timeline: SetTimeline?
+    @State private var lift = WorkoutSetsStore.LiftContext()
     @State private var loadedSeq: Int?
+    @State private var notesTask: Task<Void, Never>?
 
     private var countsSets: Bool { LiveIntervalModes.mode(forSport: row.sport) != nil }
 
@@ -19,55 +27,19 @@ struct WorkoutSetsCard: View {
         // Always in the hierarchy (a zero-height stand-in when hidden) so the editor sheet can still open
         // from the toolbar for a workout that doesn't show the card.
         VStack(spacing: 0) {
-            if let r = record, countsSets || r.edited != nil {
-                VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-                    SectionHeader(LocalizedStringKey(LiveIntervalModes.unitName(r.segmenterMode, count: 2).capitalized),
-                                  overline: overline(r), trailing: "\(r.sets.count)")
-                    NoopCard(tint: StrandPalette.effortColor) {
-                        VStack(alignment: .leading, spacing: NoopMetrics.space3) {
-                            if r.hr.isEmpty {
-                                Text("No heart rate is stored for this workout yet, so nothing was counted. It fills in after the strap syncs, or you can enter your sets now.")
-                                    .font(StrandFont.footnote)
-                                    .foregroundStyle(StrandPalette.textSecondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            } else {
-                                SetsChart(record: r, sets: r.sets, selected: nil)
-                                    .frame(height: 110)
-                            }
-                            if !r.sets.isEmpty {
-                                Text(WorkoutSetsStore.notesLine(r).components(separatedBy: "\n").first ?? "")
-                                    .font(StrandFont.footnote)
-                                    .foregroundStyle(StrandPalette.textSecondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            if let n = Self.likelyFixes(r), n > 0 {
-                                Label(String(localized: "\(n) suggested fixes: short breaks or very short sets"),
-                                      systemImage: "exclamationmark.circle")
-                                    .font(StrandFont.caption.weight(.semibold))
-                                    .foregroundStyle(StrandPalette.statusWarning)
-                            }
-                            Button {
-                                editing = true
-                            } label: {
-                                Label(r.edited == nil ? (r.sets.isEmpty ? "Enter sets" : "Review and correct") : "Edit sets",
-                                      systemImage: "slider.horizontal.3")
-                                    .font(StrandFont.subhead.weight(.semibold))
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(StrandPalette.accent)
-                        }
-                    }
-                }
+            if let t = timeline, countsSets || t.isCorrected {
+                content(t)
             } else {
                 Color.clear.frame(height: 0)
             }
         }
         // Reload when data lands: a workout saved before the strap synced gets its heart rate later.
         .task(id: repo.refreshSeq) { await load() }
-        .sheet(isPresented: $editing) {
+        .sheet(isPresented: $editing, onDismiss: finishedEditing) {
             NavigationStack {
-                if let r = record {
-                    WorkoutSetsEditor(record: r, row: row) { updated in record = updated }
+                if let t = timeline {
+                    SetTimelineEditorView(title: String(localized: "Edit sets"), timeline: t,
+                                          exercises: lift.names) { updated in changed(updated) }
                 } else {
                     ProgressView().task { await load() }
                 }
@@ -75,642 +47,788 @@ struct WorkoutSetsCard: View {
         }
     }
 
+    private func content(_ t: SetTimeline) -> some View {
+        let mode = t.segmenterMode
+        let sum = SetSummary(t) { categories.category(for: $0) }
+        let uncertain = t.sets.count - t.counted.count
+        return VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader(LocalizedStringKey(LiveIntervalModes.unitName(mode, count: 2).capitalized),
+                          overline: overline(t), trailing: "\(sum.count)")
+            NoopCard(tint: StrandPalette.effortColor) {
+                VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+                    if t.hr.isEmpty && t.sets.isEmpty {
+                        Text("No heart rate is stored for this workout yet, so nothing was counted. It fills in after the strap syncs, or you can enter your sets now.")
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        SetTimelineChart(timeline: t, sets: t.sets,
+                                         window: Double(t.startTs)...Double(Swift.max(t.endTs, t.startTs + 60)),
+                                         compact: true)
+                            .frame(height: 90)
+                            .allowsHitTesting(false)
+                    }
+                    if !t.sets.isEmpty {
+                        Text(WorkoutSetsStore.notes(t).components(separatedBy: "\n").first ?? "")
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if !sum.byCategory.isEmpty {
+                        CategoryCounts(counts: sum.byCategory)
+                    }
+                    if uncertain > 0 {
+                        Text(String(localized: "\(uncertain) uncertain, not counted"))
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                    }
+                    Button { editing = true } label: {
+                        Label(t.sets.isEmpty ? "Enter sets" : "Edit sets", systemImage: "waveform.path.ecg")
+                            .font(StrandFont.subhead.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(StrandPalette.accent)
+                }
+            }
+        }
+    }
+
     private func load() async {
-        guard loadedSeq != repo.refreshSeq || record == nil else { return }
+        guard loadedSeq != repo.refreshSeq || timeline == nil else { return }
         loadedSeq = repo.refreshSeq
-        if let saved = WorkoutSetsStore.load(startTs: row.startTs, sport: row.sport),
+        lift = await WorkoutSetsStore.liftContext(row: row, repo: repo)
+        if var saved = WorkoutSetsStore.load(startTs: row.startTs, sport: row.sport),
            !(saved.hr.isEmpty && saved.edited == nil) {
-            record = saved
+            // Label detected sets with what the Lift Log logged, without touching your corrections.
+            let labelled = WorkoutSetsStore.label(saved.detected, with: lift)
+            if labelled != saved.detected { saved.detected = labelled; WorkoutSetsStore.save(saved) }
+            timeline = saved
             return
         }
-        let built = await WorkoutSetsStore.build(row: row, repo: repo)
+        var built = await WorkoutSetsStore.build(row: row, repo: repo)
+        built.detected = WorkoutSetsStore.label(built.detected, with: lift)
         // Keep your entered sets if heart rate arrives after them.
-        if let saved = WorkoutSetsStore.load(startTs: row.startTs, sport: row.sport), let edited = saved.edited {
-            var merged = built
-            merged.edited = edited
-            WorkoutSetsStore.save(merged)
-            record = merged
-        } else {
-            record = built
+        if let saved = WorkoutSetsStore.load(startTs: row.startTs, sport: row.sport), saved.edited != nil {
+            built.edited = saved.edited
+            built.history = saved.history
+            WorkoutSetsStore.save(built)
+        } else if !built.hr.isEmpty {
+            WorkoutSetsStore.save(built)
+        }
+        timeline = built
+    }
+
+    /// Every edit: saved at once, the workout's notes rewritten shortly after the last one.
+    private func changed(_ t: SetTimeline) {
+        timeline = t
+        WorkoutSetsStore.save(t)
+        notesTask?.cancel()
+        notesTask = Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            await WorkoutSetsStore.syncNotes(t, row: row, repo: repo)
         }
     }
 
-    /// How many fixes the editor would suggest, for a record you haven't corrected yet.
-    static func likelyFixes(_ r: WorkoutSetsRecord) -> Int? {
-        guard r.edited == nil else { return nil }
-        let s = r.sets.sorted { $0.start < $1.start }
-        let short = s.filter { $0.end - $0.start < WorkoutSetsEditor.shortSetS }.count
-        let breaks = s.count > 1 ? (1..<s.count).filter { s[$0].start - s[$0 - 1].end < WorkoutSetsEditor.shortBreakS }.count : 0
-        return short + breaks
+    /// Leaving the editor: notes now, and detection relearns from your corrections for next time (past
+    /// workouts keep their sets).
+    private func finishedEditing() {
+        guard let t = timeline else { return }
+        notesTask?.cancel()
+        Task {
+            await WorkoutSetsStore.syncNotes(t, row: row, repo: repo)
+            if t.isCorrected { _ = await StrengthTuningStore.refit(sport: t.sport, mode: t.segmenterMode) }
+        }
     }
 
-    private func overline(_ r: WorkoutSetsRecord) -> LocalizedStringKey {
-        if r.edited != nil { return "Corrected by you" }
-        if r.hr.isEmpty { return "Not counted yet" }
-        return r.detectedFrom == "motion" ? "From wrist motion and heart rate" : "Estimated from heart rate"
+    private func overline(_ t: SetTimeline) -> LocalizedStringKey {
+        if t.isCorrected { return "Corrected by you" }
+        if t.hr.isEmpty { return "Not counted yet" }
+        return t.detectedFrom.contains("motion") ? "From wrist motion and heart rate" : "Estimated from heart rate"
     }
 }
 
-/// Correct a workout's sets: delete one that wasn't a set, join two that were one, add one it missed,
-/// and nudge where each starts and ends. Saving teaches set detection how your sets look.
-struct WorkoutSetsEditor: View {
-    let row: WorkoutRow
-    let onSave: (WorkoutSetsRecord) -> Void
-    @State private var record: WorkoutSetsRecord
-    @State private var sets: [WorkoutSetsRecord.SetSpan]
-    @State private var selected: Int?
-    /// A tapped spot on the chart outside any set: offered as a new set.
-    @State private var addAt: Int?
-    /// What a drag on the chart is doing.
-    private enum DragMode { case moveStart(Int), moveEnd(Int), paint(from: Int) }
-    @State private var dragMode: DragMode?
-    /// The span a drag across the chart covers so far.
-    @State private var paint: ClosedRange<Int>?
-    @State private var saving = false
-    @State private var fitNote: String?
-    /// Earlier versions of `sets`, for Undo.
-    @State private var history: [[WorkoutSetsRecord.SetSpan]] = []
-    /// Starts of sets you made by splitting: the break before them isn't suggested for joining.
-    @State private var userSplits: Set<Int> = []
-    @State private var showFixes = false
-    @EnvironmentObject private var repo: Repository
-    @Environment(\.dismiss) private var dismiss
+// MARK: - The chart
 
-    init(record: WorkoutSetsRecord, row: WorkoutRow, onSave: @escaping (WorkoutSetsRecord) -> Void) {
-        self.row = row
-        self.onSave = onSave
-        _record = State(initialValue: record)
-        _sets = State(initialValue: record.sets.sorted { $0.start < $1.start })
-    }
-
-    private var mode: WorkRestSegmenter.Mode { record.segmenterMode }
-    private var unit: String { LiveIntervalModes.unitName(mode, count: 1) }
-
-    /// A break this short between two sets is suggested for joining; a set this short for deleting.
-    static let shortBreakS = 45
-    static let shortSetS = 12
+/// Heart rate over a stretch of a workout, sets as lightly shaded spans and rests as the gaps between.
+/// Uncertain segments are outlined, not filled. Reps and motion runs are drawn only when asked.
+struct SetTimelineChart: View {
+    let timeline: SetTimeline
+    let sets: [TimelineSet]
+    /// The stretch shown, unix seconds.
+    let window: ClosedRange<Double>
+    var selected: String? = nil
+    var selectedGap: String? = nil
+    var drawing: ClosedRange<Int>? = nil
+    var showMarks = false
+    var compact = false
 
     var body: some View {
-        List {
-            Section {
-                editableChart
-                    .frame(height: 180)
-                    .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 6, trailing: 12))
-                actionBar
-                    .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 10, trailing: 12))
-            } footer: {
-                Text(record.hr.isEmpty
-                     ? "No heart rate for this workout yet. Add your \(LiveIntervalModes.unitName(mode, count: 2)) with +."
-                     : "Drag an edge to move it, drag over a gap to join or add, tap to select.")
-            }
+        Canvas { ctx, size in
+            draw(in: &ctx, size: size)
+        }
+    }
 
-            let fixes = suggestions
-            if !fixes.isEmpty {
-                Section {
-                    DisclosureGroup(isExpanded: $showFixes) {
-                        ForEach(fixes) { f in
-                            HStack(spacing: 10) {
-                                Text(f.text)
-                                    .font(StrandFont.footnote)
-                                    .foregroundStyle(StrandPalette.textSecondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                Spacer(minLength: 4)
-                                Button(f.verb) { apply([f]) }
-                                    .font(StrandFont.footnote.weight(.semibold))
-                                    .buttonStyle(.borderless)
-                            }
-                        }
-                    } label: {
-                        HStack {
-                            Label(String(localized: "\(fixes.count) look off"), systemImage: "wand.and.stars")
-                                .font(StrandFont.subhead.weight(.semibold))
-                                .foregroundStyle(StrandPalette.statusWarning)
-                            Spacer()
-                            Button(String(localized: "Fix all")) { apply(fixes) }
-                                .font(StrandFont.subhead.weight(.semibold))
-                                .buttonStyle(.borderless)
-                        }
-                    }
-                }
-            }
+    private func x(_ ts: Double, _ w: CGFloat) -> CGFloat {
+        CGFloat((ts - window.lowerBound) / Swift.max(1, window.upperBound - window.lowerBound)) * w
+    }
 
-            Section {
-                ForEach(Array(sets.enumerated()), id: \.element.id) { i, s in
-                    setRow(i, s)
-                        .contentShape(Rectangle())
-                        .onTapGesture { selected = selected == i ? nil : i; addAt = nil }
-                        .listRowBackground(selected == i ? StrandPalette.accent.opacity(0.12) : nil)
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) { delete(i) } label: { Label("Delete", systemImage: "trash") }
-                        }
-                }
-            } header: {
-                Text("\(sets.count) \(LiveIntervalModes.unitName(mode, count: sets.count))")
-            } footer: {
-                Text(learningNote)
+    private func draw(in ctx: inout GraphicsContext, size: CGSize) {
+        let w = size.width
+        let axisH: CGFloat = compact ? 0 : 16
+        let marksH: CGFloat = showMarks ? 14 : 0
+        let plotH = size.height - axisH - marksH
+        let counted = sets.filter { !$0.uncertain }
+        // Sets.
+        for s in sets {
+            let x0 = x(Double(s.start), w), x1 = x(Double(s.end), w)
+            guard x1 >= 0, x0 <= w else { continue }
+            let r = CGRect(x: x0, y: 0, width: Swift.max(1, x1 - x0), height: plotH)
+            let isSel = s.id == selected
+            if s.uncertain {
+                ctx.fill(Path(r), with: .color(StrandPalette.accent.opacity(isSel ? 0.16 : 0.05)))
+                ctx.stroke(Path(r.insetBy(dx: 0.5, dy: 0.5)), with: .color(StrandPalette.accent.opacity(0.55)),
+                           style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            } else {
+                ctx.fill(Path(r), with: .color(StrandPalette.accent.opacity(isSel ? 0.32 : 0.15)))
+            }
+            if isSel {
+                ctx.stroke(Path(r.insetBy(dx: 0.75, dy: 0.75)), with: .color(StrandPalette.accent), lineWidth: 1.5)
+            }
+            if !compact, let n = counted.firstIndex(where: { $0.id == s.id }), x1 - x0 >= 12 {
+                ctx.draw(Text("\(n + 1)").font(.system(size: 10, weight: .bold)).foregroundColor(StrandPalette.textSecondary),
+                         at: CGPoint(x: (x0 + x1) / 2, y: 9))
             }
         }
-        .navigationTitle(String(localized: "Edit \(LiveIntervalModes.unitName(mode, count: 2))"))
+        // The rest chosen to join.
+        if let g = selectedGap, let i = sets.firstIndex(where: { $0.id == g }), i + 1 < sets.count {
+            let x0 = x(Double(sets[i].end), w), x1 = x(Double(sets[i + 1].start), w)
+            let r = CGRect(x: x0, y: 0, width: Swift.max(2, x1 - x0), height: plotH)
+            ctx.fill(Path(r), with: .color(StrandPalette.statusWarning.opacity(0.18)))
+            ctx.stroke(Path(r.insetBy(dx: 0.5, dy: 0.5)), with: .color(StrandPalette.statusWarning),
+                       style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+        }
+        // A set being drawn.
+        if let d = drawing {
+            let x0 = x(Double(d.lowerBound), w), x1 = x(Double(d.upperBound), w)
+            let r = CGRect(x: x0, y: 0, width: Swift.max(2, x1 - x0), height: plotH)
+            ctx.fill(Path(r), with: .color(StrandPalette.accent.opacity(0.28)))
+            ctx.stroke(Path(r), with: .color(StrandPalette.accent), style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+        }
+        // Heart rate.
+        drawHeartRate(in: &ctx, w: w, h: plotH)
+        // Reps and motion, on request.
+        if showMarks {
+            let y = plotH + 2
+            for m in timeline.motion {
+                let x0 = x(Double(m.start), w), x1 = x(Double(m.end), w)
+                guard x1 >= 0, x0 <= w else { continue }
+                ctx.fill(Path(roundedRect: CGRect(x: x0, y: y + 7, width: Swift.max(2, x1 - x0), height: 4), cornerRadius: 2),
+                         with: .color(StrandPalette.metricAmber.opacity(0.6)))
+                for t in m.repTimes {
+                    let rx = x(t, w)
+                    guard rx >= 0, rx <= w else { continue }
+                    var p = Path()
+                    p.move(to: CGPoint(x: rx, y: y))
+                    p.addLine(to: CGPoint(x: rx, y: y + 6))
+                    ctx.stroke(p, with: .color(StrandPalette.metricAmber), lineWidth: 1)
+                }
+            }
+        }
+        // Time since the start.
+        if !compact { drawAxis(in: &ctx, w: w, y: size.height - axisH) }
+    }
+
+    private func drawHeartRate(in ctx: inout GraphicsContext, w: CGFloat, h: CGFloat) {
+        let hr = timeline.hr
+        guard hr.count >= 2 else { return }
+        let all = hr.map(\.bpm).sorted()
+        let lo = Double(all[all.count / 50]) - 4, hi = Double(all.last!) + 4
+        func y(_ bpm: Int) -> CGFloat { h - CGFloat((Double(bpm) - lo) / Swift.max(1, hi - lo)) * (h - 18) - 4 }
+        // Only the samples in view, thinned to about two per point.
+        let lower = Int(window.lowerBound) - 5, upper = Int(window.upperBound) + 5
+        var first = 0, last = hr.count
+        var a = 0, b = hr.count
+        while a < b { let m = (a + b) / 2; if hr[m].ts < lower { a = m + 1 } else { b = m } }
+        first = a
+        a = first; b = hr.count
+        while a < b { let m = (a + b) / 2; if hr[m].ts <= upper { a = m + 1 } else { b = m } }
+        last = a
+        guard last - first >= 2 else { return }
+        let step = Swift.max(1, (last - first) / Swift.max(1, Int(w * 2)))
+        var path = Path()
+        var started = false
+        var prevTs = Int.min
+        for i in stride(from: first, to: last, by: step) {
+            let p = CGPoint(x: x(Double(hr[i].ts), w), y: y(hr[i].bpm))
+            // A gap in the data is a gap in the line.
+            if !started || hr[i].ts - prevTs > 30 * step { path.move(to: p); started = true } else { path.addLine(to: p) }
+            prevTs = hr[i].ts
+        }
+        ctx.stroke(path, with: .color(StrandPalette.metricRose), style: StrokeStyle(lineWidth: compact ? 1.2 : 1.6, lineJoin: .round))
+    }
+
+    private func drawAxis(in ctx: inout GraphicsContext, w: CGFloat, y: CGFloat) {
+        let span = window.upperBound - window.lowerBound
+        let steps: [Double] = [10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
+        let step = steps.first { Double(w) / (span / $0) >= 56 } ?? 3600
+        let t0 = Double(timeline.startTs)
+        var t = (floor((window.lowerBound - t0) / step) + 1) * step
+        while t0 + t < window.upperBound {
+            let px = x(t0 + t, w)
+            ctx.draw(Text(LiveIntervalTracker.clock(Int(t))).font(.system(size: 9)).foregroundColor(StrandPalette.textTertiary),
+                     at: CGPoint(x: px, y: y + 8))
+            t += step
+        }
+    }
+}
+
+// MARK: - The editor
+
+/// The sets editor, the same during the workout and afterwards: one zoomable heart-rate timeline with
+/// sets shaded and rests as gaps. Tap a set to select it and drag its edges, delete or split it; tap a
+/// gap to join the sets either side; press, hold and drag over empty time to add a set. Every edit is
+/// saved as you make it (`onChange`), with undo and redo here.
+struct SetTimelineEditorView: View {
+    let title: String
+    let exercises: [String]
+    let onChange: (SetTimeline) -> Void
+
+    @State private var timeline: SetTimeline
+    @State private var editor: SetTimelineEditor
+    private let baseHistory: [SetEditRecord]
+    @State private var selection: Selection?
+    @State private var window: ClosedRange<Double>
+    @State private var panStart: ClosedRange<Double>?
+    @State private var pinchStart: (window: ClosedRange<Double>, x: CGFloat)?
+    @State private var dragging: TimelineSet?
+    @State private var drawing: ClosedRange<Int>?
+    @AppStorage("noop.setsEditor.marks") private var showMarks = false
+    @State private var showDetection = false
+    @State private var naming = false
+    @State private var newName = ""
+    @ObservedObject private var categories = ExerciseCategoryStore.shared
+    @Environment(\.dismiss) private var dismiss
+
+    enum Selection: Equatable {
+        case set(String)
+        case gap(after: String)
+        /// Empty time, where a set could be added.
+        case empty(at: Int)
+    }
+
+    init(title: String, timeline: SetTimeline, exercises: [String], onChange: @escaping (SetTimeline) -> Void) {
+        self.title = title
+        self.exercises = exercises
+        self.onChange = onChange
+        let end = Swift.max(timeline.endTs, (timeline.hr.last?.ts ?? 0), timeline.startTs + 60)
+        _timeline = State(initialValue: timeline)
+        _editor = State(initialValue: SetTimelineEditor(sets: timeline.sets, bounds: timeline.startTs...end))
+        _window = State(initialValue: Double(timeline.startTs)...Double(end))
+        baseHistory = timeline.history
+    }
+
+    private var full: ClosedRange<Double> { Double(editor.bounds.lowerBound)...Double(editor.bounds.upperBound) }
+    private var mode: WorkRestSegmenter.Mode { timeline.segmenterMode }
+    private var unit: String { LiveIntervalModes.unitName(mode, count: 1) }
+    private var tuning: StrengthTuning {
+        StrengthTuningStore.effective(sport: timeline.sport, exercise: nil, mode: mode)
+    }
+
+    /// The sets as drawn: with the one being dragged in its new place.
+    private var shown: [TimelineSet] {
+        guard let d = dragging else { return editor.sets }
+        return editor.sets.map { $0.id == d.id ? d : $0 }
+    }
+
+    private var selectedSetId: String? { if case .set(let id) = selection { return id }; return nil }
+    private var selectedGapId: String? { if case .gap(let id) = selection { return id }; return nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+            summaryLine
+            timelineSurface
+                .frame(height: 230)
+            overview
+                .frame(height: 26)
+            actions
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal)
+        .padding(.top, NoopMetrics.space2)
+        .background(StrandPalette.surfaceBase.ignoresSafeArea())
+        .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-            ToolbarItem(placement: .confirmationAction) {
-                Button(saving ? String(localized: "Saving…") : String(localized: "Save")) { Task { await save() } }
-                    .disabled(saving)
+            ToolbarItemGroup(placement: .topBarLeading) {
+                Button { editor.undo(now: now); afterEdit() } label: { Image(systemName: "arrow.uturn.backward") }
+                    .disabled(!editor.canUndo)
+                    .accessibilityLabel("Undo")
+                Button { editor.redo(now: now); afterEdit() } label: { Image(systemName: "arrow.uturn.forward") }
+                    .disabled(!editor.canRedo)
+                    .accessibilityLabel("Redo")
             }
-            if record.edited != nil || sets != record.detected.sorted(by: { $0.start < $1.start }) {
-                ToolbarItem(placement: .bottomBar) {
-                    Button(String(localized: "Back to what was counted")) {
-                        change { sets = record.detected.sorted { $0.start < $1.start } }
-                        selected = nil
-                    }
-                    .font(StrandFont.footnote)
-                }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    Toggle(isOn: $showMarks) { Label("Show reps and motion", systemImage: "waveform") }
+                    Button { zoom(to: full) } label: { Label("Show whole workout", systemImage: "arrow.left.and.right") }
+                    Button(role: .destructive) {
+                        editor.reset(to: timeline.detected, now: now)
+                        selection = nil
+                        afterEdit()
+                    } label: { Label("Back to detected", systemImage: "arrow.counterclockwise") }
+                    .disabled(editor.sets == timeline.detected.sorted { $0.start < $1.start })
+                    Divider()
+                    Button { showDetection = true } label: { Label("Detection settings", systemImage: "slider.horizontal.3") }
+                } label: { Image(systemName: "ellipsis.circle") }
+                Button("Done") { dismiss() }.fontWeight(.semibold)
             }
         }
+        .sheet(isPresented: $showDetection) {
+            NavigationStack {
+                DetectionSettingsView(sport: timeline.sport, mode: mode, preview: timeline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) { Button("Done") { showDetection = false } }
+                    }
+            }
+        }
+        .alert("Exercise", isPresented: $naming) {
+            TextField("Name", text: $newName)
+            Button("Cancel", role: .cancel) {}
+            Button("Set") { if let id = selectedSetId { setExercise(newName, for: id) } }
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: drawing == nil)
     }
 
-    /// Under the chart: what you can do right now. With a set selected, its reps and its actions; else
-    /// add and undo.
-    @ViewBuilder
-    private var actionBar: some View {
-        if let i = selected, i < sets.count {
+    private var now: Int { Int(Date().timeIntervalSince1970) }
+
+    // MARK: Summary
+
+    private var summaryLine: some View {
+        var t = timeline
+        t.edited = editor.sets
+        let sum = SetSummary(t) { categories.category(for: $0) }
+        let uncertain = editor.sets.count - editor.counted.count
+        var parts = ["\(sum.count) \(LiveIntervalModes.unitName(mode, count: sum.count))",
+                     String(localized: "\(LiveIntervalTracker.clock(sum.workS)) working")]
+        if let a = sum.avgRestS { parts.append(String(localized: "avg rest \(LiveIntervalTracker.clock(a))")) }
+        if let d = sum.avgDrop60 { parts.append(String(localized: "recovery -\(d) bpm/60 s")) }
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(parts.joined(separator: " · "))
+                .font(StrandFont.footnote.weight(.semibold))
+                .foregroundStyle(StrandPalette.textPrimary)
+                .monospacedDigit()
             HStack(spacing: 8) {
-                Text("\(i + 1)")
-                    .font(StrandFont.subhead.weight(.bold))
-                    .foregroundStyle(StrandPalette.accent)
-                    .frame(width: 26, height: 26)
-                    .background(Circle().fill(StrandPalette.accent.opacity(0.12)))
-                if mode == .lifting {
-                    Stepper(value: Binding(get: { sets[i].reps ?? 0 },
-                                           set: { v in change { sets[i].reps = v > 0 ? v : nil } }),
-                            in: 0...100) {
-                        Text(sets[i].reps.map { String(localized: "\($0) reps") } ?? String(localized: "Reps"))
-                            .font(StrandFont.footnote.weight(.semibold))
-                            .monospacedDigit()
+                if !sum.byCategory.isEmpty { CategoryCounts(counts: sum.byCategory) }
+                if uncertain > 0 {
+                    Text(String(localized: "\(uncertain) uncertain"))
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
+            }
+        }
+    }
+
+    // MARK: Timeline
+
+    private var timelineSurface: some View {
+        GeometryReader { g in
+            let w = g.size.width
+            ZStack(alignment: .topLeading) {
+                SetTimelineChart(timeline: timeline, sets: shown, window: window, selected: selectedSetId,
+                                 selectedGap: selectedGapId, drawing: drawing, showMarks: showMarks)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(StrandPalette.surfaceInset.opacity(0.5)))
+                    .contentShape(Rectangle())
+                    .gesture(drawGesture(w).exclusively(before: panGesture(w)).exclusively(before: tapGesture(w)))
+                    .simultaneousGesture(pinchGesture(w))
+                if let id = selectedSetId, let s = shown.first(where: { $0.id == id }) {
+                    handle(for: s, isStart: true, w: w, h: g.size.height)
+                    handle(for: s, isStart: false, w: w, h: g.size.height)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text("Heart-rate timeline"))
+    }
+
+    private func ts(_ x: CGFloat, _ w: CGFloat) -> Int {
+        Int((window.lowerBound + Double(x / Swift.max(1, w)) * (window.upperBound - window.lowerBound)).rounded())
+    }
+
+    private func px(_ ts: Int, _ w: CGFloat) -> CGFloat {
+        CGFloat((Double(ts) - window.lowerBound) / Swift.max(1, window.upperBound - window.lowerBound)) * w
+    }
+
+    /// Seconds one point of the timeline covers.
+    private func secondsPerPoint(_ w: CGFloat) -> Double { (window.upperBound - window.lowerBound) / Double(Swift.max(1, w)) }
+
+    private func tapGesture(_ w: CGFloat) -> some Gesture {
+        SpatialTapGesture().onEnded { v in
+            let t = ts(v.location.x, w)
+            // A little slack for thin sets when zoomed out.
+            let slack = Int(secondsPerPoint(w) * 8)
+            let sets = editor.sets
+            if let s = sets.first(where: { t >= $0.start && t <= $0.end })
+                ?? sets.first(where: { t >= $0.start - slack && t <= $0.end + slack }) {
+                selection = selectedSetId == s.id ? nil : .set(s.id)
+            } else if let i = sets.indices.dropLast().first(where: { sets[$0].end < t && sets[$0 + 1].start > t }) {
+                selection = .gap(after: sets[i].id)
+            } else {
+                selection = .empty(at: t)
+            }
+        }
+    }
+
+    private func panGesture(_ w: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { v in
+                guard pinchStart == nil else { return }
+                if panStart == nil { panStart = window }
+                guard let start = panStart else { return }
+                let span = start.upperBound - start.lowerBound
+                let dt = -Double(v.translation.width / Swift.max(1, w)) * span
+                setWindow(lower: start.lowerBound + dt, span: span)
+            }
+            .onEnded { _ in panStart = nil }
+    }
+
+    private func pinchGesture(_ w: CGFloat) -> some Gesture {
+        MagnifyGesture()
+            .onChanged { v in
+                if pinchStart == nil { pinchStart = (window, v.startLocation.x) }
+                guard let g = pinchStart else { return }
+                let span0 = g.window.upperBound - g.window.lowerBound
+                let span = Swift.min(full.upperBound - full.lowerBound, Swift.max(30, span0 / Double(v.magnification)))
+                let frac = Double(g.x / Swift.max(1, w))
+                let anchor = g.window.lowerBound + frac * span0
+                setWindow(lower: anchor - frac * span, span: span)
+            }
+            .onEnded { _ in pinchStart = nil; panStart = nil }
+    }
+
+    /// Hold, then drag across time: a new set over what you covered.
+    private func drawGesture(_ w: CGFloat) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.35, maximumDistance: 8)
+            .sequenced(before: DragGesture(minimumDistance: 0))
+            .onChanged { v in
+                guard case .second(true, let drag) = v else { return }
+                let a = ts(drag?.startLocation.x ?? 0, w), b = ts(drag?.location.x ?? 0, w)
+                drawing = Swift.min(a, b)...Swift.max(a, b)
+            }
+            .onEnded { _ in
+                defer { drawing = nil }
+                guard let d = drawing else { return }
+                let reach = snapReach(w)
+                let s = snapEdge(d.lowerBound, isStart: true, reach: reach)
+                let e = snapEdge(d.upperBound, isStart: false, reach: reach)
+                if let id = editor.add(start: s, end: Swift.max(e, s + SetTimelineEditor.minSetS), now: now) {
+                    if let ex = previousExercise(before: s) { editor.setExercise([id], to: ex, now: now) }
+                    selection = .set(id)
+                    afterEdit()
+                }
+            }
+    }
+
+    /// A draggable edge of the selected set.
+    private func handle(for s: TimelineSet, isStart: Bool, w: CGFloat, h: CGFloat) -> some View {
+        let x = px(isStart ? s.start : s.end, w)
+        return Capsule()
+            .fill(StrandPalette.accent)
+            .frame(width: 6, height: 40)
+            .overlay(Capsule().stroke(StrandPalette.surfaceBase, lineWidth: 1.5))
+            .frame(width: 36, height: h)
+            .contentShape(Rectangle())
+            .position(x: x, y: h / 2)
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { v in
+                        // The edge follows the finger; landing is snapped to the evidence.
+                        var d = dragging ?? s
+                        let t = ts(Swift.min(w, Swift.max(0, v.location.x)), w)
+                        if isStart { d.start = Swift.min(t, d.end - SetTimelineEditor.minSetS) }
+                        else { d.end = Swift.max(t, d.start + SetTimelineEditor.minSetS) }
+                        dragging = d
                     }
-                    .fixedSize()
-                }
-                Spacer(minLength: 0)
-                if sets[i].end - sets[i].start >= 20 {
-                    iconButton("scissors", label: "Split") { split(i) }
-                }
-                if i + 1 < sets.count {
-                    iconButton("arrow.down.to.line", label: "Join with next") { merge(i) }
-                }
-                iconButton("trash", label: "Delete", destructive: true) { delete(i) }
+                    .onEnded { _ in
+                        guard let d = dragging else { return }
+                        dragging = nil
+                        let reach = snapReach(w)
+                        if isStart { editor.move(s.id, start: snapEdge(d.start, isStart: true, reach: reach), now: now) }
+                        else { editor.move(s.id, end: snapEdge(d.end, isStart: false, reach: reach), now: now) }
+                        // Dragged into a neighbour: the joined set keeps this one's id.
+                        if editor.index(of: s.id) == nil { selection = nil }
+                        afterEdit()
+                    })
+            .accessibilityLabel(Text(isStart ? String(localized: "Start of \(unit)") : String(localized: "End of \(unit)")))
+            .accessibilityAdjustableAction { dir in
+                let delta = dir == .increment ? 2 : -2
+                if isStart { editor.move(s.id, start: s.start + delta, now: now) }
+                else { editor.move(s.id, end: s.end + delta, now: now) }
+                afterEdit()
             }
-        } else {
-            HStack(spacing: 10) {
-                actionButton(addAt.map { String(localized: "Add at \(offset($0))") } ?? String(localized: "Add a \(unit)"),
-                             icon: "plus") {
-                    if let t = addAt { add(at: t) } else { addAfterLast() }
-                }
+    }
+
+    private func snapReach(_ w: CGFloat) -> Int { Swift.max(2, Swift.min(12, Int(secondsPerPoint(w) * 10))) }
+
+    /// Where a dragged or drawn edge lands: the edge of the nearest rep run when motion recorded one close
+    /// by (motion is exact), else heart rate leaving its low for a start or topping out for an end, moved
+    /// earlier by heart rate's delay; else where you put it.
+    private func snapEdge(_ t: Int, isStart: Bool, reach: Int) -> Int {
+        let edges = timeline.motion.map { isStart ? $0.start : $0.end }
+        if let m = edges.min(by: { abs($0 - t) < abs($1 - t) }), abs(m - t) <= reach { return m }
+        if isStart { return SetCalibration.snap(t, isStart: true, hr: timeline.hr, reach: reach) }
+        let delay = tuning.hrDelayS
+        let peak = SetCalibration.snap(t + delay, isStart: false, hr: timeline.hr, reach: reach)
+        return peak == t + delay ? t : peak - delay
+    }
+
+    private func setWindow(lower: Double, span: Double) {
+        let span = Swift.min(full.upperBound - full.lowerBound, span)
+        let lo = Swift.min(full.upperBound - span, Swift.max(full.lowerBound, lower))
+        window = lo...(lo + span)
+    }
+
+    private func zoom(to r: ClosedRange<Double>) {
+        withAnimation(.easeInOut(duration: 0.25)) { setWindow(lower: r.lowerBound, span: r.upperBound - r.lowerBound) }
+    }
+
+    // MARK: Overview
+
+    /// The whole workout in miniature with the stretch in view outlined. Drag or tap to move there.
+    private var overview: some View {
+        GeometryReader { g in
+            let w = g.size.width
+            let f = full
+            let span = f.upperBound - f.lowerBound
+            ZStack(alignment: .topLeading) {
+                SetTimelineChart(timeline: timeline, sets: shown, window: f, compact: true)
+                    .opacity(0.8)
+                let x0 = CGFloat((window.lowerBound - f.lowerBound) / span) * w
+                let x1 = CGFloat((window.upperBound - f.lowerBound) / span) * w
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(StrandPalette.accent, lineWidth: 1.5)
+                    .frame(width: Swift.max(8, x1 - x0), height: g.size.height)
+                    .offset(x: x0)
+            }
+            .background(RoundedRectangle(cornerRadius: 6).fill(StrandPalette.surfaceInset.opacity(0.4)))
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onChanged { v in
+                let mid = f.lowerBound + Double(v.location.x / Swift.max(1, w)) * span
+                let s = window.upperBound - window.lowerBound
+                setWindow(lower: mid - s / 2, span: s)
+            })
+        }
+        .accessibilityHidden(true)
+    }
+
+    // MARK: Actions
+
+    @ViewBuilder
+    private var actions: some View {
+        switch selection {
+        case .set(let id):
+            if let i = editor.index(of: id) { setActions(editor.sets[i]) } else { hint }
+        case .gap(let id):
+            if let g = editor.gap(after: id) { gapActions(id, g) } else { hint }
+        case .empty(let t):
+            emptyActions(t)
+        case nil:
+            hint
+        }
+    }
+
+    private var hint: some View {
+        Text("Tap a \(unit) to adjust it, or a gap to join two. Hold and drag to add one. Pinch to zoom.")
+            .font(StrandFont.caption)
+            .foregroundStyle(StrandPalette.textTertiary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func setActions(_ s: TimelineSet) -> some View {
+        let number = editor.counted.firstIndex { $0.id == s.id }.map { $0 + 1 }
+        var detail = [LiveIntervalTracker.clock(s.duration)]
+        if let r = s.reps { detail.append(String(localized: "\(r) reps")) }
+        if let rise = heartRateRise(s) { detail.append(String(localized: "HR +\(rise)")) }
+        return VStack(alignment: .leading, spacing: NoopMetrics.space2) {
+            HStack(spacing: 6) {
+                Text(number.map { "\(unit.capitalized) \($0)" } ?? String(localized: "Uncertain"))
+                    .font(StrandFont.subhead.weight(.bold))
+                    .foregroundStyle(StrandPalette.textPrimary)
+                Text(detail.joined(separator: " · "))
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                    .monospacedDigit()
                 Spacer(minLength: 0)
-                iconButton("arrow.uturn.backward", label: "Undo", enabled: !history.isEmpty) { undo() }
+            }
+            HStack(spacing: 8) {
+                if s.uncertain {
+                    actionButton("Count it", "checkmark", tint: StrandPalette.statusPositive) {
+                        editor.confirm(s.id, now: now); afterEdit()
+                    }
+                }
+                actionButton("Split", "scissors") {
+                    let at = SetCalibration.splitPoint(start: s.start, end: s.end, hr: timeline.hr,
+                                                       motion: timeline.motion, hrDelayS: tuning.hrDelayS)
+                    if editor.split(s.id, at: at, now: now) { afterEdit() }
+                }
+                .disabled(s.duration < 2 * SetTimelineEditor.minSetS + 2)
+                actionButton("Delete", "trash", tint: StrandPalette.statusCritical) {
+                    editor.delete(s.id, now: now)
+                    selection = nil
+                    afterEdit()
+                }
+            }
+            if mode == .lifting { exerciseRow(s) }
+        }
+    }
+
+    private func exerciseRow(_ s: TimelineSet) -> some View {
+        let names = exerciseNames
+        let previous = previousExercise(before: s.start)
+        return VStack(alignment: .leading, spacing: 6) {
+            Menu {
+                if let p = previous, p != s.exercise {
+                    Button { setExercise(p, for: s.id) } label: { Label("Same as previous: \(p)", systemImage: "arrow.turn.down.right") }
+                }
+                ForEach(names, id: \.self) { n in
+                    Button { setExercise(n, for: s.id) } label: {
+                        if n == s.exercise { Label(n, systemImage: "checkmark") } else { Text(n) }
+                    }
+                }
+                Button { newName = ""; naming = true } label: { Label("New exercise…", systemImage: "plus") }
+                if s.exercise != nil {
+                    Button(role: .destructive) { setExercise(nil, for: s.id) } label: { Label("No exercise", systemImage: "xmark") }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "dumbbell")
+                    Text(s.exercise ?? String(localized: "Exercise"))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9))
+                }
+                .font(StrandFont.footnote.weight(.semibold))
+                .foregroundStyle(s.exercise == nil ? StrandPalette.textTertiary : StrandPalette.textPrimary)
+            }
+            if let ex = s.exercise {
+                StrengthCategoryPicker(exercise: ex)
             }
         }
     }
 
-    private func iconButton(_ icon: String, label: LocalizedStringKey, enabled: Bool = true, destructive: Bool = false,
-                            action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .frame(width: 36, height: 32)
-                .background(RoundedRectangle(cornerRadius: 8).fill(StrandPalette.surfaceInset))
+    private func gapActions(_ id: String, _ g: ClosedRange<Int>) -> some View {
+        let drop = heartRateDrop(g)
+        var detail = [String(localized: "Rest \(LiveIntervalTracker.clock(g.upperBound - g.lowerBound))")]
+        if let d = drop { detail.append(d > 0 ? String(localized: "HR fell \(d) bpm") : String(localized: "HR didn't fall")) }
+        return VStack(alignment: .leading, spacing: NoopMetrics.space2) {
+            Text(detail.joined(separator: " · "))
+                .font(StrandFont.subhead.weight(.semibold))
+                .foregroundStyle(StrandPalette.textPrimary)
+                .monospacedDigit()
+            HStack(spacing: 8) {
+                actionButton("Join sets", "arrow.left.and.right.square", tint: StrandPalette.accent) {
+                    editor.joinWithNext(id, now: now)
+                    selection = .set(id)
+                    afterEdit()
+                }
+                if g.upperBound - g.lowerBound >= 3 * SetTimelineEditor.minSetS + 4 {
+                    actionButton("Add a set here", "plus") { addSet(around: (g.lowerBound + g.upperBound) / 2, within: g) }
+                }
+            }
+            Text("Joining makes the two and the pause one set. The readings are kept.")
+                .font(StrandFont.caption)
+                .foregroundStyle(StrandPalette.textTertiary)
         }
-        .buttonStyle(.borderless)
-        .foregroundStyle(!enabled ? StrandPalette.textTertiary : (destructive ? StrandPalette.statusCritical : StrandPalette.accent))
-        .disabled(!enabled)
-        .accessibilityLabel(Text(label))
     }
 
-    private func actionButton(_ title: String, icon: String, enabled: Bool = true,
+    private func emptyActions(_ t: Int) -> some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.space2) {
+            HStack(spacing: 8) {
+                actionButton("Add a set here", "plus", tint: StrandPalette.accent) {
+                    let before = editor.sets.last { $0.end < t }?.end ?? editor.bounds.lowerBound
+                    let after = editor.sets.first { $0.start > t }?.start ?? editor.bounds.upperBound
+                    addSet(around: t, within: before...after)
+                }
+            }
+            Text("Or hold and drag across the time it took.")
+                .font(StrandFont.caption)
+                .foregroundStyle(StrandPalette.textTertiary)
+        }
+    }
+
+    private func actionButton(_ title: LocalizedStringKey, _ icon: String, tint: Color = StrandPalette.textPrimary,
                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: icon)
                 .font(StrandFont.footnote.weight(.semibold))
+                .foregroundStyle(tint)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(Capsule().fill(StrandPalette.accent.opacity(enabled ? 0.12 : 0.05)))
+                .padding(.vertical, 8)
+                .background(Capsule().fill(StrandPalette.surfaceInset))
         }
-        .buttonStyle(.borderless)
-        .foregroundStyle(enabled ? StrandPalette.accent : StrandPalette.textTertiary)
-        .disabled(!enabled)
-    }
-
-    // MARK: Suggestions
-
-    struct Fix: Identifiable {
-        enum Kind { case join(start: Int), delete(start: Int) }
-        let kind: Kind
-        let text: String
-        let verb: String
-        let icon: String
-        var id: String {
-            switch kind {
-            case .join(let s): return "j\(s)"
-            case .delete(let s): return "d\(s)"
-            }
-        }
-    }
-
-    /// Short breaks inside what looks like one set, and sets too short to be real. Keyed by set start, so
-    /// applying one doesn't shift the others. Breaks you made by splitting aren't suggested back.
-    private var suggestions: [Fix] {
-        var out: [Fix] = []
-        for i in sets.indices {
-            let s = sets[i]
-            if s.end - s.start < Self.shortSetS {
-                out.append(Fix(kind: .delete(start: s.start),
-                               text: String(localized: "\(unit.capitalized) \(i + 1) lasts \(LiveIntervalTracker.clock(s.end - s.start)). Probably not a real one."),
-                               verb: String(localized: "Delete"), icon: "minus.circle"))
-            }
-            if i + 1 < sets.count {
-                let gap = sets[i + 1].start - s.end
-                if gap < Self.shortBreakS, !userSplits.contains(sets[i + 1].start) {
-                    out.append(Fix(kind: .join(start: s.start),
-                                   text: String(localized: "Only \(LiveIntervalTracker.clock(gap)) between \(i + 1) and \(i + 2). Probably one \(unit)."),
-                                   verb: String(localized: "Join"), icon: "arrow.left.and.right"))
-                }
-            }
-        }
-        return out
-    }
-
-    private func apply(_ fixes: [Fix]) {
-        change {
-            // Joins first, latest first, so earlier starts stay put; then deletes.
-            let joins = fixes.compactMap { f -> Int? in if case .join(let s) = f.kind { return s } else { return nil } }
-            for start in joins.sorted(by: >) {
-                if let i = sets.firstIndex(where: { $0.start == start }), i + 1 < sets.count { joinRaw(i) }
-            }
-            let deletes = fixes.compactMap { f -> Int? in if case .delete(let s) = f.kind { return s } else { return nil } }
-            for start in deletes {
-                // A short set that a join above swallowed is gone already, and that's fine.
-                sets.removeAll { $0.start == start && $0.end - $0.start < Self.shortSetS }
-            }
-        }
-        selected = nil
-    }
-
-    // MARK: Undo
-
-    private func change(_ edit: () -> Void) {
-        history.append(sets)
-        if history.count > 50 { history.removeFirst() }
-        edit()
-    }
-
-    private func undo() {
-        guard let last = history.popLast() else { return }
-        sets = last
-        selected = nil
-        addAt = nil
-    }
-
-    // MARK: Rows
-
-    private func setRow(_ i: Int, _ s: WorkoutSetsRecord.SetSpan) -> some View {
-        let rest = i > 0 ? s.start - sets[i - 1].end : nil
-        let peak = record.hr.filter { $0.ts >= s.start && $0.ts <= s.end + 20 }.map(\.bpm).max()
-        return HStack(alignment: .center) {
-            Text("\(i + 1)")
-                .font(StrandFont.subhead.weight(.bold))
-                .foregroundStyle(StrandPalette.accent)
-                .frame(width: 28, height: 28)
-                .background(Circle().fill(StrandPalette.accent.opacity(0.12)))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(LiveIntervalTracker.clock(s.end - s.start) + (s.reps.map { " · " + String(localized: "\($0) reps") } ?? ""))
-                    .font(StrandFont.subhead.weight(.semibold))
-                    .foregroundStyle(StrandPalette.textPrimary)
-                Text(detailLine(s, rest: rest, peak: peak))
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-            }
-            Spacer()
-        }
-    }
-
-    private func detailLine(_ s: WorkoutSetsRecord.SetSpan, rest: Int?, peak: Int?) -> String {
-        var parts = ["\(offset(s.start))–\(offset(s.end))"]
-        if let rest { parts.append(String(localized: "rest \(LiveIntervalTracker.clock(rest)) before")) }
-        if let peak { parts.append(String(localized: "peak \(peak) bpm")) }
-        return parts.joined(separator: " · ")
-    }
-
-    private func edgeStepper(_ label: String, value: Int, lo: Int, hi: Int, set: @escaping (Int) -> Void) -> some View {
-        Stepper {
-            HStack {
-                Text(label)
-                Spacer()
-                Text(offset(value)).monospacedDigit().foregroundStyle(StrandPalette.textSecondary)
-            }
-        } onIncrement: {
-            set(min(hi, value + 5))
-        } onDecrement: {
-            set(max(lo, value - 5))
-        }
-    }
-
-    /// "12:34" into the workout.
-    private func offset(_ ts: Int) -> String { LiveIntervalTracker.clock(ts - record.startTs) }
-
-    // MARK: Chart gestures
-
-    private var editableChart: some View {
-        GeometryReader { g in
-            let w = Swift.max(g.size.width, 1)
-            let t0 = record.startTs, t1 = Swift.max(record.endTs, record.startTs + 1)
-            let toTs: (CGFloat) -> Int = { x in
-                t0 + Int((Double(Swift.min(w, Swift.max(0, x)) / w) * Double(t1 - t0)).rounded())
-            }
-            let toX: (Int) -> CGFloat = { ts in CGFloat(Double(ts - t0) / Double(t1 - t0)) * w }
-            SetsChart(record: record, sets: sets, selected: selected, marker: addAt, paint: paint,
-                      labelled: true, flagBreaksUnder: Self.shortBreakS)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 6)
-                        .onChanged { v in dragChanged(v, toTs: toTs, toX: toX) }
-                        .onEnded { v in dragEnded(v, toTs: toTs) }
-                )
-                .simultaneousGesture(SpatialTapGesture().onEnded { v in tapped(toTs(v.location.x)) })
-        }
-    }
-
-    private func dragChanged(_ v: DragGesture.Value, toTs: (CGFloat) -> Int, toX: (Int) -> CGFloat) {
-        if dragMode == nil {
-            // Grab the nearest edge within a finger's width, else draw a span.
-            let x = v.startLocation.x
-            var best: (mode: DragMode, d: CGFloat)?
-            for (i, s) in sets.enumerated() {
-                let ds = abs(toX(s.start) - x), de = abs(toX(s.end) - x)
-                if ds < 16, ds < (best?.d ?? .infinity) { best = (.moveStart(i), ds) }
-                if de < 16, de < (best?.d ?? .infinity) { best = (.moveEnd(i), de) }
-            }
-            dragMode = best?.mode ?? .paint(from: toTs(x))
-            addAt = nil
-            history.append(sets)
-        }
-        let ts = toTs(v.location.x)
-        switch dragMode {
-        case .moveStart(let i)?:
-            selected = i
-            sets[i].start = Swift.max(record.startTs, Swift.min(ts, sets[i].end - 5))
-        case .moveEnd(let i)?:
-            selected = i
-            sets[i].end = Swift.min(record.endTs, Swift.max(ts, sets[i].start + 5))
-        case .paint(let from)?:
-            paint = Swift.min(from, ts)...Swift.max(from, ts)
-        case nil:
-            break
-        }
-    }
-
-    private func dragEnded(_ v: DragGesture.Value, toTs: (CGFloat) -> Int) {
-        if case .paint? = dragMode, let r = paint, r.upperBound - r.lowerBound >= 5 {
-            // Everything the span touches becomes one set: joins a split set, or adds a missed one.
-            let touched = sets.filter { $0.end >= r.lowerBound && $0.start <= r.upperBound }
-            let start = ([r.lowerBound] + touched.map(\.start)).min()!
-            let end = ([r.upperBound] + touched.map(\.end)).max()!
-            let reps = touched.compactMap(\.reps).reduce(0, +)
-            sets.removeAll { $0.end >= r.lowerBound && $0.start <= r.upperBound }
-            userSplits.subtract(touched.map(\.start))
-            sets.append(.init(start: start, end: end, reps: reps > 0 ? reps : nil))
-            sets.sort { $0.start < $1.start }
-            selected = sets.firstIndex { $0.start == start }
-        } else if case .paint? = dragMode {
-            // A tiny drag that changed nothing shouldn't take an Undo step.
-            if history.last == sets { history.removeLast() }
-        } else {
-            normalize()
-        }
-        dragMode = nil
-        paint = nil
-    }
-
-    /// After moving an edge: in order, and overlapping or touching sets joined.
-    private func normalize() {
-        let keep = selected.flatMap { $0 < sets.count ? sets[$0].start : nil }
-        var out: [WorkoutSetsRecord.SetSpan] = []
-        for s in sets.sorted(by: { $0.start < $1.start }) {
-            if let last = out.last, s.start <= last.end + 2 {
-                let reps = (last.reps ?? 0) + (s.reps ?? 0)
-                out[out.count - 1] = .init(start: last.start, end: Swift.max(last.end, s.end), reps: reps > 0 ? reps : nil)
-            } else {
-                out.append(s)
-            }
-        }
-        sets = out
-        selected = keep.flatMap { k in out.firstIndex { k >= $0.start && k <= $0.end } }
+        .buttonStyle(.plain)
     }
 
     // MARK: Edits
 
-    private func tapped(_ ts: Int) {
-        if let i = sets.firstIndex(where: { ts >= $0.start && ts <= $0.end }) {
-            selected = selected == i ? nil : i
-            addAt = nil
+    private var exerciseNames: [String] {
+        var seen = Set<String>()
+        return (editor.sets.compactMap(\.exercise) + exercises + categories.recentNames)
+            .filter { seen.insert($0.lowercased()).inserted }
+            .prefix(25).map { $0 }
+    }
+
+    private func previousExercise(before t: Int) -> String? {
+        editor.sets.last { $0.end <= t && $0.exercise != nil }?.exercise
+    }
+
+    private func setExercise(_ name: String?, for id: String) {
+        if let n = name { categories.note(n) }
+        if editor.setExercise([id], to: name, now: now) { afterEdit() }
+    }
+
+    /// A set placed from the evidence around a tap: the motion run there if there is one, else heart
+    /// rate's climb ending at its peak, else your typical set length; always inside the free time.
+    private func addSet(around t: Int, within free: ClosedRange<Int>) {
+        let lo = free.lowerBound + 1, hi = free.upperBound - 1
+        var span: (Int, Int)
+        if let m = timeline.motion.first(where: { t >= $0.start - 10 && t <= $0.end + 10 }) {
+            span = (m.start, m.end)
         } else {
-            selected = nil
-            addAt = ts
+            let typical = SetCalibration.typical(editor.counted.map(\.span)).work ?? 40
+            let peak = SetCalibration.snap(t + tuning.hrDelayS, isStart: false, hr: timeline.hr, reach: 30)
+            let end = peak - tuning.hrDelayS
+            let start = SetCalibration.snap(end - typical, isStart: true, hr: timeline.hr, reach: 12)
+            span = end - start >= SetTimelineEditor.minSetS ? (start, end) : (t - typical / 2, t + typical / 2)
         }
+        let s = Swift.max(lo, span.0), e = Swift.min(hi, span.1)
+        guard e - s >= SetTimelineEditor.minSetS, let id = editor.add(start: s, end: e, now: now) else { return }
+        if let ex = previousExercise(before: s) { editor.setExercise([id], to: ex, now: now) }
+        selection = .set(id)
+        afterEdit()
     }
 
-    private func add(at ts: Int) {
-        // About 40 s, centred on the tap, kept clear of the sets either side.
-        let before = sets.last { $0.end < ts }?.end ?? record.startTs
-        let after = sets.first { $0.start > ts }?.start ?? record.endTs
-        let start = max(before + 1, ts - 20)
-        let end = min(after - 1, start + 40)
-        guard end - start >= 5 else { return }
-        change {
-            sets.append(.init(start: start, end: end, reps: nil))
-            sets.sort { $0.start < $1.start }
-        }
-        selected = sets.firstIndex { $0.start == start }
-        addAt = nil
+    /// Recalculate and save: the timeline's sets become yours, with the history so far.
+    private func afterEdit() {
+        if case .set(let id) = selection, editor.index(of: id) == nil { selection = nil }
+        if case .gap(let id) = selection, editor.gap(after: id) == nil { selection = nil }
+        let detected = timeline.detected.sorted { $0.start < $1.start }
+        timeline.edited = editor.sets == detected ? nil : editor.sets
+        timeline.history = baseHistory + editor.log
+        onChange(timeline)
     }
 
-    /// A new one after the last, about 40 s of work after 90 s of rest, inside the workout.
-    private func addAfterLast() {
-        let start = min(record.endTs - 10, (sets.last?.end ?? record.startTs) + (sets.isEmpty ? 60 : 90))
-        let end = min(record.endTs, start + 40)
-        guard end - start >= 5 else { return }
-        change {
-            sets.append(.init(start: start, end: end, reps: nil))
-            sets.sort { $0.start < $1.start }
-        }
-        selected = sets.firstIndex { $0.start == start }
+    private func heartRateRise(_ s: TimelineSet) -> Int? {
+        let before = timeline.hr.filter { $0.ts >= s.start - 30 && $0.ts <= s.start + 3 }.map(\.bpm).min()
+        let peak = timeline.hr.filter { $0.ts >= s.start && $0.ts <= s.end + tuning.hrDelayS + 10 }.map(\.bpm).max()
+        guard let b = before, let p = peak else { return nil }
+        return Swift.max(0, p - b)
     }
 
-    private func delete(_ i: Int) {
-        change { sets.remove(at: i) }
-        selected = nil
-    }
-
-    private func merge(_ i: Int) {
-        guard i + 1 < sets.count else { return }
-        change { joinRaw(i) }
-        selected = i
-    }
-
-    /// Set `i` and the next become one, reps added.
-    private func joinRaw(_ i: Int) {
-        let a = sets[i], b = sets[i + 1]
-        let reps: Int? = (a.reps ?? 0) + (b.reps ?? 0) > 0 ? (a.reps ?? 0) + (b.reps ?? 0) : nil
-        sets[i] = .init(start: a.start, end: b.end, reps: reps)
-        sets.remove(at: i + 1)
-        userSplits.remove(b.start)
-    }
-
-    /// Two sets where heart rate dips lowest in the middle of this one (or at its middle without heart
-    /// rate), with a short break between.
-    private func split(_ i: Int) {
-        let s = sets[i]
-        let lo = s.start + (s.end - s.start) / 5, hi = s.end - (s.end - s.start) / 5
-        let inside = record.hr.filter { $0.ts >= lo && $0.ts <= hi }
-        let cut = inside.min(by: { $0.bpm < $1.bpm })?.ts ?? (s.start + s.end) / 2
-        let first = WorkoutSetsRecord.SetSpan(start: s.start, end: max(s.start + 5, cut - 3), reps: nil)
-        let second = WorkoutSetsRecord.SetSpan(start: min(s.end - 5, cut + 3), end: s.end, reps: nil)
-        guard second.start > first.end else { return }
-        change {
-            sets[i] = first
-            sets.insert(second, at: i + 1)
-        }
-        userSplits.insert(second.start)
-        selected = i + 1
-    }
-
-    // MARK: Save
-
-    private var learningNote: String {
-        if let fitNote { return fitNote }
-        guard let f = SetTuningStore.fit(for: mode) else {
-            return String(localized: "Saving teaches NOOP how your sets look in heart rate and HRV: how far heart rate rises and falls, how long a set and a rest last, and how much HRV drops. Each correction refines all of them.")
-        }
-        return Self.fitSummary(f, unit: LiveIntervalModes.unitName(mode, count: 2))
-    }
-
-    static func fitSummary(_ f: SetCalibration.Fit, unit: String) -> String {
-        let t = f.tuning
-        var s = String(localized: "Learned from \(f.examples) corrected workouts: counts match yours on \(f.exactAfter) of \(f.examples) (\(f.exactBefore) before learning).")
-        s += " " + String(localized: "Now: heart rate up \(Int(t.riseBPM)) and down \(Int(t.fallBPM)) bpm, at least \(t.minWorkS) s of work, rests under \(t.minRestS) s join \(unit)")
-        s += t.hrvDrop > 0 ? ", " + String(localized: "HRV at least \(Int((t.hrvDrop * 100).rounded()))% lower during one.") : "."
-        return s
-    }
-
-    private func save() async {
-        saving = true
-        var r = record
-        r.edited = sets.sorted { $0.start < $1.start }
-        WorkoutSetsStore.save(r)
-        record = r
-        onSave(r)
-        // The workout's notes follow your sets. Only rows NOOP saved itself are rewritten.
-        if WorkoutSource.classify(row.source) == .manual {
-            let kept = (row.notes ?? "").components(separatedBy: "\n").filter { $0.hasPrefix("HR recovery") }
-            let notes = ([WorkoutSetsStore.notesLine(r)] + kept).joined(separator: "\n")
-            await repo.saveManualWorkout(WorkoutRow(
-                startTs: row.startTs, endTs: row.endTs, sport: row.sport, source: row.source,
-                durationS: row.durationS, energyKcal: row.energyKcal, avgHr: row.avgHr, maxHr: row.maxHr,
-                strain: row.strain, distanceM: row.distanceM, zonesJSON: row.zonesJSON, notes: notes,
-                steps: row.steps))
-            await repo.refresh()
-        }
-        if let f = await SetTuningStore.refit(mode) {
-            fitNote = Self.fitSummary(f, unit: LiveIntervalModes.unitName(mode, count: 2))
-        }
-        saving = false
-        dismiss()
-    }
-}
-
-/// The session's heart rate with its sets shaded. Tapping reports the time tapped.
-struct SetsChart: View {
-    let record: WorkoutSetsRecord
-    let sets: [WorkoutSetsRecord.SetSpan]
-    let selected: Int?
-    var marker: Int? = nil
-    /// A span being drawn, outlined.
-    var paint: ClosedRange<Int>? = nil
-    /// Number each set at its top.
-    var labelled = false
-    /// Mark breaks shorter than this (seconds) in amber.
-    var flagBreaksUnder: Int? = nil
-    var onTap: ((Int) -> Void)? = nil
-
-    var body: some View {
-        GeometryReader { g in
-            let w = g.size.width, h = g.size.height
-            let t0 = Double(record.startTs), t1 = Double(max(record.endTs, record.startTs + 1))
-            let bpms = record.hr.map(\.bpm)
-            let lo = Double((bpms.min() ?? 60) - 5), hi = Double((bpms.max() ?? 180) + 5)
-            Canvas { ctx, size in
-                func x(_ ts: Int) -> CGFloat { CGFloat((Double(ts) - t0) / (t1 - t0)) * size.width }
-                func y(_ bpm: Int) -> CGFloat { size.height - CGFloat((Double(bpm) - lo) / max(hi - lo, 1)) * size.height }
-                for (i, s) in sets.enumerated() {
-                    let r = CGRect(x: x(s.start), y: 0, width: max(2, x(s.end) - x(s.start)), height: size.height)
-                    ctx.fill(Path(roundedRect: r, cornerRadius: 3),
-                             with: .color(StrandPalette.accent.opacity(i == selected ? 0.45 : 0.18)))
-                }
-                var line = Path()
-                var started = false
-                var lastTs = 0
-                for s in record.hr {
-                    let p = CGPoint(x: x(s.ts), y: y(s.bpm))
-                    if !started || s.ts - lastTs > 30 { line.move(to: p); started = true } else { line.addLine(to: p) }
-                    lastTs = s.ts
-                }
-                ctx.stroke(line, with: .color(StrandPalette.metricRose), lineWidth: 1.5)
-                if labelled {
-                    for (i, s) in sets.enumerated() where x(s.end) - x(s.start) >= 12 {
-                        ctx.draw(Text("\(i + 1)").font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(StrandPalette.accent),
-                                 at: CGPoint(x: (x(s.start) + x(s.end)) / 2, y: 8))
-                    }
-                }
-                if let limit = flagBreaksUnder, sets.count > 1 {
-                    for i in 0..<(sets.count - 1) where sets[i + 1].start - sets[i].end < limit {
-                        let mid = (x(sets[i].end) + x(sets[i + 1].start)) / 2
-                        let r = CGRect(x: mid - 7, y: size.height - 7, width: 14, height: 5)
-                        ctx.fill(Path(roundedRect: r, cornerRadius: 2.5), with: .color(StrandPalette.statusWarning))
-                    }
-                }
-                if let i = selected, i < sets.count {
-                    // Handles on the selected set's edges, to drag.
-                    for edge in [sets[i].start, sets[i].end] {
-                        let r = CGRect(x: x(edge) - 3, y: size.height / 2 - 14, width: 6, height: 28)
-                        ctx.fill(Path(roundedRect: r, cornerRadius: 3), with: .color(StrandPalette.accent))
-                    }
-                }
-                if let p = paint {
-                    let r = CGRect(x: x(p.lowerBound), y: 1, width: max(2, x(p.upperBound) - x(p.lowerBound)),
-                                   height: size.height - 2)
-                    ctx.fill(Path(roundedRect: r, cornerRadius: 3), with: .color(StrandPalette.accent.opacity(0.15)))
-                    ctx.stroke(Path(roundedRect: r, cornerRadius: 3), with: .color(StrandPalette.accent),
-                               style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
-                }
-                if let m = marker {
-                    var p = Path()
-                    p.move(to: CGPoint(x: x(m), y: 0))
-                    p.addLine(to: CGPoint(x: x(m), y: size.height))
-                    ctx.stroke(p, with: .color(StrandPalette.textPrimary.opacity(0.6)),
-                               style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
-                }
-            }
-            .contentShape(Rectangle())
-            // Only when the caller wants taps here; the editor handles its own taps and drags.
-            .gesture(SpatialTapGesture().onEnded { v in
-                guard let onTap, w > 0 else { return }
-                onTap(Int(t0 + Double(v.location.x / w) * (t1 - t0)))
-            }, including: onTap == nil ? .none : .all)
-            .overlay(alignment: .topLeading) {
-                Text("\(Int(hi)) bpm").font(.system(size: 9)).foregroundStyle(StrandPalette.textTertiary)
-            }
-            .frame(width: w, height: h)
-        }
-        .accessibilityLabel(Text(String(localized: "\(sets.count) shaded over the workout's heart rate")))
+    private func heartRateDrop(_ g: ClosedRange<Int>) -> Int? {
+        let peak = timeline.hr.filter { $0.ts >= g.lowerBound - 5 && $0.ts <= g.lowerBound + tuning.hrDelayS }.map(\.bpm).max()
+        let low = timeline.hr.filter { $0.ts >= g.lowerBound && $0.ts <= g.upperBound + 3 }.map(\.bpm).min()
+        guard let p = peak, let l = low else { return nil }
+        return Swift.max(0, p - l)
     }
 }

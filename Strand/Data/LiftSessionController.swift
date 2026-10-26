@@ -51,6 +51,19 @@ final class LiftSessionController: ObservableObject {
 
     var isActive: Bool { engine != nil && engine?.isFinished == false }
 
+    /// The exercise being done at a moment of the running session: a logged set covering it, else the
+    /// exercise of the set being worked or rested after, else the next one planned. Nil with no session.
+    func exercise(at ts: Int) -> String? {
+        guard let e = engine, !e.plan.isEmpty else { return nil }
+        func name(_ i: Int) -> String? { e.plan.indices.contains(i) ? e.plan[i].exercise : nil }
+        if let s = e.sets.first(where: { ts >= $0.startTs - 20 && ts <= $0.endTs + 20 }) { return name(s.exerciseIndex) }
+        switch e.stage {
+        case .working(let slot), .resting(let slot, _): return name(slot.exerciseIndex)
+        case .warmup: return name(0)
+        case .finished: return e.sets.last.flatMap { name($0.exerciseIndex) }
+        }
+    }
+
     /// Rest period the five-second warning has already fired for. Lives HERE, not in a view, so
     /// re-opening the sheet mid-rest cannot re-fire it.
     private var warnedFor: Int?

@@ -25,6 +25,7 @@ struct LiftSessionDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var sets: [LiftSetRow] = []
+    @ObservedObject private var categories = ExerciseCategoryStore.shared
     /// The `workout` row this session is pinned to, for the HR-measured figures.
     @State private var workout: WorkoutRow?
     /// Previous performance per exercise, for the "vs last time" comparison.
@@ -208,6 +209,10 @@ struct LiftSessionDetailSheet: View {
     private var exercisesSection: some View {
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             SectionHeader("Exercises", overline: "As performed")
+            if !categoryCounts.isEmpty {
+                // Working sets by push / pull / legs; each exercise carries its own.
+                CategoryCounts(counts: categoryCounts)
+            }
             if performed.isEmpty {
                 NoopCard {
                     Text("No sets were performed. Discarded sets stay under Edit sets as zeros you can fill in.")
@@ -222,13 +227,30 @@ struct LiftSessionDetailSheet: View {
         }
     }
 
+    /// Working sets per push / pull / legs, from each set's exercise.
+    private var categoryCounts: [StrengthCategory: Int] {
+        var out: [StrengthCategory: Int] = [:]
+        for row in performed where !row.isWarmup {
+            if let c = categories.category(for: row.exercise, primaryRegion: row.primaryMuscle?.region.rawValue) {
+                out[c, default: 0] += 1
+            }
+        }
+        return out
+    }
+
     private func exerciseCard(_ summary: LiftMetrics.ExerciseSummary) -> some View {
         let rows = performed.filter { $0.exercise == summary.exercise }.sorted { $0.ord < $1.ord }
         return NoopCard {
             VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
-                Text(summary.exercise)
-                    .font(StrandFont.headline)
-                    .foregroundStyle(StrandPalette.textPrimary)
+                HStack(spacing: 8) {
+                    Text(summary.exercise)
+                        .font(StrandFont.headline)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    if let c = categories.category(for: summary.exercise,
+                                                   primaryRegion: rows.first?.primaryMuscle?.region.rawValue) {
+                        StrengthCategoryTag(category: c)
+                    }
+                }
                 if let first = rows.first {
                     Text(LiftMuscleSummary.line(primary: first.primaryMuscle,
                                                 secondaries: first.secondaryMuscles))

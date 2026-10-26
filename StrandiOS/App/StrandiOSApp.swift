@@ -116,6 +116,14 @@ struct StrandiOSApp: App {
                 model?.live.append(log: AppModel.stamped(line))
             })
         _liftSession = StateObject(wrappedValue: liftSession)
+        // Sets found automatically are labelled with the Lift Log exercise running at that moment, so
+        // detection can learn per exercise and sets take that exercise's push / pull / legs.
+        LiveIntervalTracker.shared.exerciseAt = { [weak liftSession] ts in
+            MainActor.assumeIsolated { liftSession?.exercise(at: ts) }
+        }
+        LiveIntervalTracker.shared.exerciseNames = { [weak liftSession] in
+            MainActor.assumeIsolated { liftSession?.engine?.plan.map(\.exercise) ?? [] }
+        }
         let liftActivity = LiftLiveActivityController(log: { [weak model] line in
             model?.live.append(log: AppModel.stamped(line))
         })

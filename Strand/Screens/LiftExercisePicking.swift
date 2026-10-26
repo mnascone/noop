@@ -1,5 +1,6 @@
 import SwiftUI
 import StrandDesign
+import StrandAnalytics
 import WhoopStore
 
 // What the two exercise pickers share: the program line editor (`LiftProgramItemSheet`) and the running
@@ -51,6 +52,7 @@ enum LiftExerciseVocabulary {
 /// One remembered exercise as a picker lists it: its name, and the muscles it is known by.
 struct LiftExerciseSuggestionLabel: View {
     let row: LiftExerciseRow
+    @ObservedObject private var categories = ExerciseCategoryStore.shared
 
     var body: some View {
         HStack(spacing: 8) {
@@ -66,6 +68,9 @@ struct LiftExerciseSuggestionLabel: View {
                     .foregroundStyle(StrandPalette.textTertiary)
             }
             Spacer(minLength: 0)
+            if let c = categories.category(for: row.name, primaryRegion: row.primaryMuscle?.region.rawValue) {
+                StrengthCategoryTag(category: c)
+            }
         }
         .contentShape(Rectangle())
     }

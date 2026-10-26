@@ -82,6 +82,8 @@ struct LiftSessionExerciseSheet: View {
                         .font(StrandFont.body)
                         .foregroundStyle(StrandPalette.textPrimary)
                         .focused($focused, equals: .exercise)
+                    // Push / pull / legs, one tap. Known exercises start with a sensible default.
+                    StrengthCategoryPicker(exercise: exercise, primaryRegion: primary?.region.rawValue)
                     if !suggestions.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Used before").strandOverline()

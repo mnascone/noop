@@ -10,6 +10,8 @@ struct LiveIntervalCard: View {
     @AppStorage(LiveRepTracker.enabledKey) private var repCounting = false
     @AppStorage(SetReadyPrefs.targetRestKey) private var targetRest = 120
     @State private var showSettings = false
+    /// The workout so far, open in the editor.
+    @State private var editorTimeline: SetTimeline?
     @AppStorage(SetReadyPrefs.panelKey) private var showPanel = true
     @EnvironmentObject private var model: AppModel
 
@@ -24,6 +26,14 @@ struct LiveIntervalCard: View {
                         .toolbar {
                             ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } }
                         }
+                }
+            }
+            .sheet(item: $editorTimeline) { t in
+                NavigationStack {
+                    SetTimelineEditorView(title: String(localized: "Edit sets"), timeline: t,
+                                          exercises: tracker.exerciseNames?() ?? []) { updated in
+                        tracker.applyEdits(updated.sets, log: updated.history)
+                    }
                 }
             }
     }
@@ -122,63 +132,28 @@ struct LiveIntervalCard: View {
         return [sport, phaseTitle(mode, s)].compactMap { $0 }.joined(separator: " · ")
     }
 
-    /// One chip per set, numbered, with reps when counted. Tap a chip to fix it; + adds one it missed.
+    /// The automatic count and the way into the editor: nothing to confirm, nothing per set.
     private func setStrip(_ mode: WorkRestSegmenter.Mode) -> some View {
-        let unit = LiveIntervalModes.unitName(mode, count: 1)
-        let repsByStart = Dictionary(reps.sets.map { (Int($0.start), $0.reps) }, uniquingKeysWith: { a, _ in a })
-        return ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(Array(tracker.sets.enumerated()), id: \.element.start) { i, span in
-                        Menu {
-                            Button(role: .destructive) { tracker.removeSet(at: i) } label: {
-                                Label(String(localized: "Not a \(unit)"), systemImage: "xmark")
-                            }
-                            if i > 0 {
-                                Button { tracker.joinWithPrevious(at: i) } label: {
-                                    Label(String(localized: "Same \(unit) as \(i)"), systemImage: "arrow.left.to.line")
-                                }
-                            }
-                        } label: {
-                            VStack(spacing: 0) {
-                                Text("\(i + 1)")
-                                    .font(StrandFont.subhead.weight(.bold))
-                                    .foregroundStyle(StrandPalette.textPrimary)
-                                Text(repsByStart[span.start].map { String(localized: "\($0) reps") }
-                                     ?? LiveIntervalTracker.clock(span.end - span.start))
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(StrandPalette.textTertiary)
-                            }
-                            .frame(minWidth: 40, minHeight: 36)
-                            .background(RoundedRectangle(cornerRadius: 9).fill(StrandPalette.surfaceInset))
-                        }
-                        .id(span.start)
-                    }
-                    Button { tracker.addSetJustDone() } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(StrandPalette.accent)
-                            .frame(width: 36, height: 36)
-                            .background(RoundedRectangle(cornerRadius: 9).stroke(StrandPalette.accent.opacity(0.5),
-                                                                                 style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(Text(String(localized: "Add a \(unit) that just ended")))
-                    if tracker.canUndoEdit {
-                        Button { tracker.undoEdit() } label: {
-                            Image(systemName: "arrow.uturn.backward")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(StrandPalette.textSecondary)
-                                .frame(width: 36, height: 36)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Undo")
-                    }
-                }
+        let counted = tracker.sets.filter { !$0.uncertain }.count
+        let uncertain = tracker.sets.count - counted
+        return HStack(spacing: 8) {
+            Text("\(counted) \(LiveIntervalModes.unitName(mode, count: counted))")
+                .font(StrandFont.footnote.weight(.semibold))
+                .foregroundStyle(StrandPalette.textSecondary)
+                .monospacedDigit()
+                .contentTransition(.numericText())
+            if uncertain > 0 {
+                Text(String(localized: "+\(uncertain) uncertain"))
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
             }
-            .onChange(of: tracker.sets.count) { _, _ in
-                if let last = tracker.sets.last { withAnimation { proxy.scrollTo(last.start, anchor: .trailing) } }
+            Spacer(minLength: 0)
+            Button { editorTimeline = tracker.timelineSnapshot() } label: {
+                Label("Edit sets", systemImage: "waveform.path.ecg")
+                    .font(StrandFont.footnote.weight(.semibold))
+                    .foregroundStyle(StrandPalette.accent)
             }
+            .buttonStyle(.plain)
         }
     }
 

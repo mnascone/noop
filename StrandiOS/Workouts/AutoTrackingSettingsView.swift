@@ -3,15 +3,13 @@ import CoreLocation
 import StrandDesign
 import StrandAnalytics
 
-/// Places, automatic vs ask, and the set/interval tracking sensitivity.
+/// Places, automatic vs ask, and the way into set and interval detection settings.
 struct AutoTrackingSettingsView: View {
     @ObservedObject private var tracker = AutoWorkoutTracker.shared
     @AppStorage(AutoTrackingPrefs.placesEnabledKey) private var placesEnabled = false
     @AppStorage(AutoTrackingPrefs.walkEnabledKey) private var walkEnabled = false
     @AppStorage(AutoTrackingPrefs.placesModeKey) private var placesModeRaw = AutoTrackingPrefs.Mode.auto.rawValue
     @AppStorage(AutoTrackingPrefs.walkModeKey) private var walkModeRaw = AutoTrackingPrefs.Mode.auto.rawValue
-    @AppStorage(AutoTrackingPrefs.intervalSensitivityKey) private var sensitivity = 1.0
-    @State private var learned: [WorkRestSegmenter.Mode: SetCalibration.Fit] = [:]
     @AppStorage(LiveRepTracker.enabledKey) private var repCounting = false
 
     var body: some View {
@@ -55,46 +53,15 @@ struct AutoTrackingSettingsView: View {
             }
 
             Section {
-                ForEach([WorkRestSegmenter.Mode.lifting, .assaultBike, .sprints], id: \.self) { m in
-                    if let f = learned[m] {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(m == .lifting ? "Sets" : (m == .assaultBike ? "Intervals" : "Sprints"))
-                                .font(StrandFont.subhead.weight(.semibold))
-                            Text(WorkoutSetsEditor.fitSummary(f, unit: LiveIntervalModes.unitName(m, count: 2)))
-                                .font(StrandFont.caption)
-                                .foregroundStyle(StrandPalette.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Button("Forget what it learned", role: .destructive) {
-                                SetTuningStore.reset(m)
-                                learned[m] = nil
-                            }
-                            .font(StrandFont.caption)
-                        }
-                    }
-                }
-                if learned.isEmpty {
-                    VStack(alignment: .leading, spacing: NoopMetrics.space2) {
-                        Slider(value: $sensitivity, in: 0.5...2.0, step: 0.1)
-                        HStack {
-                            Text("Fewer, longer sets")
-                            Spacer()
-                            Text("More, shorter sets")
-                        }
-                        .font(StrandFont.caption)
-                        .foregroundStyle(StrandPalette.textTertiary)
-                    }
+                NavigationLink {
+                    DetectionSettingsView(sport: "Strength", mode: .lifting, preview: nil)
+                } label: {
+                    Label("Detection settings", systemImage: "slider.horizontal.3")
                 }
             } header: {
                 Text("Set and interval detection")
             } footer: {
-                Text("Counts sets and rests from heart rate and HRV for Strength, Weightlifting, Bodybuilding, Powerlifting and Calisthenics, and intervals for Assault bike, Sprints, HIIT, CrossFit, Spinning and machines. After a workout, open it and tap Review and correct: delete, join or add sets. Each correction refits how far heart rate rises and falls, how long a set and a rest last, and how much HRV drops, so the next workout counts your way. The slider is only a starting point until then.")
-            }
-            .onAppear {
-                var m: [WorkRestSegmenter.Mode: SetCalibration.Fit] = [:]
-                for mode in [WorkRestSegmenter.Mode.lifting, .assaultBike, .sprints] {
-                    if let f = SetTuningStore.fit(for: mode) { m[mode] = f }
-                }
-                learned = m
+                Text("Sets and rests are found on their own from heart rate, wrist motion and reps, for Strength, Weightlifting, Bodybuilding, Powerlifting and Calisthenics, and intervals for Assault bike, Sprints, HIIT, CrossFit, Spinning and machines. Correct them in Edit sets, during or after a workout, and detection learns from it for the next one. Nothing here needs changing for everyday use.")
             }
 
             Section {

@@ -163,6 +163,15 @@ final class LiveRepTracker: ObservableObject {
         }
     }
 
+    /// Every run of reps so far, walking left out, unjoined and unconfirmed: the motion evidence set
+    /// detection weighs with heart rate. Joining and confirming are detection's job.
+    var motionRuns: [MotionRun] {
+        (counter?.sets ?? []).filter { !RepCounter.looksLikeWalking($0) }.map {
+            MotionRun(start: Int($0.start), end: Int($0.end.rounded(.up)), reps: $0.reps,
+                      repTimes: $0.repTimes, rangeG: $0.rangeG)
+        }
+    }
+
     /// How far heart rate climbed from the set's start to its peak during the set or within
     /// `confirmWindowS` after it. nil with no heart rate around the set.
     func hrRise(_ set: RepCounter.RepSet) -> Int? {

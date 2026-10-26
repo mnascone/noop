@@ -7,29 +7,44 @@ import WhoopStore
 /// into correcting them. Shown for workouts whose sport counts sets or intervals.
 struct WorkoutSetsCard: View {
     let row: WorkoutRow
+    /// Raised by the detail screen's Edit sets button too.
+    @Binding var editing: Bool
     @EnvironmentObject private var repo: Repository
     @State private var record: WorkoutSetsRecord?
-    @State private var loaded = false
-    @State private var editing = false
+    @State private var loadedSeq: Int?
+
+    private var countsSets: Bool { LiveIntervalModes.mode(forSport: row.sport) != nil }
 
     var body: some View {
-        Group {
-            if let r = record {
+        // Always in the hierarchy (a zero-height stand-in when hidden) so the editor sheet can still open
+        // from the toolbar for a workout that doesn't show the card.
+        VStack(spacing: 0) {
+            if let r = record, countsSets || r.edited != nil {
                 VStack(alignment: .leading, spacing: NoopMetrics.gap) {
                     SectionHeader(LocalizedStringKey(LiveIntervalModes.unitName(r.segmenterMode, count: 2).capitalized),
                                   overline: overline(r), trailing: "\(r.sets.count)")
                     NoopCard(tint: StrandPalette.effortColor) {
                         VStack(alignment: .leading, spacing: NoopMetrics.space3) {
-                            SetsChart(record: r, sets: r.sets, selected: nil)
-                                .frame(height: 110)
-                            Text(WorkoutSetsStore.notesLine(r).components(separatedBy: "\n").first ?? "")
-                                .font(StrandFont.footnote)
-                                .foregroundStyle(StrandPalette.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                            if r.hr.isEmpty {
+                                Text("No heart rate is stored for this workout yet, so nothing was counted. It fills in after the strap syncs, or you can enter your sets now.")
+                                    .font(StrandFont.footnote)
+                                    .foregroundStyle(StrandPalette.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            } else {
+                                SetsChart(record: r, sets: r.sets, selected: nil)
+                                    .frame(height: 110)
+                            }
+                            if !r.sets.isEmpty {
+                                Text(WorkoutSetsStore.notesLine(r).components(separatedBy: "\n").first ?? "")
+                                    .font(StrandFont.footnote)
+                                    .foregroundStyle(StrandPalette.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                             Button {
                                 editing = true
                             } label: {
-                                Label(r.edited == nil ? "Review and correct" : "Edit sets", systemImage: "slider.horizontal.3")
+                                Label(r.edited == nil ? (r.sets.isEmpty ? "Enter sets" : "Review and correct") : "Edit sets",
+                                      systemImage: "slider.horizontal.3")
                                     .font(StrandFont.subhead.weight(.semibold))
                             }
                             .buttonStyle(.plain)
@@ -37,28 +52,46 @@ struct WorkoutSetsCard: View {
                         }
                     }
                 }
-            }
-        }
-        .task {
-            guard !loaded else { return }
-            loaded = true
-            if let saved = WorkoutSetsStore.load(startTs: row.startTs, sport: row.sport) {
-                record = saved
             } else {
-                record = await WorkoutSetsStore.build(row: row, repo: repo)
+                Color.clear.frame(height: 0)
             }
         }
+        // Reload when data lands: a workout saved before the strap synced gets its heart rate later.
+        .task(id: repo.refreshSeq) { await load() }
         .sheet(isPresented: $editing) {
-            if let r = record {
-                NavigationStack {
+            NavigationStack {
+                if let r = record {
                     WorkoutSetsEditor(record: r, row: row) { updated in record = updated }
+                } else {
+                    ProgressView().task { await load() }
                 }
             }
         }
     }
 
+    private func load() async {
+        guard loadedSeq != repo.refreshSeq || record == nil else { return }
+        loadedSeq = repo.refreshSeq
+        if let saved = WorkoutSetsStore.load(startTs: row.startTs, sport: row.sport),
+           !(saved.hr.isEmpty && saved.edited == nil) {
+            record = saved
+            return
+        }
+        let built = await WorkoutSetsStore.build(row: row, repo: repo)
+        // Keep your entered sets if heart rate arrives after them.
+        if let saved = WorkoutSetsStore.load(startTs: row.startTs, sport: row.sport), let edited = saved.edited {
+            var merged = built
+            merged.edited = edited
+            WorkoutSetsStore.save(merged)
+            record = merged
+        } else {
+            record = built
+        }
+    }
+
     private func overline(_ r: WorkoutSetsRecord) -> LocalizedStringKey {
         if r.edited != nil { return "Corrected by you" }
+        if r.hr.isEmpty { return "Not counted yet" }
         return r.detectedFrom == "motion" ? "From wrist motion and heart rate" : "Estimated from heart rate"
     }
 }
@@ -100,9 +133,17 @@ struct WorkoutSetsEditor: View {
                     } label: {
                         Label(String(localized: "Add a \(unit) at \(offset(t))"), systemImage: "plus.circle.fill")
                     }
+                } else {
+                    Button {
+                        addAfterLast()
+                    } label: {
+                        Label(String(localized: "Add a \(unit)"), systemImage: "plus.circle")
+                    }
                 }
             } footer: {
-                Text("Tap a shaded \(unit) to select it, or a gap to add one there.")
+                Text(record.hr.isEmpty
+                     ? "No heart rate for this workout yet. Add your \(LiveIntervalModes.unitName(mode, count: 2)) and set their times and reps below."
+                     : "Tap a shaded \(unit) to select it, or a gap to add one there.")
             }
 
             Section {
@@ -232,6 +273,16 @@ struct WorkoutSetsEditor: View {
         sets.sort { $0.start < $1.start }
         selected = sets.firstIndex { $0.start == start }
         addAt = nil
+    }
+
+    /// A new one after the last, about 40 s of work after 90 s of rest, inside the workout.
+    private func addAfterLast() {
+        let start = min(record.endTs - 10, (sets.last?.end ?? record.startTs) + (sets.isEmpty ? 60 : 90))
+        let end = min(record.endTs, start + 40)
+        guard end - start >= 5 else { return }
+        sets.append(.init(start: start, end: end, reps: nil))
+        sets.sort { $0.start < $1.start }
+        selected = sets.firstIndex { $0.start == start }
     }
 
     private func delete(_ i: Int) {

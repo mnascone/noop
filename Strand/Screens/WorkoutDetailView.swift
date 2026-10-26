@@ -69,6 +69,8 @@ struct WorkoutDetailView: View {
     /// import). nil = not an on-foot sport, or no step source had data for the window.
     private struct StepReadout { let count: Int; let fromStrap: Bool }
     @State private var steps: StepReadout?
+    /// The sets editor, opened from the toolbar or the sets card.
+    @State private var editingSets = false
 
     var body: some View {
         ScreenScaffold(title: "\(WorkoutSource.displaySport(row.sport))",
@@ -87,7 +89,7 @@ struct WorkoutDetailView: View {
             statStrip
             #if os(iOS)
             // Sets or intervals counted for this workout, and the way to correct them.
-            WorkoutSetsCard(row: row)
+            WorkoutSetsCard(row: row, editing: $editingSets)
             #endif
             routeCard
             hrCurveCard
@@ -102,6 +104,12 @@ struct WorkoutDetailView: View {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Done") { dismiss() }
             }
+            #if os(iOS)
+            // Any workout's sets can be entered or corrected after it's logged.
+            ToolbarItem(placement: .primaryAction) {
+                Button("Edit sets") { editingSets = true }
+            }
+            #endif
         }
         .task { await load() }
     }

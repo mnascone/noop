@@ -68,16 +68,16 @@ enum WorkoutSetsStore {
     }
 
     /// A record for an older workout, or one saved without live tracking: its heart rate and beats from
-    /// the store, counted with your current tuning.
-    static func build(row: WorkoutRow, repo: Repository) async -> WorkoutSetsRecord? {
-        guard let mode = LiveIntervalModes.mode(forSport: row.sport) else { return nil }
+    /// the store, counted with your current tuning. With no stored heart rate yet it's an empty record you
+    /// can still enter sets into. A sport that doesn't count sets is treated as lifting.
+    static func build(row: WorkoutRow, repo: Repository) async -> WorkoutSetsRecord {
+        let mode = LiveIntervalModes.mode(forSport: row.sport) ?? .lifting
         let hrRows = await repo.hrSamples(from: row.startTs, to: row.endTs, limit: 50_000)
-        guard hrRows.count >= 60 else { return nil }
-        let rr = await repo.rrIntervals(from: row.startTs, to: row.endTs, limit: 100_000)
+        let rr = hrRows.count >= 60 ? await repo.rrIntervals(from: row.startTs, to: row.endTs, limit: 100_000) : []
         let hr = hrRows.map { SetCalibration.HRSampleTS(ts: $0.ts, bpm: $0.bpm) }
         let beats = rr.map { SetCalibration.Beat(ts: $0.ts, ms: $0.rrMs) }
-        let tuning = SetTuningStore.tuning(for: mode)
-        let sets = SetCalibration.detect(hr: hr, beats: beats, mode: mode, tuning: tuning)
+        let sets = hr.count >= 60
+            ? SetCalibration.detect(hr: hr, beats: beats, mode: mode, tuning: SetTuningStore.tuning(for: mode)) : []
         return WorkoutSetsRecord(startTs: row.startTs, endTs: row.endTs, sport: row.sport, mode: mode.rawValue,
                                  hr: hr, beats: beats,
                                  detected: sets.map { .init(start: $0.startTs, end: $0.endTs, reps: nil) },

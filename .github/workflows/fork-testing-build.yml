@@ -14,6 +14,11 @@ on:
         description: "Also build Android and macOS (default: iOS only)"
         type: boolean
         default: false
+      ios_runner:
+        description: "iOS build machine. Pick macos-26-intel when GitHub's arm64 Macs are queued out."
+        type: choice
+        options: [macos-26, macos-26-intel]
+        default: macos-26
 
 permissions:
   contents: write
@@ -195,9 +200,10 @@ jobs:
 
   ios:
     needs: meta
-    # iOS 26 Liquid Glass (glassEffect) needs the iOS 26 SDK → Xcode 26 → macos-26.
-    runs-on: macos-26
-    timeout-minutes: 40
+    # iOS 26 Liquid Glass (glassEffect) needs the iOS 26 SDK → Xcode 26 → macos-26 (arm64), or its Intel
+    # twin when arm64 capacity is short.
+    runs-on: ${{ inputs.ios_runner || 'macos-26' }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - name: Install XcodeGen

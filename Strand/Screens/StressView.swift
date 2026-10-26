@@ -728,6 +728,18 @@ struct StressView: View {
 
     // MARK: 4 · Methodology (transparency)
 
+    /// "Today's calm level: 64 bpm, from your recent days."
+    static func calmLine(_ b: StressLevel.Baseline) -> String {
+        let bpm = Int(b.calmHR.rounded())
+        let from: String
+        switch b.source {
+        case "history": from = String(localized: "your recent days")
+        case "today": from = String(localized: "today so far")
+        default: from = String(localized: "your resting heart rate")
+        }
+        return String(localized: "Today's calm level: \(bpm) bpm, from \(from).")
+    }
+
     private func methodologyCard(_ model: StressModel?) -> some View {
         NoopCard(tint: StressRamp.calm) {
             VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
@@ -740,7 +752,7 @@ struct StressView: View {
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let b = service.today?.baseline {
-                    Text(String(localized: "Today's calm level: \(Int(b.calmHR.rounded())) bpm, from \(b.source == "history" ? String(localized: "your recent days") : (b.source == "today" ? String(localized: "today so far") : String(localized: "your resting heart rate"))).")
+                    Text(Self.calmLine(b))
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
                 }

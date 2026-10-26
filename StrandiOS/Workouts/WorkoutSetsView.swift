@@ -130,15 +130,11 @@ struct WorkoutSetsCard: View {
         }
     }
 
-    /// Leaving the editor: notes now, and detection relearns from your corrections for next time (past
-    /// workouts keep their sets).
+    /// Leaving the editor: notes now. (Detection has already learned from the edits, in the editor.)
     private func finishedEditing() {
         guard let t = timeline else { return }
         notesTask?.cancel()
-        Task {
-            await WorkoutSetsStore.syncNotes(t, row: row, repo: repo)
-            if t.isCorrected { _ = await StrengthTuningStore.refit(sport: t.sport, mode: t.segmenterMode) }
-        }
+        Task { await WorkoutSetsStore.syncNotes(t, row: row, repo: repo) }
     }
 
     private func overline(_ t: SetTimeline) -> LocalizedStringKey {
@@ -286,9 +282,10 @@ struct SetTimelineChart: View {
 // MARK: - The editor
 
 /// The sets editor, the same during the workout and afterwards: one zoomable heart-rate timeline with
-/// sets shaded and rests as gaps. Tap a set to select it and drag its edges, delete or split it; tap a
-/// gap to join the sets either side; press, hold and drag over empty time to add a set. Every edit is
-/// saved as you make it (`onChange`), with undo and redo here.
+/// sets shaded and rests as gaps. Hold a rest to remove it (the sets either side join); hold a set and
+/// drag to move its nearer edge; hold empty time and drag to add a set; tap to select and use the
+/// actions (delete, split, join, exercise). Every edit is saved as you make it (`onChange`), with undo
+/// and redo here, and detection refits from it a moment later.
 struct SetTimelineEditorView: View {
     let title: String
     let exercises: [String]
@@ -299,8 +296,15 @@ struct SetTimelineEditorView: View {
     private let baseHistory: [SetEditRecord]
     @State private var selection: Selection?
     @State private var window: ClosedRange<Double>
-    @State private var panStart: ClosedRange<Double>?
     @State private var pinchStart: (window: ClosedRange<Double>, x: CGFloat)?
+    /// The finger on the timeline: a tap, a pan, or (after a hold) drawing a set, moving an edge, or a
+    /// join already made.
+    @State private var touch: Touch?
+    @State private var touchToken = 0
+    @State private var holdFired = 0
+    /// What detection learned from the latest edits, shown under the summary.
+    @State private var learnedNote: String?
+    @State private var learnTask: Task<Void, Never>?
     @State private var dragging: TimelineSet?
     @State private var drawing: ClosedRange<Int>?
     @AppStorage("noop.setsEditor.marks") private var showMarks = false
@@ -309,6 +313,16 @@ struct SetTimelineEditorView: View {
     @State private var newName = ""
     @ObservedObject private var categories = ExerciseCategoryStore.shared
     @Environment(\.dismiss) private var dismiss
+
+    struct Touch {
+        enum Mode: Equatable {
+            case pending, pan, draw, held
+            case edge(id: String, isStart: Bool)
+        }
+        var startX: CGFloat
+        var startWindow: ClosedRange<Double>
+        var mode: Mode = .pending
+    }
 
     enum Selection: Equatable {
         case set(String)
@@ -397,7 +411,7 @@ struct SetTimelineEditorView: View {
             Button("Cancel", role: .cancel) {}
             Button("Set") { if let id = selectedSetId { setExercise(newName, for: id) } }
         }
-        .sensoryFeedback(.impact(weight: .light), trigger: drawing == nil)
+        .sensoryFeedback(.impact(weight: .medium), trigger: holdFired)
     }
 
     private var now: Int { Int(Date().timeIntervalSince1970) }
@@ -426,6 +440,13 @@ struct SetTimelineEditorView: View {
                         .foregroundStyle(StrandPalette.textTertiary)
                 }
             }
+            if let note = learnedNote {
+                Label(note, systemImage: "brain")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.accent)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(.opacity)
+            }
         }
     }
 
@@ -439,7 +460,7 @@ struct SetTimelineEditorView: View {
                                  selectedGap: selectedGapId, drawing: drawing, showMarks: showMarks)
                     .background(RoundedRectangle(cornerRadius: 10).fill(StrandPalette.surfaceInset.opacity(0.5)))
                     .contentShape(Rectangle())
-                    .gesture(drawGesture(w).exclusively(before: panGesture(w)).exclusively(before: tapGesture(w)))
+                    .gesture(touchGesture(w))
                     .simultaneousGesture(pinchGesture(w))
                 if let id = selectedSetId, let s = shown.first(where: { $0.id == id }) {
                     handle(for: s, isStart: true, w: w, h: g.size.height)
@@ -463,34 +484,107 @@ struct SetTimelineEditorView: View {
     /// Seconds one point of the timeline covers.
     private func secondsPerPoint(_ w: CGFloat) -> Double { (window.upperBound - window.lowerBound) / Double(Swift.max(1, w)) }
 
-    private func tapGesture(_ w: CGFloat) -> some Gesture {
-        SpatialTapGesture().onEnded { v in
-            let t = ts(v.location.x, w)
-            // A little slack for thin sets when zoomed out.
-            let slack = Int(secondsPerPoint(w) * 8)
-            let sets = editor.sets
-            if let s = sets.first(where: { t >= $0.start && t <= $0.end })
-                ?? sets.first(where: { t >= $0.start - slack && t <= $0.end + slack }) {
-                selection = selectedSetId == s.id ? nil : .set(s.id)
-            } else if let i = sets.indices.dropLast().first(where: { sets[$0].end < t && sets[$0 + 1].start > t }) {
-                selection = .gap(after: sets[i].id)
-            } else {
-                selection = .empty(at: t)
+    /// One finger, read by hand so a tap, a pan and a hold never fight: move first and it pans; lift
+    /// without moving and it's a tap; hold still for a moment and it acts on what's under the finger.
+    private func touchGesture(_ w: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { v in
+                guard pinchStart == nil else { touch = nil; return }
+                if touch == nil {
+                    touch = Touch(startX: v.startLocation.x, startWindow: window)
+                    touchToken &+= 1
+                    let token = touchToken
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 380_000_000)
+                        guard token == touchToken, touch?.mode == .pending else { return }
+                        hold(w)
+                    }
+                }
+                guard var t = touch else { return }
+                if t.mode == .pending, abs(v.translation.width) > 8 || abs(v.translation.height) > 8 { t.mode = .pan }
+                switch t.mode {
+                case .pan:
+                    let span = t.startWindow.upperBound - t.startWindow.lowerBound
+                    setWindow(lower: t.startWindow.lowerBound - Double(v.translation.width / Swift.max(1, w)) * span, span: span)
+                case .draw:
+                    let a = ts(t.startX, w), b = ts(Swift.min(w, Swift.max(0, v.location.x)), w)
+                    drawing = Swift.min(a, b)...Swift.max(a, b)
+                case .edge(let id, let isStart):
+                    guard let s = dragging ?? editor.sets.first(where: { $0.id == id }) else { break }
+                    var d = s
+                    let x = ts(Swift.min(w, Swift.max(0, v.location.x)), w)
+                    if isStart { d.start = Swift.min(x, d.end - SetTimelineEditor.minSetS) }
+                    else { d.end = Swift.max(x, d.start + SetTimelineEditor.minSetS) }
+                    dragging = d
+                case .pending, .held:
+                    break
+                }
+                touch = t
             }
+            .onEnded { _ in
+                guard let t = touch else { return }
+                touch = nil
+                touchToken &+= 1
+                switch t.mode {
+                case .pending: tap(at: t.startX, w)
+                case .draw: commitDrawing(w)
+                case .edge(let id, let isStart): commitEdge(id, isStart: isStart, w)
+                case .pan, .held: break
+                }
+            }
+    }
+
+    /// A tap selects what's under it: a set, the rest between two, or empty time.
+    private func tap(at x: CGFloat, _ w: CGFloat) {
+        switch target(at: x, w) {
+        case .set(let id): selection = selectedSetId == id ? nil : .set(id)
+        case .gap(let id): selection = .gap(after: id)
+        case .empty(let t): selection = .empty(at: t)
         }
     }
 
-    private func panGesture(_ w: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 6)
-            .onChanged { v in
-                guard pinchStart == nil else { return }
-                if panStart == nil { panStart = window }
-                guard let start = panStart else { return }
-                let span = start.upperBound - start.lowerBound
-                let dt = -Double(v.translation.width / Swift.max(1, w)) * span
-                setWindow(lower: start.lowerBound + dt, span: span)
+    /// Holding still acts at once. On a rest between two sets: the rest goes, and the two and the pause
+    /// become one set. On a set: it's selected and the nearer edge follows your finger. On empty time:
+    /// drag to draw the set you did.
+    private func hold(_ w: CGFloat) {
+        guard var t = touch else { return }
+        holdFired &+= 1
+        switch target(at: t.startX, w) {
+        case .gap(let id):
+            if editor.joinWithNext(id, now: now) {
+                selection = .set(id)
+                afterEdit()
             }
-            .onEnded { _ in panStart = nil }
+            t.mode = .held
+        case .set(let id):
+            selection = .set(id)
+            if let s = editor.sets.first(where: { $0.id == id }) {
+                let at = ts(t.startX, w)
+                t.mode = .edge(id: id, isStart: abs(at - s.start) <= abs(at - s.end))
+            }
+        case .empty(let at):
+            drawing = at...at
+            t.mode = .draw
+        }
+        touch = t
+    }
+
+    private enum Target { case set(String), gap(after: String), empty(Int) }
+
+    private func target(at x: CGFloat, _ w: CGFloat) -> Target {
+        let t = ts(x, w)
+        // A little slack for thin sets when zoomed out.
+        let slack = Int(secondsPerPoint(w) * 8)
+        let sets = editor.sets
+        if let s = sets.first(where: { t >= $0.start && t <= $0.end }) { return .set(s.id) }
+        if let i = sets.indices.dropLast().first(where: { sets[$0].end < t && sets[$0 + 1].start > t }) {
+            // A thin set beside the touch still wins over the gap when zoomed out.
+            if let s = [sets[i], sets[i + 1]].first(where: { t >= $0.start - slack && t <= $0.end + slack }),
+               sets[i + 1].start - sets[i].end > 3 * slack { return .set(s.id) }
+            return .gap(after: sets[i].id)
+        }
+        if let s = sets.first(where: { t >= $0.start - slack && t <= $0.end + slack }) { return .set(s.id) }
+        return .empty(t)
     }
 
     private func pinchGesture(_ w: CGFloat) -> some Gesture {
@@ -504,30 +598,32 @@ struct SetTimelineEditorView: View {
                 let anchor = g.window.lowerBound + frac * span0
                 setWindow(lower: anchor - frac * span, span: span)
             }
-            .onEnded { _ in pinchStart = nil; panStart = nil }
+            .onEnded { _ in pinchStart = nil }
     }
 
-    /// Hold, then drag across time: a new set over what you covered.
-    private func drawGesture(_ w: CGFloat) -> some Gesture {
-        LongPressGesture(minimumDuration: 0.35, maximumDistance: 8)
-            .sequenced(before: DragGesture(minimumDistance: 0))
-            .onChanged { v in
-                guard case .second(true, let drag) = v else { return }
-                let a = ts(drag?.startLocation.x ?? 0, w), b = ts(drag?.location.x ?? 0, w)
-                drawing = Swift.min(a, b)...Swift.max(a, b)
-            }
-            .onEnded { _ in
-                defer { drawing = nil }
-                guard let d = drawing else { return }
-                let reach = snapReach(w)
-                let s = snapEdge(d.lowerBound, isStart: true, reach: reach)
-                let e = snapEdge(d.upperBound, isStart: false, reach: reach)
-                if let id = editor.add(start: s, end: Swift.max(e, s + SetTimelineEditor.minSetS), now: now) {
-                    if let ex = previousExercise(before: s) { editor.setExercise([id], to: ex, now: now) }
-                    selection = .set(id)
-                    afterEdit()
-                }
-            }
+    /// The set you drew, its edges snapped to the evidence.
+    private func commitDrawing(_ w: CGFloat) {
+        defer { drawing = nil }
+        guard let d = drawing else { return }
+        let reach = snapReach(w)
+        let s = snapEdge(d.lowerBound, isStart: true, reach: reach)
+        let e = snapEdge(d.upperBound, isStart: false, reach: reach)
+        if let id = editor.add(start: s, end: Swift.max(e, s + SetTimelineEditor.minSetS), now: now) {
+            if let ex = previousExercise(before: s) { editor.setExercise([id], to: ex, now: now) }
+            selection = .set(id)
+            afterEdit()
+        }
+    }
+
+    /// A moved edge lands snapped to the evidence. Dragged into a neighbour, the two join.
+    private func commitEdge(_ id: String, isStart: Bool, _ w: CGFloat) {
+        guard let d = dragging else { return }
+        dragging = nil
+        let reach = snapReach(w)
+        if isStart { editor.move(id, start: snapEdge(d.start, isStart: true, reach: reach), now: now) }
+        else { editor.move(id, end: snapEdge(d.end, isStart: false, reach: reach), now: now) }
+        if editor.index(of: id) == nil { selection = nil }
+        afterEdit()
     }
 
     /// A draggable edge of the selected set.
@@ -550,16 +646,7 @@ struct SetTimelineEditorView: View {
                         else { d.end = Swift.max(t, d.start + SetTimelineEditor.minSetS) }
                         dragging = d
                     }
-                    .onEnded { _ in
-                        guard let d = dragging else { return }
-                        dragging = nil
-                        let reach = snapReach(w)
-                        if isStart { editor.move(s.id, start: snapEdge(d.start, isStart: true, reach: reach), now: now) }
-                        else { editor.move(s.id, end: snapEdge(d.end, isStart: false, reach: reach), now: now) }
-                        // Dragged into a neighbour: the joined set keeps this one's id.
-                        if editor.index(of: s.id) == nil { selection = nil }
-                        afterEdit()
-                    })
+                    .onEnded { _ in commitEdge(s.id, isStart: isStart, w) })
             .accessibilityLabel(Text(isStart ? String(localized: "Start of \(unit)") : String(localized: "End of \(unit)")))
             .accessibilityAdjustableAction { dir in
                 let delta = dir == .increment ? 2 : -2
@@ -639,7 +726,7 @@ struct SetTimelineEditorView: View {
     }
 
     private var hint: some View {
-        Text("Tap a \(unit) to adjust it, or a gap to join two. Hold and drag to add one. Pinch to zoom.")
+        Text("Hold a rest to remove it and join the two. Hold a \(unit) and drag to move its edge. Hold empty time and drag to add one. Tap to select. Pinch to zoom.")
             .font(StrandFont.caption)
             .foregroundStyle(StrandPalette.textTertiary)
             .fixedSize(horizontal: false, vertical: true)
@@ -735,7 +822,7 @@ struct SetTimelineEditorView: View {
                     actionButton("Add a set here", "plus") { addSet(around: (g.lowerBound + g.upperBound) / 2, within: g) }
                 }
             }
-            Text("Joining makes the two and the pause one set. The readings are kept.")
+            Text("Or hold the rest itself. Joining makes the two and the pause one set, keeps the readings, and teaches detection pauses like this.")
                 .font(StrandFont.caption)
                 .foregroundStyle(StrandPalette.textTertiary)
         }
@@ -816,6 +903,55 @@ struct SetTimelineEditorView: View {
         timeline.edited = editor.sets == detected ? nil : editor.sets
         timeline.history = baseHistory + editor.log
         onChange(timeline)
+        learnSoon()
+    }
+
+    /// A moment after the last edit, detection refits from every corrected workout of this sport, this
+    /// one as it is now, so the rest of a live workout and every later one are found your way. This
+    /// workout keeps your sets either way.
+    private func learnSoon() {
+        learnTask?.cancel()
+        let t = timeline
+        let m = mode
+        learnTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled, t.isCorrected, StrengthTuningStore.override(sport: t.sport) == nil else { return }
+            let before = StrengthTuningStore.learned(sport: t.sport, mode: m)
+            guard let fit = await StrengthTuningStore.refit(sport: t.sport, mode: m, including: [t]),
+                  !Task.isCancelled else { return }
+            withAnimation { learnedNote = Self.describe(from: before, to: fit.tuning, unit: unit) }
+        }
+    }
+
+    /// What changed, in your terms: at most two of the changes that move set counts most.
+    static func describe(from a: StrengthTuning, to b: StrengthTuning, unit: String) -> String {
+        var out: [String] = []
+        if b.maxPauseS != a.maxPauseS || b.pauseFallBPM != a.pauseFallBPM {
+            out.append(b.maxPauseS > a.maxPauseS || b.pauseFallBPM > a.pauseFallBPM
+                ? String(localized: "pauses up to \(LiveIntervalTracker.clock(b.maxPauseS)) now stay inside one \(unit)")
+                : String(localized: "shorter pauses now count as rests"))
+        }
+        if b.riseBPM != a.riseBPM {
+            out.append(String(localized: "a \(unit) needs heart rate to rise \(Int(b.riseBPM)) bpm (was \(Int(a.riseBPM)))"))
+        }
+        if b.minWorkS != a.minWorkS {
+            out.append(String(localized: "shortest \(unit) \(LiveIntervalTracker.clock(b.minWorkS)) (was \(LiveIntervalTracker.clock(a.minWorkS)))"))
+        }
+        if b.minRestS != a.minRestS {
+            out.append(String(localized: "shortest rest \(LiveIntervalTracker.clock(b.minRestS)) (was \(LiveIntervalTracker.clock(a.minRestS)))"))
+        }
+        if b.hrDelayS != a.hrDelayS {
+            out.append(String(localized: "heart rate lag \(b.hrDelayS) s (was \(a.hrDelayS) s)"))
+        }
+        if b.confidenceThreshold != a.confidenceThreshold || b.minReps != a.minReps {
+            out.append(b.confidenceThreshold > a.confidenceThreshold || b.minReps > a.minReps
+                ? String(localized: "weak stretches are now left uncertain more often")
+                : String(localized: "weaker stretches now count"))
+        }
+        guard !out.isEmpty else {
+            return String(localized: "Detection checked your edits: its settings already fit them.")
+        }
+        return String(localized: "Detection learned: ") + out.prefix(2).joined(separator: ", ") + "."
     }
 
     private func heartRateRise(_ s: TimelineSet) -> Int? {

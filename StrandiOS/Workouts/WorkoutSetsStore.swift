@@ -192,8 +192,10 @@ enum StrengthTuningStore {
     /// Refit from every corrected workout of this sport, and for each exercise with two or more corrected
     /// workouts, off the main thread. Existing workouts are not re-detected.
     @MainActor
-    static func refit(sport: String, mode: WorkRestSegmenter.Mode) async -> StrengthFit? {
-        let timelines = WorkoutSetsStore.corrected(sport: sport)
+    static func refit(sport: String, mode: WorkRestSegmenter.Mode, including extra: [SetTimeline] = []) async -> StrengthFit? {
+        // The workout being edited counts as it is now, in place of any older saved copy.
+        let extraIds = Set(extra.map(\.id))
+        let timelines = extra.filter(\.isCorrected) + WorkoutSetsStore.corrected(sport: sport).filter { !extraIds.contains($0.id) }
         guard !timelines.isEmpty else { return nil }
         let start = StrengthTuning.defaults(mode)
         let sportExamples = StrengthExample.from(timelines)

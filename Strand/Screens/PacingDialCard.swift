@@ -158,6 +158,7 @@ struct PacingDialCard: View {
                                      todayEffortFloor: todayFloor)
         let overall = PacingMath.overall(short: short, long: long)
         let shown = long ?? short
+        let now = Self.today(days)
         NoopCard {
             VStack(alignment: .leading, spacing: NoopMetrics.space3) {
                 HStack(alignment: .top, spacing: 0) {
@@ -173,13 +174,13 @@ struct PacingDialCard: View {
                     StressNowColumn(diameter: Self.ringDiameter) { showStress = true }
                 }
                 if let overall {
-                    Text(Self.compactLine(overall))
+                    Text(Self.compactLine(overall, today: now))
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let p = shown {
-                    Text(Self.detail(p, effortScale: effortScale))
+                    Text(Self.detail(p, effortScale: effortScale, today: now, long: long != nil))
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .lineLimit(2)
@@ -254,22 +255,58 @@ struct PacingDialCard: View {
         .accessibilityValue(Text(overall.map(Self.stateWord) ?? String(localized: "No data yet")))
     }
 
-    static func detail(_ p: PacingMath.Pacing, effortScale: EffortScale) -> String {
+    /// Today, beside the week: the numbers the rings above show, so the verdict can't advise against
+    /// them. Pace itself is a 7 against 28 day comparison; on a bad day the week can still be light.
+    struct Today: Equatable {
+        var charge: Double?
+        var sleepHours: Double?
+        var stressHigh = false
+
+        /// Charge in the red (under 34), stress High, or under 6 hours' sleep: a day to go easy whatever
+        /// the week says.
+        var low: Bool { (charge.map { $0 < 34 } ?? false) || stressHigh || (sleepHours.map { $0 < 6 } ?? false) }
+
+        /// "today's Charge is 26, stress is high and you slept 5.1 h", the reasons that apply.
+        var reasons: String {
+            var r: [String] = []
+            if let c = charge, c < 34 { r.append(String(localized: "today's Charge is \(Int(c.rounded()))")) }
+            if stressHigh { r.append(String(localized: "stress is high this morning")) }
+            if let h = sleepHours, h < 6 { r.append(String(localized: "you slept \(h.formatted(.number.precision(.fractionLength(1)))) h")) }
+            return ListFormatter.localizedString(byJoining: r)
+        }
+    }
+
+    /// Today from the same sources as the rings: today's Charge and sleep, and the stress ring's reading.
+    @MainActor
+    static func today(_ days: [DailyMetric]) -> Today {
+        let key = Repository.localDayKey(Date())
+        let d = days.first { $0.day == key }
+        let stress = StressNow.shared.reading().map { StressNow.band($0.value) == .high } ?? false
+        return Today(charge: d?.recovery, sleepHours: d?.totalSleepMin.map { $0 / 60 }, stressHigh: stress)
+    }
+
+    /// The week's figures, labelled as the week's so they don't read as today's: "7-day avg vs usual:
+    /// Effort 60.7 vs 61.4 · Charge 49 vs 42 · stress lower (high today)".
+    static func detail(_ p: PacingMath.Pacing, effortScale: EffortScale, today: Today? = nil, long: Bool = true) -> String {
         var parts = [
             String(localized: "Effort \(UnitFormatter.effortDisplay(p.effortRecent, scale: effortScale)) vs \(UnitFormatter.effortDisplay(p.effortUsual, scale: effortScale))"),
             String(localized: "Charge \(Int(p.chargeRecent.rounded())) vs \(Int(p.chargeUsual.rounded()))"),
         ]
         if let d = p.stressDelta, abs(d) >= 0.2 {
-            parts.append(d > 0 ? String(localized: "stress up") : String(localized: "stress down"))
+            var word = d > 0 ? String(localized: "stress higher") : String(localized: "stress lower")
+            if d < 0, today?.stressHigh == true { word += " " + String(localized: "(high today)") }
+            parts.append(word)
         }
-        return parts.joined(separator: " · ")
+        let head = long ? String(localized: "7-day average vs your usual: ") : String(localized: "3-day average vs your usual: ")
+        return head + parts.joined(separator: " · ")
     }
 
+    /// The week's load against recovery: light, on pace, or heavy. ("Under" read as under-recovered.)
     static func stateWord(_ balance: Double) -> String {
         switch PacingMath.state(balance) {
-        case .recovering: return String(localized: "Under")
+        case .recovering: return String(localized: "Light")
         case .balanced: return String(localized: "On pace")
-        case .overreaching: return String(localized: "Too hard")
+        case .overreaching: return String(localized: "Heavy")
         }
     }
 
@@ -278,9 +315,22 @@ struct PacingDialCard: View {
         StrandPalette.recoveryColor((1 - (balance + 1) / 2) * 100)
     }
 
-    static func compactLine(_ balance: Double) -> String {
+    /// The verdict, the week's pace with today's state: a light week never says "push" on a day the
+    /// rings say rest.
+    static func compactLine(_ balance: Double, today: Today? = nil) -> String {
+        if let t = today, t.low {
+            let why = t.reasons
+            switch PacingMath.state(balance) {
+            case .recovering:
+                return String(localized: "Your week has been lighter than usual, but \(why). Rest today. The room to push is for when Charge is back up.")
+            case .balanced:
+                return String(localized: "Your week's load is in step with recovery, but \(why). Keep today easy.")
+            case .overreaching:
+                return String(localized: "Load is outrunning recovery and \(why). Rest today.")
+            }
+        }
         switch PacingMath.state(balance) {
-        case .recovering: return String(localized: "You're recovering faster than you're loading. Room to push.")
+        case .recovering: return String(localized: "This week you're recovering faster than you're loading. Room to push.")
         case .balanced: return String(localized: "Load matches what your Charge and stress can carry.")
         case .overreaching: return String(localized: "Load is outrunning recovery. Ease off for a day or two.")
         }

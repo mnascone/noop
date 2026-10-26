@@ -11,7 +11,7 @@ struct PaceBreakdownView: View {
     var todayEffortFloor: Double? = nil
     var onOpenTrends: (() -> Void)? = nil
 
-    /// One input's push on the ring, -1...1 of a full ring: + toward Too hard, - toward Under.
+    /// One input's push on the ring, -1...1 of a full ring: + toward Heavy, - toward Light.
     struct Push: Identifiable {
         let id: String
         let title: String
@@ -67,7 +67,7 @@ struct PaceBreakdownView: View {
                         .minimumScaleFactor(0.7)
                 }
                 VStack(alignment: .leading, spacing: NoopMetrics.space1) {
-                    Text(overall.map(PacingDialCard.compactLine)
+                    Text(overall.map { PacingDialCard.compactLine($0, today: PacingDialCard.today(days)) }
                          ?? String(localized: "Pace needs about 2 weeks of Charge and Effort."))
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textPrimary)
@@ -164,11 +164,11 @@ struct PaceBreakdownView: View {
         }
     }
 
-    /// "32% toward Too hard", "15% toward Under", "No push".
+    /// "32% toward Heavy", "15% toward Light", "No push".
     static func pushWords(_ v: Double) -> String {
         let pct = Int((min(1, abs(v)) * 100).rounded())
         if pct < 3 { return String(localized: "No real push") }
-        return v > 0 ? String(localized: "\(pct)% toward Too hard") : String(localized: "\(pct)% toward Under")
+        return v > 0 ? String(localized: "\(pct)% toward Heavy") : String(localized: "\(pct)% toward Light")
     }
 
     static func pushColor(_ v: Double) -> Color {
@@ -231,7 +231,7 @@ struct PaceBreakdownView: View {
     }
 }
 
-/// A bar that fills out from its middle: right for a push toward Too hard, left toward Under.
+/// A bar that fills out from its middle: right for a push toward Heavy, left toward Light.
 private struct PushBar: View {
     let value: Double
     let color: Color

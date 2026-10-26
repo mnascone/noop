@@ -1100,7 +1100,7 @@ final class AICoachEngine: ObservableObject {
                                      todayEffortFloor: floor)
         if let overall = PacingMath.overall(short: short, long: long), let p = long ?? short {
             lines.append("  Pace (load against recovery, vs my own normal): \(PacingDialCard.stateWord(overall)). "
-                         + PacingDialCard.detail(p, effortScale: scale) + ".")
+                         + PacingDialCard.detail(p, effortScale: scale, long: long != nil) + ". (A week-on-month trend: today's Charge, sleep and stress decide what to do today.)")
         }
         let meter = StressNow.shared
         if let d = meter.daily {

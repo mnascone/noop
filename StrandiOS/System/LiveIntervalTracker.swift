@@ -170,6 +170,12 @@ final class LiveIntervalTracker: ObservableObject {
         buzzedForRest = nil
         trackedStart = Int(w.start.timeIntervalSince1970)
         trackedSport = w.sport
+        // Corrections made earlier in this workout survive the app being closed or relaunched.
+        if let saved = WorkoutSetsStore.load(startTs: trackedStart!, sport: w.sport), let edited = saved.edited {
+            liveEdited = edited
+            editedThrough = saved.history.map(\.at).max() ?? saved.endTs
+            editLog = saved.history
+        }
         refresh()
         startTickerIfNeeded()
     }
@@ -215,8 +221,12 @@ final class LiveIntervalTracker: ObservableObject {
         let tuning = StrengthTuningStore.effective(sport: trackedSport ?? "", exercise: exercise, mode: m)
         var found = StrengthSetDetector.detect(hr: hrSamples, beats: beats, motion: motionRuns, mode: m,
                                                tuning: tuning, bounds: (trackedStart ?? now)...now)
-        if let label = exerciseAt {
-            for i in found.indices where found[i].exercise == nil { found[i].exercise = label((found[i].start + found[i].end) / 2) }
+        // A set keeps the exercise it was first given (the Lift Log moves on to the next exercise while
+        // earlier sets are still being re-detected); a new one takes the exercise at its time.
+        for i in found.indices where found[i].exercise == nil {
+            let f = found[i]
+            found[i].exercise = detected.first { $0.exercise != nil && $0.end >= f.start && $0.start <= f.end }?.exercise
+                ?? exerciseAt?((f.start + f.end) / 2)
         }
         detected = found
         let motion = !motionRuns.isEmpty
@@ -280,6 +290,8 @@ final class LiveIntervalTracker: ObservableObject {
         editedThrough = Int(Date().timeIntervalSince1970)
         editLog = log
         refresh()
+        // On disk at once, so they outlive a relaunch mid-workout.
+        if let t = timelineSnapshot() { WorkoutSetsStore.save(t) }
     }
 
     private func readingNow(_ s: WorkRestSegmenter.Summary, last: TimelineSet?) -> SetReadiness.Reading? {

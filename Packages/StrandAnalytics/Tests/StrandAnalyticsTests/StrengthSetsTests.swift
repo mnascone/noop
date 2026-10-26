@@ -125,6 +125,64 @@ final class StrengthSetsTests: XCTestCase {
         XCTAssertEqual(Double(det[1].start), 1320, accuracy: 10)
     }
 
+    /// One whole simulated workout, start to finish: detect, correct in the editor, save, reload, and
+    /// the summary recounted. Delayed heart rate throughout; a short pause inside set 2; a genuine rest
+    /// before set 3; a machine set motion didn't see; a motion-only fidget; a walk heart rate read as a
+    /// set; and a set lost when the strap lost contact.
+    func testWholeWorkoutDetectCorrectSaveReload() throws {
+        let bench1 = S(start: 1100, end: 1140)
+        let bench2a = S(start: 1300, end: 1325), bench2b = S(start: 1335, end: 1360)
+        let row = S(start: 1500, end: 1540)
+        let walk = S(start: 1800, end: 1815)
+        let machine = S(start: 1950, end: 1990)
+        let lost = S(start: 2050, end: 2085)
+        var s = session([bench1, bench2a, bench2b, row, walk, machine, lost], t0: 1000, t1: 2300)
+        // The strap lost contact for the last set: no heart rate or beats then.
+        s.hr.removeAll { $0.ts >= 2040 && $0.ts < 2110 }
+        s.beats.removeAll { $0.ts >= 2040 && $0.ts < 2110 }
+        let fidget = MotionRun(start: 1700, end: 1712, reps: 5, rangeG: 0.15)
+        let motion = [run(bench1), run(bench2a, reps: 5), run(bench2b, reps: 4), run(row), fidget]
+        let det = StrengthSetDetector.detect(hr: s.hr, beats: s.beats, motion: motion, mode: .lifting,
+                                             tuning: StrengthTuning(), bounds: 1000...2300)
+        let c = counted(det)
+        // Motion's edges for the lifts, the pause joined, the rest kept, the machine set from heart rate.
+        XCTAssertEqual(Array(c.prefix(3)).map(\.span), [bench1, S(start: 1300, end: 1360), row])
+        XCTAssertEqual(c[1].reps, 9)
+        XCTAssertTrue(c.contains { abs($0.start - machine.start) <= 10 }, "machine set found by heart rate")
+        XCTAssertTrue(det.contains { $0.uncertain && $0.start == fidget.start }, "fidget left uncertain")
+        XCTAssertFalse(c.contains { $0.start >= 2040 }, "nothing invented where there was no data")
+        // The walk raised heart rate like a set: counted, a false set for you to delete.
+        let walkFound = try XCTUnwrap(c.first { $0.end >= walk.start && $0.start <= walk.end + 15 })
+
+        // Correct it.
+        var e = SetTimelineEditor(sets: det, bounds: 1000...2300)
+        XCTAssertTrue(e.delete(walkFound.id, now: 1))
+        let added = try XCTUnwrap(e.add(start: lost.start, end: lost.end, now: 2))
+        let ids = e.counted.map(\.id)
+        e.setExercise(Array(ids.prefix(2)), to: "Bench press", now: 3)
+        e.setExercise([ids[2]], to: "Barbell row", now: 4)
+        e.setExercise(Array(ids.suffix(2)), to: "Leg press", now: 5)
+        XCTAssertEqual(e.counted.count, 5)
+        XCTAssertTrue(e.counted.contains { $0.id == added })
+
+        // Save and reload: your sets are the authority, the sensor data and detection are kept.
+        var t = SetTimeline(startTs: 1000, endTs: 2300, sport: "Strength", mode: "lifting", hr: s.hr, beats: s.beats,
+                            motion: motion, detected: det, detectedFrom: "motion+heartRate")
+        t.edited = e.sets
+        t.history = e.log
+        let back = try JSONDecoder().decode(SetTimeline.self, from: JSONEncoder().encode(t))
+        XCTAssertEqual(back, t)
+        XCTAssertEqual(back.counted.count, 5)
+        XCTAssertEqual(back.detected, det)
+        XCTAssertEqual(back.hr.count, s.hr.count)
+
+        // Recounted: five sets, push / pull / legs from each set's exercise, rests between.
+        let sum = SetSummary(back) { StrengthCategory.guess(name: $0) }
+        XCTAssertEqual(sum.count, 5)
+        XCTAssertEqual(sum.byCategory, [.push: 2, .pull: 1, .legs: 2])
+        XCTAssertEqual(sum.rests.count, 4)
+    }
+
     // MARK: Learning
 
     /// You join pauses the defaults read as rests (heart rate only dipped a little): learning raises the
@@ -143,6 +201,53 @@ final class StrengthSetsTests: XCTestCase {
         XCTAssertGreaterThan(fit.errorsBefore, 0)
         XCTAssertEqual(fit.errorsAfter, 0)
         XCTAssertEqual(fit.exactAfter, 1)
+    }
+
+    /// You delete what wasn't a set (a short walk to the rack that lifted heart rate): learning raises the
+    /// evidence it needs, and your real sets still count.
+    func testLearnsFromDeletedFalseSets() {
+        let real = [S(start: 1100, end: 1145), S(start: 1300, end: 1345), S(start: 1600, end: 1645)]
+        let walk = S(start: 1460, end: 1475)
+        let s = session(real + [walk])
+        let ex = StrengthExample(hr: s.hr, beats: s.beats, motion: [], truth: real)
+        let before = counted(StrengthSetDetector.detect(hr: s.hr, beats: s.beats, motion: [], mode: .lifting,
+                                                        tuning: StrengthTuning()))
+        XCTAssertEqual(before.count, 4, "the defaults count the walk")
+        let fit = StrengthLearner.fit([ex], mode: .lifting, start: StrengthTuning())!
+        XCTAssertEqual(fit.errorsAfter, 0)
+        let after = counted(StrengthSetDetector.detect(hr: s.hr, beats: s.beats, motion: [], mode: .lifting, tuning: fit.tuning))
+        XCTAssertEqual(after.count, 3)
+    }
+
+    /// You add sets it missed (light sets that barely lifted heart rate): learning lowers the rise it
+    /// needs. Not by scaling the count: the added sets are found where they happened.
+    func testLearnsFromAddedMissedSets() {
+        let truth = [S(start: 1100, end: 1140), S(start: 1300, end: 1340), S(start: 1500, end: 1540)]
+        let s = session(truth, climb: 0.2)
+        let ex = StrengthExample(hr: s.hr, beats: s.beats, motion: [], truth: truth)
+        let fit = StrengthLearner.fit([ex], mode: .lifting, start: StrengthTuning())!
+        XCTAssertGreaterThan(fit.errorsBefore, 0)
+        XCTAssertLessThan(fit.tuning.riseBPM, StrengthTuning().riseBPM)
+        let after = counted(StrengthSetDetector.detect(hr: s.hr, beats: s.beats, motion: [], mode: .lifting, tuning: fit.tuning))
+        XCTAssertEqual(after.count, 3)
+        for (d, t) in zip(after, truth) { XCTAssertEqual(Double(d.start), Double(t.start), accuracy: 15) }
+    }
+
+    /// You drag ends later, every time, because heart rate lags you less than assumed: learning moves the
+    /// delay, and the edges land closer.
+    func testLearnsFromMovedBoundaries() {
+        let truth = [S(start: 1100, end: 1145), S(start: 1300, end: 1345), S(start: 1500, end: 1545)]
+        let s = session(truth)
+        var start = StrengthTuning()
+        start.hrDelayS = 25
+        let ex = StrengthExample(hr: s.hr, beats: s.beats, motion: [], truth: truth)
+        func edgeError(_ t: StrengthTuning) -> Int {
+            let d = counted(StrengthSetDetector.detect(hr: s.hr, beats: s.beats, motion: [], mode: .lifting, tuning: t))
+            return zip(d, truth).map { abs($0.start - $1.start) + abs($0.end - $1.end) }.reduce(0, +)
+        }
+        let fit = StrengthLearner.fit([ex], mode: .lifting, start: start)!
+        XCTAssertLessThan(edgeError(fit.tuning), edgeError(start))
+        XCTAssertLessThan(fit.tuning.hrDelayS, 25)
     }
 
     /// Learning per exercise only uses the stretch around that exercise's sets.

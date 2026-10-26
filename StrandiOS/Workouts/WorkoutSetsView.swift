@@ -1036,29 +1036,17 @@ struct SetTimelineEditorView: View {
         }
     }
 
-    /// The set's push / pull / legs: tap one to set it for this set alone, tap it again to go back to
-    /// its exercise's or the workout's, which shows as the lighter choice.
+    /// The set's type: tap one to set it for this set alone, tap it again to go back to its exercise's
+    /// or the workout's, which shows lighter.
     private func setCategoryRow(_ s: TimelineSet) -> some View {
         let inherited = s.exercise.flatMap { categories.category(for: $0) } ?? workoutCategories.fallback(startTs: timeline.startTs)
-        return HStack(spacing: 6) {
-            ForEach(StrengthCategory.allCases, id: \.self) { c in
-                let own = s.category == c
-                let shown = own || (s.category == nil && inherited == c)
-                Button {
-                    if editor.setCategory([s.id], to: own ? nil : c, now: now) { afterEdit() }
-                } label: {
-                    Text(c.displayName)
-                        .font(StrandFont.caption.weight(.semibold))
-                        .foregroundStyle(own ? Color.white : (shown ? c.color : StrandPalette.textSecondary))
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 6)
-                        .background(Capsule().fill(own ? c.color : (shown ? c.color.opacity(0.16) : StrandPalette.surfaceInset)))
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(shown ? [.isSelected] : [])
-            }
+        return VStack(alignment: .leading, spacing: 3) {
+            StrengthTypeChips(chosen: Set([s.category].compactMap { $0 }), shaded: s.category == nil ? inherited : nil,
+                              small: true,
+                              onTap: { c in if editor.setCategory([s.id], to: s.category == c ? nil : c, now: now) { afterEdit() } },
+                              onAdd: { c in if editor.setCategory([s.id], to: c, now: now) { afterEdit() } })
             if s.category == nil, inherited != nil {
-                Text(s.exercise != nil ? "from exercise" : "from workout")
+                Text(s.exercise != nil ? "Type from the exercise" : "Type from the workout")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
             }

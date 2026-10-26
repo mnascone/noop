@@ -41,6 +41,19 @@ enum WorkoutSetsStore {
             .sorted { $0.startTs > $1.startTs }
     }
 
+    /// Every saved timeline, read off the main thread (they carry the workout's heart rate, so there's
+    /// some to read).
+    nonisolated static func readAll() async -> [SetTimeline] {
+        await Task.detached(priority: .utility) { () -> [SetTimeline] in
+            guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            else { return [] }
+            let d = base.appendingPathComponent("noop-sets", isDirectory: true)
+            guard let files = try? FileManager.default.contentsOfDirectory(at: d, includingPropertiesForKeys: nil)
+            else { return [] }
+            return files.compactMap { (try? Data(contentsOf: $0)).flatMap { try? JSONDecoder().decode(SetTimeline.self, from: $0) } }
+        }.value
+    }
+
     /// Corrected workouts of a sport, newest first.
     static func corrected(sport: String, limit: Int = 15) -> [SetTimeline] {
         Array(all().filter { $0.isCorrected && $0.sport.lowercased() == sport.lowercased() }.prefix(limit))
@@ -122,9 +135,9 @@ enum WorkoutSetsStore {
         parts.append(String(localized: "\(LiveIntervalTracker.clock(sum.workS)) working"))
         if sum.byCategory.isEmpty, !workout.isEmpty {
             // Chosen for the workout, with no set of its own to count: say what it was.
-            parts.append(StrengthCategory.allCases.filter(workout.contains).map(\.displayName).joined(separator: " + "))
+            parts.append(StrengthTypeStore.shared.types.filter(workout.contains).map(\.displayName).joined(separator: " + "))
         }
-        for c in StrengthCategory.allCases { if let n = sum.byCategory[c], n > 0 { parts.append("\(c.displayName) \(n)") } }
+        for c in StrengthTypeStore.shared.types { if let n = sum.byCategory[c], n > 0 { parts.append("\(c.displayName) \(n)") } }
         var line = parts.joined(separator: " · ") + " "
             + (t.isCorrected ? String(localized: "(corrected by you)")
                : t.detectedFrom.contains("motion") ? String(localized: "(from wrist motion and heart rate)")

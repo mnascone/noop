@@ -66,7 +66,7 @@ struct ManualWorkoutSheet: View {
     @State private var suggestionsHeight: CGFloat = 0
     /// iPhone: the sport list opens as its own sheet instead of a dropdown under a text field.
     @State private var showSportList = false
-    /// Push / pull / legs, for a strength workout.
+    /// The kinds of strength work it was (Push, Legs, your own), for a strength workout.
     @State private var categories: Set<StrengthCategory>
 
     /// `endingAt` seeds a fresh add's end time (a past day picked on the Workouts calendar); nil = now.
@@ -169,7 +169,7 @@ struct ManualWorkoutSheet: View {
                 // (an overlay, see `sportPicker`) draws ON TOP of Start / End / Duration, not behind them.
                 .zIndex(1)
                 if WorkoutCategoryStore.isStrength(sport) {
-                    field(String(localized: "Push / Pull / Legs")) {
+                    field(String(localized: "Strength type")) {
                         WorkoutCategoryPicker(selection: $categories)
                     }
                 }

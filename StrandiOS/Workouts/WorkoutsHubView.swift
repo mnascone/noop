@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import StrandDesign
+import StrandAnalytics
 import WhoopStore
 
 /// The Workouts tab: what's running now, the day's log, a month of training vs rest days, auto-tracking,
@@ -28,6 +29,11 @@ struct WorkoutsHubView: View {
     @State private var addTarget: AddTarget?
     @State private var monthStart = MonthMath.startOfMonth(Date())
     @State private var detail: WorkoutDetailTarget?
+    /// Lift days, for the calendar's type and exercise filters and the tags on strength rows.
+    @State private var liftDays: [LiftDay] = []
+    @State private var filter: CalendarFilter = .all
+    @ObservedObject private var strengthTypes = StrengthTypeStore.shared
+    @ObservedObject private var workoutTypes = WorkoutCategoryStore.shared
 
     private struct DayTarget: Identifiable { let key: String; var id: String { key } }
     private struct AddTarget: Identifiable { let id = UUID(); let endingAt: Date? }
@@ -51,6 +57,7 @@ struct WorkoutsHubView: View {
                 dayLog
                 // A tapped day opens in a sheet, so the page never jumps.
                 calendarCard { key in dayTarget = DayTarget(key: key) }
+                liftDaysCard
                 autoTrackingCard
                 historyCard
             }
@@ -110,6 +117,114 @@ struct WorkoutsHubView: View {
         for k in grouped.keys { grouped[k]?.sort { $0.startTs > $1.startTs } }
         byDay = grouped
         reapplyRules(force: true)
+        liftDays = await LiftDays.build(rows: loaded, repo: repo)
+    }
+
+    // MARK: - Filter
+
+    private var liftDayByStart: [Int: LiftDay] {
+        Dictionary(liftDays.map { ($0.row.startTs, $0) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// The day's trained workouts that pass the filter.
+    private func matching(_ dayRows: [WorkoutRow]) -> [WorkoutRow] {
+        let lifts = liftDayByStart
+        switch filter {
+        case .all: return dayRows
+        case .type(let c):
+            return dayRows.filter { r in
+                lifts[r.startTs]?.types.contains(c) ?? workoutTypes.categories(startTs: r.startTs).contains(c)
+            }
+        case .sport(let sp): return dayRows.filter { $0.sport.lowercased() == sp.lowercased() }
+        case .exercise(let e):
+            return dayRows.filter { r in lifts[r.startTs]?.exercises.contains { $0.lowercased() == e.lowercased() } ?? false }
+        }
+    }
+
+    private var filterSports: [String] {
+        var seen = Set<String>()
+        return rows.map(\.sport).filter { seen.insert($0.lowercased()).inserted }.sorted()
+    }
+
+    private var filterExercises: [String] {
+        var count: [String: (name: String, n: Int)] = [:]
+        for d in liftDays { for e in d.exercises { count[e.lowercased(), default: (e, 0)].n += 1 } }
+        return count.values.sorted { $0.n > $1.n }.map(\.name)
+    }
+
+    private var filterTypes: [StrengthCategory] {
+        strengthTypes.types.filter { c in liftDays.contains { $0.types.contains(c) } }
+    }
+
+    /// All, then your lift-day types, then a menu for one sport or one exercise.
+    private var filterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                filterChip(.all)
+                ForEach(filterTypes, id: \.self) { filterChip(.type($0)) }
+                Menu {
+                    if !filterExercises.isEmpty {
+                        Section("Exercise") {
+                            ForEach(filterExercises.prefix(30), id: \.self) { e in
+                                Button(e) { filter = .exercise(e) }
+                            }
+                        }
+                    }
+                    Section("Sport") {
+                        ForEach(filterSports, id: \.self) { sp in
+                            Button(WorkoutSource.displaySport(sp)) { filter = .sport(sp) }
+                        }
+                    }
+                } label: {
+                    let specific: Bool = { if case .sport = filter { return true }; if case .exercise = filter { return true }; return false }()
+                    HStack(spacing: 4) {
+                        Text(specific ? filter.label : String(localized: "Specific"))
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                    }
+                    .font(StrandFont.footnote.weight(.semibold))
+                    .foregroundStyle(specific ? Color.white : StrandPalette.textSecondary)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(specific ? StrandPalette.accent : StrandPalette.surfaceInset))
+                }
+            }
+        }
+    }
+
+    private func filterChip(_ f: CalendarFilter) -> some View {
+        let on = filter == f
+        let tint = f.color ?? StrandPalette.accent
+        return Button { filter = f } label: {
+            Text(f.label)
+                .font(StrandFont.footnote.weight(.semibold))
+                .foregroundStyle(on ? Color.white : StrandPalette.textSecondary)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(on ? tint : StrandPalette.surfaceInset))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var liftDaysCard: some View {
+        NavigationLink {
+            LiftDaysView(rows: rows).environmentObject(repo)
+        } label: {
+            linkCard(icon: "chart.bar.xaxis", title: "Lift days",
+                     subtitle: liftDaysSubtitle)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var liftDaysSubtitle: String {
+        let month = Int(Date().timeIntervalSince1970) - 30 * 86_400
+        let recent = liftDays.filter { $0.row.startTs >= month }
+        let parts = strengthTypes.types.compactMap { c -> String? in
+            let n = recent.filter { $0.types.contains(c) }.count
+            return n > 0 ? "\(c.displayName) \(n)" : nil
+        }
+        return parts.isEmpty ? String(localized: "Compare push, pull, legs and your other lift days.")
+            : String(localized: "Last 30 days: ") + parts.joined(separator: " · ")
     }
 
     private func reapplyRules(force: Bool = false) {
@@ -227,10 +342,14 @@ struct WorkoutsHubView: View {
                 .frame(width: 24)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(WorkoutSource.displaySport(row.sport))
-                    .font(StrandFont.subhead)
-                    .foregroundStyle(StrandPalette.textPrimary)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(WorkoutSource.displaySport(row.sport))
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                        .lineLimit(1)
+                    // A strength workout's types, its subcategories.
+                    ForEach(liftDayByStart[row.startTs]?.types ?? [], id: \.self) { StrengthCategoryTag(category: $0) }
+                }
                 Text(rowSubtitle(row, counts: counts))
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
@@ -275,9 +394,11 @@ struct WorkoutsHubView: View {
         let keys = MonthMath.dayKeys(in: monthStart).filter { $0 <= todayKey }
         let trainedCount = keys.filter { trained[$0] != nil }.count
         let restCount = keys.filter { trained[$0] == nil && $0 != todayKey }.count
+        let matchCount = keys.filter { !matching(byDay[$0] ?? []).isEmpty }.count
         return NoopCard {
             VStack(alignment: .leading, spacing: NoopMetrics.space3) {
                 MonthHeader(monthStart: $monthStart)
+                filterBar
                 MonthGrid(monthStart: monthStart) { date, key in
                     Button { onPick(key) } label: { dayCell(date: date, key: key) }
                         .buttonStyle(.plain)
@@ -289,11 +410,21 @@ struct WorkoutsHubView: View {
                 }
                 Divider().overlay(StrandPalette.hairline.opacity(0.5))
                 HStack {
-                    stat(String(localized: "Rest days, last 7"), "\(week.restDays)")
-                    Spacer()
-                    stat(String(localized: "Trained this month"), "\(trainedCount)")
-                    Spacer()
-                    stat(String(localized: "Rest this month"), "\(restCount)")
+                    if filter == .all {
+                        stat(String(localized: "Rest days, last 7"), "\(week.restDays)")
+                        Spacer()
+                        stat(String(localized: "Trained this month"), "\(trainedCount)")
+                        Spacer()
+                        stat(String(localized: "Rest this month"), "\(restCount)")
+                    } else {
+                        stat(String(localized: "\(filter.label) days this month"), "\(matchCount)")
+                        Spacer()
+                        stat(String(localized: "Trained this month"), "\(trainedCount)")
+                        Spacer()
+                        if let last = lastMatchKey {
+                            stat(String(localized: "Last \(filter.label)"), Self.dayTitle(last))
+                        }
+                    }
                 }
                 settingsLink("Calendar settings") { WorkoutCalendarSettingsView() }
             }
@@ -317,7 +448,46 @@ struct WorkoutsHubView: View {
         .buttonStyle(.plain)
     }
 
+    /// The most recent day passing the filter, across every month.
+    private var lastMatchKey: String? {
+        byDay.keys.filter { !matching(byDay[$0] ?? []).isEmpty }.max()
+    }
+
     private func dayCell(date: Date, key: String) -> some View {
+        if filter != .all { return AnyView(filteredDayCell(date: date, key: key)) }
+        return AnyView(plainDayCell(date: date, key: key))
+    }
+
+    /// With a filter on: days that match are filled in the filter's colour with their workouts' icons;
+    /// other trained days are only outlined, so the month still reads.
+    private func filteredDayCell(date: Date, key: String) -> some View {
+        let hits = matching(byDay[key] ?? [])
+        let trainedOther = hits.isEmpty && trained[key] != nil
+        let isToday = key == todayKey
+        let tint = filter.color ?? StrandPalette.effortColor
+        let logos = WorkoutCalendarPrefs.logoSports(hits, priority: priorityList, count: max(1, min(3, iconCount)))
+        return VStack(spacing: 3) {
+            Text("\(Calendar.current.component(.day, from: date))")
+                .font(StrandFont.caption)
+                .foregroundStyle(!hits.isEmpty ? StrandPalette.textPrimary : StrandPalette.textTertiary)
+            if !logos.isEmpty { logoCluster(logos) } else { Color.clear.frame(width: 4, height: 12) }
+        }
+        .frame(maxWidth: .infinity, minHeight: iconCount >= 3 ? 58 : 48)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(!hits.isEmpty ? tint.opacity(0.85) : StrandPalette.surfaceInset.opacity(0.3))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(isToday ? StrandPalette.accent : (trainedOther ? StrandPalette.hairlineStrong : Color.clear),
+                              lineWidth: isToday ? 1.5 : 1)
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(Self.dayTitle(key)) + Text(", ")
+            + Text(!hits.isEmpty ? filter.label : String(localized: "no match")))
+    }
+
+    private func plainDayCell(date: Date, key: String) -> some View {
         let dayTrained = trained[key]
         let isToday = key == todayKey
         let logos = WorkoutCalendarPrefs.logoSports(dayTrained ?? [], priority: priorityList,

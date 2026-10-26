@@ -411,9 +411,14 @@ final class StrengthSetsTests: XCTestCase {
         XCTAssertEqual(StrengthCategory.guess(name: "Back squat"), .legs)
         XCTAssertEqual(StrengthCategory.guess(name: "Romanian deadlift"), .legs)
         XCTAssertEqual(StrengthCategory.guess(name: "Face pull"), .pull)
-        XCTAssertEqual(StrengthCategory.guess(name: "Plank"), nil)
+        XCTAssertEqual(StrengthCategory.guess(name: "Plank"), .abs)
+        XCTAssertEqual(StrengthCategory.guess(name: "Hanging leg raise"), .abs)
+        XCTAssertEqual(StrengthCategory.guess(name: "Cable crunch"), .abs)
+        XCTAssertEqual(StrengthCategory.guess(name: "Wrist curl"), .accessory)
+        XCTAssertEqual(StrengthCategory.guess(name: "Farmer carry"), .accessory)
         XCTAssertEqual(StrengthCategory.guess(name: "Cable thing", primaryRegion: "pull"), .pull)
-        XCTAssertEqual(StrengthCategory.guess(name: "Plank", primaryRegion: "trunk"), nil)
+        XCTAssertEqual(StrengthCategory.guess(name: "Cable thing", primaryRegion: "trunk"), .abs)
+        XCTAssertEqual(StrengthCategory.guess(name: "Sled push"), nil)
     }
 
     /// A workout mixing exercises sums by category; each set takes its exercise's.
@@ -429,6 +434,19 @@ final class StrengthSetsTests: XCTestCase {
         XCTAssertEqual(sum.count, 4)
         XCTAssertEqual(sum.byCategory, [.push: 2, .pull: 1, .legs: 1])
         XCTAssertEqual(sum.rests, [100, 110, 160])
+    }
+
+    /// Your own types store and read back by name, next to the built-ins, and old records keep theirs.
+    func testCustomTypesRoundTrip() throws {
+        let mine = try XCTUnwrap(StrengthCategory(rawValue: "Olympic lifts"))
+        XCTAssertNil(StrengthCategory(rawValue: "  "))
+        XCTAssertFalse(mine.isBuiltIn)
+        XCTAssertTrue(StrengthCategory.legs.isBuiltIn)
+        let s = [TimelineSet(id: "a", start: 1, end: 9, category: mine), TimelineSet(id: "b", start: 20, end: 30, category: .push)]
+        let back = try JSONDecoder().decode([TimelineSet].self, from: JSONEncoder().encode(s))
+        XCTAssertEqual(back.map(\.category), [mine, .push])
+        let old = try JSONDecoder().decode(TimelineSet.self, from: Data(#"{"start":1,"end":9,"category":"legs"}"#.utf8))
+        XCTAssertEqual(old.category, .legs)
     }
 
     /// A set's own push / pull / legs wins, then its exercise's, then the workout's for anything else.

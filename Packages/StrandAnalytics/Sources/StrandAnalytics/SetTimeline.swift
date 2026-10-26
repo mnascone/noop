@@ -9,18 +9,42 @@ import Foundation
 //
 // Pure and Codable. Older records (start/end/reps only) decode with defaults.
 
-/// Push, pull or legs: the split a strength exercise belongs to. Stored per exercise; a set inherits
-/// its exercise's.
-public enum StrengthCategory: String, Codable, CaseIterable, Sendable {
-    case push, pull, legs
+/// The kind of strength work: a subcategory of a strength workout. Five come built in (push, pull,
+/// legs, abs, accessory); you can add your own and remove any. Stored per exercise, per set and per
+/// workout by its raw value: the built-ins by a fixed key, yours by the name you gave it.
+public struct StrengthCategory: RawRepresentable, Hashable, Codable, Sendable {
+    public let rawValue: String
+    public init?(rawValue: String) {
+        let v = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !v.isEmpty else { return nil }
+        self.rawValue = v
+    }
+    private init(fixed: String) { rawValue = fixed }
+
+    public static let push = StrengthCategory(fixed: "push")
+    public static let pull = StrengthCategory(fixed: "pull")
+    public static let legs = StrengthCategory(fixed: "legs")
+    public static let abs = StrengthCategory(fixed: "abs")
+    public static let accessory = StrengthCategory(fixed: "accessory")
+    public static let builtIn: [StrengthCategory] = [.push, .pull, .legs, .abs, .accessory]
+
+    public var isBuiltIn: Bool { Self.builtIn.contains(self) }
 
     /// A sensible default for an exercise you haven't categorised: from its name first (what it's
     /// usually trained as in a push/pull/legs split), else from the region of its primary muscle.
-    /// Nil when neither says (core work, carries), so it's left for you rather than guessed.
-    /// `primaryRegion` is `LiftMuscle.Region`'s raw value ("push", "pull", "legs", "trunk").
+    /// Abs and core work is abs; grip, carries and lower-back work is accessory. Nil when neither name
+    /// nor muscle says, so it's left for you rather than guessed. `primaryRegion` is
+    /// `LiftMuscle.Region`'s raw value ("push", "pull", "legs", "trunk"; trunk is abs).
     public static func guess(name: String, primaryRegion: String? = nil) -> StrengthCategory? {
         let n = " " + name.lowercased().replacingOccurrences(of: "-", with: " ") + " "
         func has(_ words: [String]) -> Bool { words.contains { n.contains($0) } }
+        // First, so "hanging leg raise" isn't legs and "wrist curl" isn't pull.
+        if has([" ab ", " abs ", "crunch", "plank", "sit up", "situp", "leg raise", "knee raise", "russian twist",
+                "oblique", " core", "ab wheel", "rollout", "dead bug", "pallof", "woodchop", "wood chop", "hollow",
+                "v up", "toes to bar", "side bend"]) { return .abs }
+        if has(["wrist curl", "forearm", "grip", "farmer", "carry", "back extension", "hyperextension"]) {
+            return .accessory
+        }
         // Order matters: "leg curl" is legs though "curl" alone is pull; "upright row" is push in most
         // splits (delts) though "row" is pull.
         if has([" squat", "lunge", "leg press", "leg curl", "leg extension", "calf", "hip thrust", "glute",
@@ -31,7 +55,13 @@ public enum StrengthCategory: String, Codable, CaseIterable, Sendable {
                 "deadlift", "shrug", "lat ", "rear delt", "reverse fly", "pullover"]) { return .pull }
         if has(["bench", " press", "push up", "pushup", "dip", " fly", "flye", "tricep", "lateral raise",
                 "front raise", "skull", "pec deck", "overhead", " ohp", "shoulder"]) { return .push }
-        return primaryRegion.flatMap(StrengthCategory.init(rawValue:))
+        switch primaryRegion {
+        case "push": return .push
+        case "pull": return .pull
+        case "legs": return .legs
+        case "trunk": return .abs
+        default: return nil
+        }
     }
 }
 

@@ -1,0 +1,206 @@
+import Foundation
+import Combine
+import StrandAnalytics
+import WhoopProtocol
+import WhoopStore
+
+/// One day of the all-day stress level, as stored: its 3-minute epochs and the baseline they were scored
+/// against. A day reads back exactly as it was shown.
+struct StressLevelDay: Codable, Equatable, Sendable {
+    /// Local day, "yyyy-MM-dd".
+    let day: String
+    var baseline: StressLevel.Baseline
+    /// Once frozen the baseline stops moving, so the day's values don't drift as it goes on.
+    var frozen: Bool
+    var epochs: [StressLevel.Epoch]
+    var computedAt: Int
+
+    var summary: StressLevel.Summary { StressLevel.summary(epochs) }
+    var measured: [StressLevel.Epoch] { epochs.filter { $0.state == .measured } }
+}
+
+/// Days of stress level on disk, one JSON file per local day. Kept out of the database so nothing that
+/// rewrites synced rows can touch them.
+enum StressLevelStore {
+    private static var dir: URL? {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        else { return nil }
+        let d = base.appendingPathComponent("noop-stress", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+
+    static func load(_ day: String) -> StressLevelDay? {
+        guard let url = dir?.appendingPathComponent("\(day).json"), let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(StressLevelDay.self, from: data)
+    }
+
+    static func save(_ d: StressLevelDay) {
+        guard let url = dir?.appendingPathComponent("\(d.day).json"), let data = try? JSONEncoder().encode(d) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    static func dayKey(_ date: Date, calendar: Calendar = .current) -> String {
+        let c = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+    }
+}
+
+/// The all-day stress level, for every surface that shows stress: worked out from the strap's stored heart
+/// rate, beats and motion every 3 minutes, stored per day, and read back unchanged. Live beats score the
+/// current stretch the same way, against the same baseline.
+@MainActor
+final class StressLevelService: ObservableObject {
+    static let shared = StressLevelService()
+
+    @Published private(set) var today: StressLevelDay?
+    /// Past days, newest first, for the week view.
+    @Published private(set) var recent: [StressLevelDay] = []
+
+    private var lastFingerprint: String?
+    private var refreshing = false
+
+    private init() {
+        today = StressLevelStore.load(StressLevelStore.dayKey(Date()))
+    }
+
+    // MARK: Reading
+
+    /// The newest measured epoch, with when it was.
+    var latest: StressLevel.Epoch? { today?.epochs.last { $0.state == .measured } }
+
+    /// The state of the newest epoch with heart rate: activity shows as activity, not as an old number.
+    var latestState: StressLevel.Epoch? { today?.epochs.last { $0.state != .noData } }
+
+    var baseline: StressLevel.Baseline? { today?.baseline }
+
+    // MARK: Updating
+
+    /// Score today from what's stored. Cheap when nothing changed: a heart-rate fingerprint gates the reads.
+    func refresh(repo: Repository, force: Bool = false) async {
+        guard !refreshing else { return }
+        refreshing = true
+        defer { refreshing = false }
+        let now = Date()
+        let cal = Calendar.current
+        let start = cal.startOfDay(for: now)
+        let from = Int(start.timeIntervalSince1970), to = Int(now.timeIntervalSince1970)
+        let key = StressLevelStore.dayKey(now)
+        let fp = await repo.hrFingerprintUnion(from: from, to: to)
+        let workouts = await repo.workoutRows(days: 2)
+        let fpKey = fp + "|\(workouts.count)|\(to / StressLevel.epochSeconds)"
+        if !force, fpKey == lastFingerprint, today?.day == key { return }
+        lastFingerprint = fpKey
+        let stored = StressLevelStore.load(key)
+        // The day's first scoring: score the days before it first, so today's calm level can come from
+        // your recent days rather than from today alone.
+        if stored == nil { await ensureHistory(repo: repo, days: 6) }
+        guard let day = await Self.score(day: key, from: from, to: to, repo: repo, workouts: workouts,
+                                         stored: stored) else { return }
+        StressLevelStore.save(day)
+        today = day
+    }
+
+    /// Make sure the last `days` days are scored and stored (for the week view), oldest first so each can
+    /// use the ones before it as its baseline.
+    func ensureHistory(repo: Repository, days: Int = 7) async {
+        let cal = Calendar.current
+        let todayStart = cal.startOfDay(for: Date())
+        var out: [StressLevelDay] = []
+        let workouts = await repo.workoutRows(days: days + 2)
+        for back in stride(from: days, through: 1, by: -1) {
+            guard let dayStart = cal.date(byAdding: .day, value: -back, to: todayStart),
+                  let dayEnd = cal.date(byAdding: .day, value: 1, to: dayStart) else { continue }
+            let key = StressLevelStore.dayKey(dayStart)
+            if let d = StressLevelStore.load(key), d.frozen, d.computedAt >= Int(dayEnd.timeIntervalSince1970) {
+                out.append(d)
+                continue
+            }
+            if let d = await Self.score(day: key, from: Int(dayStart.timeIntervalSince1970),
+                                        to: Int(dayEnd.timeIntervalSince1970), repo: repo, workouts: workouts,
+                                        stored: StressLevelStore.load(key), wholeDay: true) {
+                StressLevelStore.save(d)
+                out.append(d)
+            }
+        }
+        recent = out.reversed()
+    }
+
+    /// Calm floors from the days before `day`: the median of their floors once there are three.
+    private static func historyBaseline(before day: String) -> (hr: Double, rmssd: Double?)? {
+        let cal = Calendar.current
+        guard let d = dayParser.date(from: day) else { return nil }
+        var floors: [Double] = [], rms: [Double] = []
+        for back in 1...14 {
+            guard let prev = cal.date(byAdding: .day, value: -back, to: d),
+                  let rec = StressLevelStore.load(StressLevelStore.dayKey(prev)) else { continue }
+            let raws = rec.epochs.filter { $0.state == .measured && !$0.asleep }
+            let hrs = raws.compactMap(\.meanHR).sorted()
+            if hrs.count >= 20 { floors.append(hrs[Int(Double(hrs.count - 1) * StressLevel.calmPercentile)]) }
+            let r = raws.compactMap(\.rmssd).sorted()
+            if r.count >= 10 { rms.append(r[r.count / 2]) }
+        }
+        guard floors.count >= 3 else { return nil }
+        let f = floors.sorted()[floors.count / 2]
+        return (f, rms.count >= 3 ? rms.sorted()[rms.count / 2] : nil)
+    }
+
+    private static let dayParser: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.calendar = Calendar(identifier: .gregorian)
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    /// Score one day's stored samples into epochs, merged into what was already stored.
+    private static func score(day key: String, from: Int, to: Int, repo: Repository, workouts rows: [WorkoutRow],
+                              stored: StressLevelDay?, wholeDay: Bool = false) async -> StressLevelDay? {
+        let hr = await repo.hrSamples(from: from, to: to, limit: 200_000)
+        guard !hr.isEmpty || stored != nil else { return nil }
+        let rr = await repo.rrIntervals(from: from, to: to, limit: 200_000)
+        let gravity = await repo.gravitySamplesUnion(from: from, to: to, limit: 200_000)
+        let sleeps = await repo.sleepSessions(from: from - 12 * 3600, to: to, limit: 20)
+            .filter { $0.endTs > from && $0.effectiveStartTs < to }
+            .map { $0.effectiveStartTs...$0.endTs }
+        let workouts = rows.filter { $0.endTs > from && $0.startTs < to }.map { $0.startTs...$0.endTs }
+        // The morning factors: last night's resting heart rate and HRV against your 30 days, 0-3.
+        let morning = stored?.baseline.morning ?? StressModel(days: repo.days, stored: [])?.score
+        let restingHR = repo.days.last { $0.restingHr != nil }?.restingHr.map(Double.init)
+        let history = historyBaseline(before: key)
+
+        let built: StressLevelDay = await runUnescalated {
+            let inputs = StressLevel.Inputs(
+                hr: hr.map { .init(ts: $0.ts, bpm: $0.bpm) },
+                beats: rr.map { .init(ts: $0.ts, ms: $0.rrMs) },
+                motion: WorkoutDetector.activitySeries(gravity).map { .init(ts: $0.ts, intensity: $0.intensity) },
+                workouts: workouts, sleeps: sleeps)
+            let raws = StressLevel.raw(from: from, to: to, inputs)
+            let today = StressLevel.calmFloor(raws)
+            // The baseline: kept once frozen; else your recent days; else today's own floor; else resting
+            // heart rate plus a little (awake and still runs a few bpm over sleeping).
+            let baseline: StressLevel.Baseline
+            var frozen = false
+            if let s = stored, s.frozen {
+                baseline = s.baseline
+                frozen = true
+            } else if let h = history {
+                baseline = .init(calmHR: h.hr, typicalRMSSD: h.rmssd ?? today.rmssd, morning: morning, source: "history")
+                frozen = true
+            } else if let f = today.hr {
+                baseline = .init(calmHR: f, typicalRMSSD: today.rmssd, morning: morning, source: "today")
+                // Two hours of awake, still readings is enough to stop it moving.
+                frozen = raws.filter { !$0.moving && !$0.asleep && $0.meanHR != nil }.count >= 40 || wholeDay
+            } else {
+                baseline = .init(calmHR: (restingHR ?? 60) + 8, typicalRMSSD: nil, morning: morning, source: "resting")
+            }
+            let fresh = StressLevel.score(raws, baseline: baseline)
+            // A baseline that only just froze (or is still provisional) rescores the day so far, once.
+            let rescore = !(stored?.frozen ?? false)
+            let epochs = StressLevel.merge(stored: stored?.epochs ?? [], fresh: fresh, rescoreAll: rescore)
+            return StressLevelDay(day: key, baseline: baseline, frozen: frozen, epochs: epochs,
+                                  computedAt: to)
+        }
+        return built
+    }
+}

@@ -1,23 +1,24 @@
 import SwiftUI
 import StrandDesign
+import StrandAnalytics
 import WhoopStore
 
-/// The top of the Stress screen: the same reading as the Today ring, what it's based on, and a button to
-/// take a fresh measurement. The day's score below it stays the daily number.
+/// The top of the Stress screen: the stress level now, the same reading as the Today ring, today's
+/// average beside it, and a button to measure the next minute.
 struct StressRightNowCard: View {
     @ObservedObject private var stress = StressNow.shared
+    @ObservedObject private var service = StressLevelService.shared
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var live: LiveState
 
     var body: some View {
         NoopCard(tint: StressRamp.calm) {
             TimelineView(.periodic(from: .now, by: stress.measureEnd != nil ? 1 : 10)) { ctx in
-                // This morning's score has its own card below; up here it's either now or nothing.
-                let r = stress.reading().flatMap { $0.kind == .today ? nil : $0 }
+                let r = stress.reading()
                 HStack(alignment: .center, spacing: NoopMetrics.space4) {
-                    StressRing(reading: r, diameter: 76)
+                    StressRing(reading: r, diameter: 84)
                     VStack(alignment: .leading, spacing: NoopMetrics.space1) {
-                        Text("Right now").strandOverline()
+                        Text("Stress level").strandOverline()
                         Text(headline(r))
                             .font(StrandFont.subhead.weight(.semibold))
                             .foregroundStyle(StrandPalette.textPrimary)
@@ -25,11 +26,10 @@ struct StressRightNowCard: View {
                             .font(StrandFont.caption)
                             .foregroundStyle(StrandPalette.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
-                        if let note = Self.differsNote(r, daily: stress.daily) {
-                            Text(note)
-                                .font(StrandFont.caption)
-                                .foregroundStyle(StrandPalette.textTertiary)
-                                .fixedSize(horizontal: false, vertical: true)
+                        if let a = service.today?.summary.awakeAverage {
+                            Text(String(localized: "Today's average \(a) · \(StressLevel.Band(level: a).title.capitalized)"))
+                                .font(StrandFont.caption.weight(.semibold))
+                                .foregroundStyle(StressLevel.Band(level: a).color)
                         }
                         measureButton(now: ctx.date)
                             .padding(.top, 2)
@@ -38,19 +38,12 @@ struct StressRightNowCard: View {
                 }
             }
         }
-        .onAppear {
-            stress.attach(model: model)
-            // Opening Stress is asking how you are now: measure straight away when nothing current exists.
-            if live.connected, stress.measureEnd == nil,
-               stress.reading().map({ $0.kind == .today }) ?? true {
-                stress.start()
-            }
-        }
+        .onAppear { stress.attach(model: model) }
     }
 
     private func headline(_ r: StressNow.Reading?) -> String {
         guard let r else {
-            return stress.measureEnd != nil ? String(localized: "Measuring…") : String(localized: "Not measured yet")
+            return stress.measureEnd != nil ? String(localized: "Measuring…") : String(localized: "No reading yet today")
         }
         if r.active { return String(localized: "Active · \(StressNow.label(r.kind))") }
         let band = StressNow.band(r.value).title.capitalized
@@ -59,30 +52,23 @@ struct StressRightNowCard: View {
 
     static func explain(_ r: StressNow.Reading?) -> String {
         guard let r else {
-            return String(localized: "Measure to see how your nervous system is doing now. It takes about 30 seconds.")
+            return String(localized: "A value is worked out every 3 minutes while you're still, once the strap's heart rate has synced. Measure to see now.")
         }
         if r.active {
-            return String(localized: "Your heart rate is up from moving, where HRV can't tell stress apart from effort. Measure again once you're still.")
+            return String(localized: "You're moving, so this stretch counts as activity, not stress, as Garmin does it.")
         }
         switch r.kind {
         case .live:
-            return String(localized: "Your heart rate and beat-to-beat intervals over the last couple of minutes, scored like the hours below, against today's calm hours.")
+            return String(localized: "The last 3 minutes of heart rate and beat-to-beat intervals, scored like every stored value.")
         case .estimate:
-            return String(localized: "From heart rate while beats for the HRV reading arrive. Firms up in a few seconds.")
+            return String(localized: "From heart rate while beats for the HRV part arrive.")
         case .measured:
             return String(localized: "Your last measurement. Measure again any time.")
-        case .today:
-            return String(localized: "Measure to see how your nervous system is doing now.")
+        case .recent:
+            return String(localized: "The latest 3-minute value from your strap.")
+        case .earlier:
+            return String(localized: "Your latest value today. The strap's newer heart rate hasn't synced yet, or you were moving.")
         }
-    }
-
-    /// When now and this morning's score sit in different bands, say why both can be true.
-    static func differsNote(_ r: StressNow.Reading?, daily: Double?) -> String? {
-        guard let r, !r.active, r.kind != .today, let d = daily,
-              StressNow.band(r.value) != StressNow.band(d) else { return nil }
-        let morning = StressNow.band(d).title.capitalized
-        let now = StressNow.band(r.value).title.capitalized
-        return String(localized: "This morning's score below is \(morning): it's set once from last night. \(now) here is your heart rate and HRV now against today's calm hours.")
     }
 
     @ViewBuilder

@@ -177,16 +177,17 @@ final class LiveActivityController {
     private func stressText(_ model: AppModel) -> (text: String, hex: String)? {
         let meter = StressNow.shared
         meter.attach(model: model)
-        guard let r = meter.reading(), r.kind != .today else { return nil }
+        guard let r = meter.reading(), r.isCurrent else { return nil }
         if r.active { return (String(localized: "Active"), "8E8E93") }
         return ("\(Int(r.value.rounded()))", Self.stressHex(r.value))
     }
 
-    /// The Stress screen's band colours: green Low, amber Medium, red High.
+    /// The stress level's band colours: blue Rest, then deepening orange for Low, Medium, High.
     static func stressHex(_ v: Double) -> String {
         switch v {
-        case ..<33.3: return "03E095"
-        case ..<66.7: return "F0A020"
+        case ..<25.5: return "4090E0"
+        case ..<50.5: return "D98A3D"
+        case ..<75.5: return "F0A020"
         default: return "E0662F"
         }
     }

@@ -71,9 +71,13 @@ struct StressView: View {
     /// every body re-eval (hover / animation / 1 Hz HR ticks).
     @State private var model: StressModel?
     @State private var modelSignature: StressInputs?
+    /// The all-day stress level (Garmin-style, 0-100 every 3 minutes), stored per day.
+    @ObservedObject private var service = StressLevelService.shared
+    /// The day shown in the day chart: today, or one picked from the week.
+    @State private var selectedDay = StressLevelStore.dayKey(Date())
 
     var body: some View {
-        ScreenScaffold(title: "Stress", subtitle: "Autonomic load across your waking day",
+        ScreenScaffold(title: "Stress", subtitle: "Stress level through your day, every 3 minutes",
                        // PERF (scroll): lazy column — byte-identical layout (LazyVStack == eager VStack
                        // alignment/spacing/header). The content is one inner eager VStack, so the staggered
                        // section reveal is unchanged; this only defers building that stack until it scrolls in.
@@ -82,7 +86,7 @@ struct StressView: View {
                        // fixed, full-bleed time-of-day sky behind the scroll content (does not scroll), so the
                        // Stress screen sits in the same liquid atmosphere as every other tab.
                        topBackground: liquidScaffoldSky()) {
-            if let model {
+            if model != nil || service.today != nil {
                 content(model)
             } else if !loaded {
                 ComingSoon(what: "Reading your heart-rate variability and resting heart rate…")
@@ -100,8 +104,11 @@ struct StressView: View {
             await repo.series(key: "stress", source: "my-whoop")
         }) else { return }
         storedSeries = series
-        loaded = true
         rebuildModelIfNeeded()
+        await StressNow.shared.refreshStored(repo: repo)
+        await service.refresh(repo: repo, force: true)
+        loaded = true
+        await service.ensureHistory(repo: repo, days: 6)
         await loadDaytime()
     }
 
@@ -113,7 +120,6 @@ struct StressView: View {
         let startOfDay = cal.startOfDay(for: Date())
         let from = Int(startOfDay.timeIntervalSince1970)
         let to = Int(Date().timeIntervalSince1970)
-        let tz = TimeZone.current.secondsFromGMT(for: Date())
 
         guard let hr = await StressLoadCancellation.read({
             await repo.hrSamples(from: from, to: to, limit: 200_000)
@@ -130,54 +136,9 @@ struct StressView: View {
         guard let rr = await StressLoadCancellation.read({
             await repo.rrIntervals(from: from, to: to, limit: 200_000)
         }) else { return }
-        // Wrist accelerometer for the motion gate: an ambulatory hour is EXERTION, not stress, so it
-        // is masked rather than scored (DaytimeStress). Same store read as R-R; empty on hardware or
-        // imports with no gravity, which is exactly the "no masking, prior behaviour" degradation.
-        guard let gravity = await StressLoadCancellation.read({
-            await repo.gravitySamplesUnion(from: from, to: to, limit: 200_000)
-        }) else { return }
-
-        // Score today's hours against the PERSONAL cross-day daytime baseline ONLY when the user has
-        // opted in (Settings → Experimental) AND enough worn history exists (Oura-style
-        // `.baselineRelative`), else the day's own calm hours (`.dayRelative`, the default). The opt-in
-        // gate is deliberate: the validated r≈0.6 margin is single-subject so far (#463), so this stays a
-        // chooseable lens, not a silent default. The mode is resolved only AFTER the HR-count guard above,
-        // so the trailing-history reads are never paid on a day with no scorable timeline — and are never
-        // paid at all while the toggle is OFF (the default), keeping the read byte-identical to before.
-        guard let mode = await StressLoadCancellation.read({
-            await DaytimeStressMode.selected(
-                repo: repo,
-                startOfToday: startOfDay,
-                calendar: cal,
-                personalBaseline: PuffinExperiment.stressPersonalBaselineEnabled
-            )
-        }) else { return }
-        // includeTimeline: the SLIDING read, so the screen's line moves in half-hours instead of
-        // stepping through whole clock hours (#2144). The scored unit is still a full hour; this only
-        // decides how often that hour is re-read, so a thin ten minutes costs the windows that overlap
-        // it rather than a whole hour of chart. The Today card and the widget have always asked for
-        // this; the screen people actually study was the one still stepping. Twin of the Kotlin change.
-        // #2181: this is pure, database-free computation over a whole local day of samples, and it used
-        // to run inline on this view's (main) actor. `analyze` memoises behind a lock-guarded
-        // `AnalyticsMemoCache`, so it is safe off the main actor and the Today card already reads its own
-        // stress the same way. Moving it here is what lets the timeline be published — and drawn — before
-        // the advanced readouts below are started.
-        //
-        // `runUnescalated`, NOT `await Task.detached(...).value`: awaiting a task from a @MainActor
-        // caller makes it a child and hands it the caller's priority, so a `.utility` label on a
-        // detached task is decorative and the work races the UI for cores anyway. StressDayCurve
-        // learned that on this same issue; the continuation in UnescalatedWork is what keeps the
-        // priority honest.
-        guard let timeline = await StressLoadCancellation.read({
-            await runUnescalated(priority: .userInitiated) {
-                DaytimeStress.analyze(hr: hr, rr: rr, gravity: gravity, tzOffsetSeconds: tz, mode: mode,
-                                      includeTimeline: true)
-            }
-        }) else { return }
-        daytime = timeline
-        // Publish the mode with the timeline it describes, after the same cancellation check.
-        if case .baselineRelative = mode { daytimeUsesPersonalBaseline = true }
-        else { daytimeUsesPersonalBaseline = false }
+        // The hourly 0-3 timeline this used to draw is replaced by the all-day stress level
+        // (`StressLevelService`), so only the on-demand HRV readouts are computed from these beats now.
+        daytime = .empty
 
         // ADDITIVE advanced readouts, computed on-demand from the SAME `rr` (no extra fetch, no
         // DB / schema change, and no effect on the 0..3 score above). Each engine returns nil when
@@ -213,57 +174,74 @@ struct StressView: View {
 
     // MARK: Loaded content
 
+    private var todayKey: String { StressLevelStore.dayKey(Date()) }
+
+    /// The week, oldest first, ending today.
+    private var weekDays: [StressLevelDay] {
+        var days = Array(service.recent.prefix(6).reversed())
+        if let t = service.today { days.append(t) }
+        return days
+    }
+
+    private var shownDay: StressLevelDay? {
+        selectedDay == todayKey ? service.today : service.recent.first { $0.day == selectedDay }
+    }
+
+    private func dayStart(_ key: String) -> Int {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        let d = f.date(from: key).map { Calendar.current.startOfDay(for: $0) } ?? Calendar.current.startOfDay(for: Date())
+        return Int(d.timeIntervalSince1970)
+    }
+
     @ViewBuilder
-    private func content(_ model: StressModel) -> some View {
+    private func content(_ model: StressModel?) -> some View {
         VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
 
-            // 0. RIGHT NOW: the same reading as the Today ring, labelled with its source, and a
-            //    one-minute measurement.
+            // 0. NOW: the stress level, the same reading as the Today ring, and a measurement.
             StressRightNowCard()
                 .staggeredAppear(index: 0)
 
-            // 1. HERO — the liquid stress-level vessel + band + one plain-English line, all in one card.
-            heroCard(model)
-                .staggeredAppear(index: 0)
+            // 1. The day, every 3 minutes, and its numbers.
+            levelDaySection
+                .staggeredAppear(index: 1)
 
-            // 1b. ADVANCED HRV readouts (additive, on-demand). A separate, clearly-labelled card
-            //     that appears only when at least one engine returned a value. It sits BELOW the
-            //     hero and never alters the hero, the markers or the timeline.
+            // 2. The week's averages; tap a day to show it above.
+            if weekDays.count >= 2 {
+                VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                    SectionHeader("Last 7 days", overline: "Average stress level")
+                    NoopCard(tint: StressRamp.calm) {
+                        StressWeekBars(days: weekDays, selected: $selectedDay)
+                    }
+                }
+                .staggeredAppear(index: 2)
+            }
+
+            // 3. What's behind it: the morning factors, which also tilt the day's level.
+            if let model {
+                VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                    SectionHeader("Morning factors", overline: "Behind today's level",
+                                  trailing: String(localized: "vs 30-day baseline"))
+                    heroCard(model)
+                    tileGrid(model)
+                }
+                .staggeredAppear(index: 3)
+            }
+
             if hasAdvancedReadouts {
                 advancedReadoutsCard()
-                    .staggeredAppear(index: 1)
+                    .staggeredAppear(index: 3)
             }
 
-            // 2. Today's numbers — uniform tiles in one grid.
-            VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-                SectionHeader("Today", overline: "Markers", trailing: String(localized: "vs 30-day baseline"))
-                tileGrid(model)
-            }
-            .staggeredAppear(index: 1)
-
-            // 3. Today's intraday timeline — when in the day stress ran high, + a
-            //    passive Breathe suggestion when the recent hours stay elevated.
-            // #2535: THREE states, not two. `daytime` is nil only while the read is still running, and this
-            // used to render nothing then, so a fold that takes seconds looked exactly like a day with no
-            // data. An empty `scored` after the read is a fact about the day and still stays silent.
-            if daytime == nil {
-                daytimeLoading()
-                    .staggeredAppear(index: 2)
-            } else if let daytime, !daytime.scored.isEmpty {
-                daytimeSection(daytime)
-                    .staggeredAppear(index: 2)
+            if let model {
+                trendSection(model)
+                    .staggeredAppear(index: 4)
             }
 
-            // 4. Trend over the chosen window.
-            trendSection(model)
-                .staggeredAppear(index: 3)
-
-            // 5. Transparency — how the number is built.
             methodologyCard(model)
                 .staggeredAppear(index: 4)
         }
-        // The sustained-stress suggestion opens the existing Breathe trainer in a sheet —
-        // in-app and passive (no alert / notification), inheriting the app environment.
         .sheet(isPresented: $showBreathe) {
             NavigationStack {
                 BreathingView()
@@ -277,6 +255,80 @@ struct StressView: View {
             .frame(width: 520, height: 760)
             #endif
         }
+    }
+
+    @ViewBuilder
+    private var levelDaySection: some View {
+        let d = shownDay
+        let isToday = selectedDay == todayKey
+        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader(isToday ? "Today" : LocalizedStringKey(Self.dayTitle(selectedDay)),
+                          overline: "Stress level, every 3 minutes",
+                          trailing: d?.summary.average.map { String(localized: "avg \($0)") })
+            NoopCard(tint: StressRamp.calm) {
+                VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
+                    if let d, d.epochs.contains(where: { $0.state != .noData }) {
+                        StressDayChart(day: d, dayStart: dayStart(d.day))
+                        Text("Press and hold the chart to read any 3 minutes.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                        Divider().overlay(StrandPalette.hairline)
+                        StressDaySummary(day: d)
+                    } else {
+                        Text(isToday
+                             ? "No readings yet today. Values appear as the strap's heart rate syncs, one every 3 minutes you're still."
+                             : "No readings for this day.")
+                            .font(StrandFont.subhead)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
+                            .multilineTextAlignment(.center)
+                    }
+                }
+            }
+            if isToday, let run = sustainedHighRun, run >= 10 { sustainedBreatheCard(minutes: run * 3) }
+        }
+    }
+
+    /// Consecutive newest measured epochs at High, today, ending in the last 15 minutes.
+    private var sustainedHighRun: Int? {
+        guard let t = service.today else { return nil }
+        let m = t.epochs.filter { $0.state == .measured && !$0.asleep }
+        guard let last = m.last, Date().timeIntervalSince1970 - Double(last.start) < 900 else { return nil }
+        var run = 0
+        for e in m.reversed() { if (e.level ?? 0) >= 76 { run += 1 } else { break } }
+        return run
+    }
+
+    static func dayTitle(_ key: String) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        guard let d = f.date(from: key) else { return key }
+        if Calendar.current.isDateInYesterday(d) { return String(localized: "Yesterday") }
+        return d.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+    }
+
+    /// A passive, in-app nudge to breathe after half an hour or more at High. No notification.
+    private func sustainedBreatheCard(minutes: Int) -> some View {
+        NoopCard(tint: StressRamp.calm) {
+            VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
+                HStack(spacing: NoopMetrics.rowSpacing) {
+                    Image(systemName: "lungs.fill")
+                        .foregroundStyle(StressRamp.calm)
+                    Text("Sustained high stress").strandOverline()
+                    Spacer()
+                    StatePill("\(minutes) min high", tone: .warning, showsDot: true)
+                }
+                Text("Your stress level has stayed High for \(minutes) minutes while you've been still. A few minutes of slow breathing can bring it down.")
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                NoopButton("Start a Breathe session", systemImage: "wind", kind: .primary, fullWidth: true) {
+                    showBreathe = true
+                }
+            }
+        }
+        .softCardTransition()
     }
 
     // MARK: 3 · Daytime timeline (intraday, same 0–3 proxy)
@@ -432,7 +484,7 @@ struct StressView: View {
         NoopCard(tint: StressRamp.calm) {
             VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
                 HStack {
-                    Text("This morning's score").strandOverline()
+                    Text("This morning's score, 0-3").strandOverline()
                     Spacer()
                     StatePill("\(model.band.title)", tone: model.band.tone, showsDot: true)
                 }
@@ -455,7 +507,7 @@ struct StressView: View {
                     }
                     Spacer(minLength: 0)
                 }
-                Text("Set once a day from last night's resting heart rate and HRV. Right now, above, is how today is going.")
+                Text("Set once a day from last night's resting heart rate and HRV against your 30 days. It tilts today's stress level a little: a High morning reads a few points higher all day, a Low one a few lower.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -676,24 +728,32 @@ struct StressView: View {
 
     // MARK: 4 · Methodology (transparency)
 
-    private func methodologyCard(_ model: StressModel) -> some View {
+    private func methodologyCard(_ model: StressModel?) -> some View {
         NoopCard(tint: StressRamp.calm) {
             VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
                 Text("How this is computed").strandOverline()
-                Text(model.usingStored
-                     ? "Today's value is your recorded daily stress score (0-3)."
-                     : "Stress is derived from two autonomic signals.")
+                Text("Stress level works like Garmin's: one value from 0 to 100 every 3 minutes you're still.")
                     .font(StrandFont.body)
                     .foregroundStyle(StrandPalette.textPrimary)
-                Text("We compare today's resting heart rate and HRV to your own 30-day baseline. A higher-than-usual resting HR and a lower-than-usual HRV both push the score up, classic signs the body is activated. The combined shift is mapped onto a 0-3 scale: 0 is calm, 1.5 sits at your baseline, 3 is highly activated.")
+                Text("Each value is your heart rate in those 3 minutes against your calm awake heart rate (the low end of your still, awake readings over recent days), adjusted by HRV when the beats are clean. Heart rate 15 bpm over that calm level reads High. Time spent moving, or a logged workout, counts as activity, not stress, and so does the few minutes after while your heart rate comes down. Sleep is scored too and usually reads as rest. Last night's morning factors tilt the whole day a little. Values are stored as they're worked out, so the day reads back the same every time.")
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let b = service.today?.baseline {
+                    Text(String(localized: "Today's calm level: \(Int(b.calmHR.rounded())) bpm, from \(b.source == "history" ? String(localized: "your recent days") : (b.source == "today" ? String(localized: "today so far") : String(localized: "your resting heart rate"))).")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
                 Divider().overlay(StrandPalette.hairline)
                 HStack(spacing: 0) {
-                    bandLegend("0-1", String(localized: "LOW"), StressRamp.calm)
-                    bandLegend("1-2", String(localized: "MEDIUM"), StressRamp.steady)
-                    bandLegend("2-3", String(localized: "HIGH"), StressRamp.tense)
+                    ForEach(StressLevel.Band.allCases, id: \.self) { b in
+                        bandLegend(b.range, b.title, b.color)
+                    }
+                }
+                if let model, model.usingStored {
+                    Text("This morning's score is your recorded daily stress score (0-3).")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
                 }
             }
         }

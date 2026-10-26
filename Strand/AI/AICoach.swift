@@ -1103,13 +1103,20 @@ final class AICoachEngine: ObservableObject {
                          + PacingDialCard.detail(p, effortScale: scale, long: long != nil) + ". (A week-on-month trend: today's Charge, sleep and stress decide what to do today.)")
         }
         let meter = StressNow.shared
-        if let d = meter.daily {
-            var t = "  Stress: this morning's score \(StressNow.band(d).title.capitalized) (\(Int(d.rounded())) of 100)"
-            if let r = meter.reading(), r.kind != .today, !r.active {
-                t += ", right now \(StressNow.band(r.value).title.capitalized) (\(StressNow.label(r.kind)))"
-            }
-            lines.append(t + ".")
+        let level = StressLevelService.shared.today?.summary
+        var t = "  Stress level (0-100, rest under 26, high over 75):"
+        if let r = meter.reading() {
+            t += r.active ? " moving (\(StressNow.label(r.kind)))"
+                : " \(Int(r.value.rounded())) \(StressNow.band(r.value).title.lowercased()) (\(StressNow.label(r.kind)))"
+        } else {
+            t += " no reading yet"
         }
+        if let a = level?.awakeAverage { t += ", awake average today \(a)" }
+        if let h = level?.seconds[.high], h > 0 { t += ", \(h / 60) min high today" }
+        if let d = meter.daily {
+            t += ". Morning factors (resting HR and HRV vs 30 days, 0-3): \(String(format: "%.1f", d / 100 * 3))"
+        }
+        lines.append(t + ".")
         lines.append("  Effort numbers are on my \(scale == .whoop ? "0-21" : "0-100") scale.")
         return lines.joined(separator: "\n")
     }

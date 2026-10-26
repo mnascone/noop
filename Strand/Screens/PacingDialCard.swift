@@ -270,7 +270,7 @@ struct PacingDialCard: View {
         var reasons: String {
             var r: [String] = []
             if let c = charge, c < 34 { r.append(String(localized: "today's Charge is \(Int(c.rounded()))")) }
-            if stressHigh { r.append(String(localized: "stress is high this morning")) }
+            if stressHigh { r.append(String(localized: "your stress level is high")) }
             if let h = sleepHours, h < 6 { r.append(String(localized: "you slept \(h.formatted(.number.precision(.fractionLength(1)))) h")) }
             return ListFormatter.localizedString(byJoining: r)
         }
@@ -281,7 +281,7 @@ struct PacingDialCard: View {
     static func today(_ days: [DailyMetric]) -> Today {
         let key = Repository.localDayKey(Date())
         let d = days.first { $0.day == key }
-        let stress = StressNow.shared.reading().map { StressNow.band($0.value) == .high } ?? false
+        let stress = StressNow.shared.reading().map { $0.isCurrent && !$0.active && StressNow.band($0.value) == .high } ?? false
         return Today(charge: d?.recovery, sleepHours: d?.totalSleepMin.map { $0 / 60 }, stressHigh: stress)
     }
 
@@ -337,8 +337,8 @@ struct PacingDialCard: View {
     }
 }
 
-/// The stress ring: the shared reading, its band, and where it came from ("Live", "Measured 11:58",
-/// "Today's score"). Tapping calls `onOpen`.
+/// The stress ring: the stress level now (0-100), its band, and where it came from ("Live", "Now",
+/// "At 2:41 PM"). Tapping calls `onOpen`.
 struct StressNowColumn: View {
     var diameter: CGFloat
     var onOpen: () -> Void
@@ -352,7 +352,7 @@ struct StressNowColumn: View {
             Button(action: onOpen) {
                 VStack(spacing: 4) {
                     StressRing(reading: r, diameter: diameter)
-                    Text("Stress").font(StrandFont.subhead.weight(.semibold)).foregroundStyle(StrandPalette.textPrimary)
+                    Text("Stress level").font(StrandFont.subhead.weight(.semibold)).foregroundStyle(StrandPalette.textPrimary)
                     caption(r, now: ctx.date)
                 }
                 .frame(maxWidth: .infinity)
@@ -388,8 +388,9 @@ struct StressNowColumn: View {
     }
 }
 
-/// The ring itself: fills to the reading, coloured on the Stress screen's ramp, with the number and band
-/// in the middle. "Active" while heart rate is up from moving, where HRV says nothing about stress.
+/// The ring itself: fills to the level, coloured by its band (blue rest, deepening orange for low, medium
+/// and high), with the number and band in the middle. "Active" while moving, where heart rate and HRV say
+/// nothing about stress.
 struct StressRing: View {
     let reading: StressNow.Reading?
     var diameter: CGFloat = 84

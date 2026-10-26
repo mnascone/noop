@@ -402,7 +402,7 @@ final class LiveIntervalTracker: ObservableObject {
         return WorkoutSetsStore.notes(t)
     }
 
-    static func clock(_ seconds: Int) -> String {
+    nonisolated static func clock(_ seconds: Int) -> String {
         let s = max(0, seconds)
         return s >= 3600
             ? String(format: "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)

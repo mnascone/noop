@@ -72,7 +72,7 @@ public struct StrengthTuning: Codable, Equatable, Sendable {
         }
     }
 
-    func segmenterParams(_ mode: WorkRestSegmenter.Mode) -> WorkRestSegmenter.Params {
+    public func segmenterParams(_ mode: WorkRestSegmenter.Mode) -> WorkRestSegmenter.Params {
         .init(riseBPM: riseBPM, fallBPM: fallBPM, minWorkS: minWorkS, minRestS: minRestS,
               smoothS: WorkRestSegmenter.params(for: mode).smoothS)
     }

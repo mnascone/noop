@@ -345,6 +345,18 @@ final class StrengthSetsTests: XCTestCase {
         XCTAssertGreaterThan(a.first?.confidence ?? 0, b.first?.confidence ?? 0)
     }
 
+    /// Keeping a rest leaves the sets as they are but records your call, so the workout counts as
+    /// corrected and detection learns that gap is a rest.
+    func testKeepRestIsLoggedWithoutChangingSets() {
+        var e = editor()
+        let before = e.sets
+        XCTAssertTrue(e.keepRest(after: "a", now: 7))
+        XCTAssertEqual(e.sets, before)
+        XCTAssertEqual(e.log.last?.kind, .keepRest)
+        XCTAssertEqual(e.keptRests, [140...160])
+        XCTAssertFalse(e.keepRest(after: "c"), "no set after the last one")
+    }
+
     func testDraggingIntoANeighbourJoinsIt() {
         var e = editor()
         XCTAssertTrue(e.move("a", end: 170))

@@ -91,6 +91,8 @@ public struct TimelineSet: Codable, Equatable, Hashable, Identifiable, Sendable 
 public struct SetEditRecord: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case add, delete, move, split, join, confirm, exercise, reps, reset, undo, redo
+        /// A rest you said is a real rest: no change to the sets, but your word on it.
+        case keepRest
     }
     /// When you made it (unix seconds).
     public var at: Int
@@ -281,6 +283,20 @@ public struct SetTimelineEditor: Equatable {
             list.remove(at: i + 1)
             return true
         }
+    }
+
+    /// The rest after set `id` is a real rest, not a pause: logged as your call, the sets unchanged.
+    @discardableResult
+    public mutating func keepRest(after id: String, now: Int = 0) -> Bool {
+        guard let i = index(of: id), i + 1 < sets.count else { return false }
+        log.append(SetEditRecord(at: now, kind: .keepRest, before: [sets[i], sets[i + 1]].map { [$0.start, $0.end] },
+                                 after: [[sets[i].end, sets[i + 1].start]]))
+        return true
+    }
+
+    /// Rests you've said are real, as the gap each covers.
+    public var keptRests: [ClosedRange<Int>] {
+        log.filter { $0.kind == .keepRest }.compactMap { r in r.after.first.flatMap { $0.count == 2 ? $0[0]...$0[1] : nil } }
     }
 
     /// An uncertain segment you say is a real set.

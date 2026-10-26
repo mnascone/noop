@@ -156,6 +156,10 @@ struct SetTimelineChart: View {
     var selected: String? = nil
     var selectedGap: String? = nil
     var drawing: ClosedRange<Int>? = nil
+    /// Rests heart rate says were probably pauses (by the set before), and sets it barely rose for: a
+    /// small dot each, never a prompt.
+    var likelyPauses: Set<String> = []
+    var doubtful: Set<String> = []
     var showMarks = false
     var compact = false
 
@@ -203,6 +207,21 @@ struct SetTimelineChart: View {
             ctx.fill(Path(r), with: .color(StrandPalette.statusWarning.opacity(0.18)))
             ctx.stroke(Path(r.insetBy(dx: 0.5, dy: 0.5)), with: .color(StrandPalette.statusWarning),
                        style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+        }
+        // Quiet hints from heart rate.
+        if !compact {
+            for (i, a) in sets.enumerated() where i + 1 < sets.count && likelyPauses.contains(a.id) {
+                let cx = (x(Double(a.end), w) + x(Double(sets[i + 1].start), w)) / 2
+                guard cx >= 0, cx <= w else { continue }
+                ctx.fill(Path(ellipseIn: CGRect(x: cx - 3, y: 6, width: 6, height: 6)),
+                         with: .color(StrandPalette.statusWarning))
+            }
+            for s in sets where doubtful.contains(s.id) {
+                let cx = x(Double(s.end), w) - 5
+                guard cx >= 0, cx <= w else { continue }
+                ctx.fill(Path(ellipseIn: CGRect(x: cx - 2.5, y: 4, width: 5, height: 5)),
+                         with: .color(StrandPalette.statusWarning.opacity(0.8)))
+            }
         }
         // A set being drawn.
         if let d = drawing {
@@ -302,6 +321,8 @@ struct SetTimelineEditorView: View {
     @State private var touch: Touch?
     @State private var touchToken = 0
     @State private var holdFired = 0
+    /// The options shown where you held: for a rest, a set or empty time.
+    @State private var bubble: Bubble?
     /// What detection learned from the latest edits, shown under the summary.
     @State private var learnedNote: String?
     @State private var learnTask: Task<Void, Never>?
@@ -317,11 +338,19 @@ struct SetTimelineEditorView: View {
     struct Touch {
         enum Mode: Equatable {
             case pending, pan, draw, held
+            /// Holding a set: its options on release, or its nearer edge once you drag.
+            case onSet(id: String, isStart: Bool)
             case edge(id: String, isStart: Bool)
         }
         var startX: CGFloat
         var startWindow: ClosedRange<Double>
         var mode: Mode = .pending
+    }
+
+    enum Bubble: Equatable {
+        case gap(after: String)
+        case set(String)
+        case empty(Int)
     }
 
     enum Selection: Equatable {
@@ -455,9 +484,11 @@ struct SetTimelineEditorView: View {
     private var timelineSurface: some View {
         GeometryReader { g in
             let w = g.size.width
+            let hint = hints
             ZStack(alignment: .topLeading) {
                 SetTimelineChart(timeline: timeline, sets: shown, window: window, selected: selectedSetId,
-                                 selectedGap: selectedGapId, drawing: drawing, showMarks: showMarks)
+                                 selectedGap: selectedGapId, drawing: drawing,
+                                 likelyPauses: hint.pauses, doubtful: hint.doubtful, showMarks: showMarks)
                     .background(RoundedRectangle(cornerRadius: 10).fill(StrandPalette.surfaceInset.opacity(0.5)))
                     .contentShape(Rectangle())
                     .gesture(touchGesture(w))
@@ -465,6 +496,10 @@ struct SetTimelineEditorView: View {
                 if let id = selectedSetId, let s = shown.first(where: { $0.id == id }) {
                     handle(for: s, isStart: true, w: w, h: g.size.height)
                     handle(for: s, isStart: false, w: w, h: g.size.height)
+                }
+                if let b = bubble {
+                    bubbleView(b, w: w)
+                        .transition(.scale(scale: 0.9, anchor: .top).combined(with: .opacity))
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -506,6 +541,9 @@ struct SetTimelineEditorView: View {
                 case .pan:
                     let span = t.startWindow.upperBound - t.startWindow.lowerBound
                     setWindow(lower: t.startWindow.lowerBound - Double(v.translation.width / Swift.max(1, w)) * span, span: span)
+                case .onSet(let id, let isStart):
+                    // Held, then dragged: the edge follows.
+                    if abs(v.location.x - t.startX) > 6 { t.mode = .edge(id: id, isStart: isStart); bubble = nil }
                 case .draw:
                     let a = ts(t.startX, w), b = ts(Swift.min(w, Swift.max(0, v.location.x)), w)
                     drawing = Swift.min(a, b)...Swift.max(a, b)
@@ -527,7 +565,15 @@ struct SetTimelineEditorView: View {
                 touchToken &+= 1
                 switch t.mode {
                 case .pending: tap(at: t.startX, w)
-                case .draw: commitDrawing(w)
+                case .draw:
+                    // Held and let go without drawing: offer to place one from the evidence instead.
+                    if let d = drawing, d.upperBound - d.lowerBound < SetTimelineEditor.minSetS {
+                        drawing = nil
+                        bubble = .empty(d.lowerBound)
+                    } else {
+                        commitDrawing(w)
+                    }
+                case .onSet(let id, _): bubble = .set(id)
                 case .edge(let id, let isStart): commitEdge(id, isStart: isStart, w)
                 case .pan, .held: break
                 }
@@ -536,6 +582,7 @@ struct SetTimelineEditorView: View {
 
     /// A tap selects what's under it: a set, the rest between two, or empty time.
     private func tap(at x: CGFloat, _ w: CGFloat) {
+        if bubble != nil { withAnimation(.easeOut(duration: 0.15)) { bubble = nil }; return }
         switch target(at: x, w) {
         case .set(let id): selection = selectedSetId == id ? nil : .set(id)
         case .gap(let id): selection = .gap(after: id)
@@ -543,30 +590,168 @@ struct SetTimelineEditorView: View {
         }
     }
 
-    /// Holding still acts at once. On a rest between two sets: the rest goes, and the two and the pause
-    /// become one set. On a set: it's selected and the nearer edge follows your finger. On empty time:
-    /// drag to draw the set you did.
+    /// Holding still brings up the options for what's under the finger, with what heart rate says
+    /// about it; nothing changes until you choose. On a rest: remove it (the two sets and the pause become
+    /// one) or keep it. On a set: delete, split or count it, or drag on to move its nearer edge. On empty
+    /// time: drag to draw the set you did, or let go to place one from the evidence.
     private func hold(_ w: CGFloat) {
         guard var t = touch else { return }
         holdFired &+= 1
         switch target(at: t.startX, w) {
         case .gap(let id):
-            if editor.joinWithNext(id, now: now) {
-                selection = .set(id)
-                afterEdit()
-            }
+            selection = .gap(after: id)
+            withAnimation(.spring(duration: 0.25)) { bubble = .gap(after: id) }
             t.mode = .held
         case .set(let id):
             selection = .set(id)
+            bubble = nil
             if let s = editor.sets.first(where: { $0.id == id }) {
                 let at = ts(t.startX, w)
-                t.mode = .edge(id: id, isStart: abs(at - s.start) <= abs(at - s.end))
+                t.mode = .onSet(id: id, isStart: abs(at - s.start) <= abs(at - s.end))
             }
         case .empty(let at):
+            bubble = nil
             drawing = at...at
             t.mode = .draw
         }
         touch = t
+    }
+
+    // MARK: Hold options
+
+    /// Rests you've kept, from the whole history, so their hint doesn't come back.
+    private var keptRests: [ClosedRange<Int>] {
+        (baseHistory + editor.log).filter { $0.kind == .keepRest }.compactMap { r in
+            r.after.first.flatMap { $0.count == 2 ? $0[0]...$0[1] : nil }
+        }
+    }
+
+    /// What heart rate says about the sets as they are now, against your tuning.
+    private var hints: (pauses: Set<String>, doubtful: Set<String>) {
+        let sets = editor.sets
+        let kept = keptRests
+        var pauses = Set<String>(), doubtful = Set<String>()
+        for sug in SetCalibration.suggestions(sets.map(\.span), hr: timeline.hr, tuning: tuning) {
+            switch sug {
+            case .join(let i, _, _) where i + 1 < sets.count:
+                let gap = sets[i].end...sets[i + 1].start
+                if !kept.contains(where: { $0.overlaps(gap) }) { pauses.insert(sets[i].id) }
+            case .delete(let i, _, _) where i < sets.count:
+                if sets[i].confidence != nil { doubtful.insert(sets[i].id) }
+            default: break
+            }
+        }
+        return (pauses, doubtful)
+    }
+
+    private func bubbleView(_ b: Bubble, w: CGFloat) -> some View {
+        let anchor: Int
+        var title = "", detail = ""
+        var buttons: [(label: LocalizedStringKey, icon: String, tint: Color, action: () -> Void)] = []
+        switch b {
+        case .gap(let id):
+            let g = editor.gap(after: id) ?? 0...0
+            anchor = (g.lowerBound + g.upperBound) / 2
+            title = String(localized: "Rest \(LiveIntervalTracker.clock(g.upperBound - g.lowerBound))")
+            if let d = heartRateDrop(g) {
+                detail = d < Int(tuning.pauseFallBPM)
+                    ? String(localized: "Heart rate only fell \(d) bpm: likely a pause")
+                    : String(localized: "Heart rate fell \(d) bpm: looks like a real rest")
+            }
+            buttons = [
+                ("Remove rest", "arrow.left.and.right", StrandPalette.accent, {
+                    if editor.joinWithNext(id, now: now) { selection = .set(id); afterEdit() }
+                    bubble = nil
+                }),
+                ("Keep rest", "checkmark", StrandPalette.textPrimary, {
+                    if editor.keepRest(after: id, now: now) { afterEdit() }
+                    bubble = nil
+                    selection = nil
+                }),
+            ]
+        case .set(let id):
+            let s = editor.sets.first { $0.id == id }
+            anchor = s.map { ($0.start + $0.end) / 2 } ?? 0
+            let n = editor.counted.firstIndex { $0.id == id }.map { $0 + 1 }
+            title = (n.map { "\(unit.capitalized) \($0)" } ?? String(localized: "Uncertain"))
+                + " · " + LiveIntervalTracker.clock(s?.duration ?? 0)
+            if let s, let rise = heartRateRise(s) {
+                detail = rise < Int(tuning.riseBPM)
+                    ? String(localized: "Heart rate rose only \(rise) bpm")
+                    : String(localized: "Heart rate rose \(rise) bpm")
+                if let r = s.reps { detail += " · " + String(localized: "\(r) reps") }
+            }
+            if s?.uncertain == true {
+                buttons.append(("Count it", "checkmark", StrandPalette.statusPositive, {
+                    if editor.confirm(id, now: now) { afterEdit() }
+                    bubble = nil
+                }))
+            }
+            buttons.append(("Split", "scissors", StrandPalette.textPrimary, {
+                if let s {
+                    let at = SetCalibration.splitPoint(start: s.start, end: s.end, hr: timeline.hr,
+                                                       motion: timeline.motion, hrDelayS: tuning.hrDelayS)
+                    if editor.split(id, at: at, now: now) { afterEdit() }
+                }
+                bubble = nil
+            }))
+            buttons.append(("Delete", "trash", StrandPalette.statusCritical, {
+                editor.delete(id, now: now)
+                selection = nil
+                bubble = nil
+                afterEdit()
+            }))
+        case .empty(let t):
+            anchor = t
+            title = String(localized: "No \(unit) here")
+            if let rise = heartRateRise(TimelineSet(start: t - 20, end: t + 20)), rise > 0 {
+                detail = String(localized: "Heart rate rose \(rise) bpm around here")
+            }
+            buttons = [("Add a \(unit) here", "plus", StrandPalette.accent, {
+                let before = editor.sets.last { $0.end < t }?.end ?? editor.bounds.lowerBound
+                let after = editor.sets.first { $0.start > t }?.start ?? editor.bounds.upperBound
+                addSet(around: t, within: before...after)
+                bubble = nil
+            })]
+        }
+        let width: CGFloat = Swift.min(w - 16, 250)
+        let cx = Swift.min(w - width / 2 - 8, Swift.max(width / 2 + 8, px(anchor, w)))
+        return VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(StrandFont.subhead.weight(.bold))
+                    .foregroundStyle(StrandPalette.textPrimary)
+                    .monospacedDigit()
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            HStack(spacing: 6) {
+                ForEach(buttons.indices, id: \.self) { i in
+                    let bt = buttons[i]
+                    Button(action: bt.action) {
+                        Label(bt.label, systemImage: bt.icon)
+                            .labelStyle(.titleAndIcon)
+                            .font(StrandFont.caption.weight(.semibold))
+                            .foregroundStyle(bt.tint)
+                            .lineLimit(1)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(Capsule().fill(StrandPalette.surfaceInset))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(12)
+        .frame(width: width, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(StrandPalette.surfaceOverlay))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(StrandPalette.hairline, lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.25), radius: 10, y: 4)
+        .position(x: cx, y: 62)
     }
 
     private enum Target { case set(String), gap(after: String), empty(Int) }
@@ -726,7 +911,7 @@ struct SetTimelineEditorView: View {
     }
 
     private var hint: some View {
-        Text("Hold a rest to remove it and join the two. Hold a \(unit) and drag to move its edge. Hold empty time and drag to add one. Tap to select. Pinch to zoom.")
+        Text("Hold a rest, a \(unit) or empty time for its options. Hold a \(unit) and drag to move its edge, or empty time and drag to draw one. A dot marks a rest heart rate says was probably a pause.")
             .font(StrandFont.caption)
             .foregroundStyle(StrandPalette.textTertiary)
             .fixedSize(horizontal: false, vertical: true)
@@ -813,16 +998,20 @@ struct SetTimelineEditorView: View {
                 .foregroundStyle(StrandPalette.textPrimary)
                 .monospacedDigit()
             HStack(spacing: 8) {
-                actionButton("Join sets", "arrow.left.and.right.square", tint: StrandPalette.accent) {
+                actionButton("Remove rest", "arrow.left.and.right", tint: StrandPalette.accent) {
                     editor.joinWithNext(id, now: now)
                     selection = .set(id)
                     afterEdit()
+                }
+                actionButton("Keep rest", "checkmark") {
+                    if editor.keepRest(after: id, now: now) { afterEdit() }
+                    selection = nil
                 }
                 if g.upperBound - g.lowerBound >= 3 * SetTimelineEditor.minSetS + 4 {
                     actionButton("Add a set here", "plus") { addSet(around: (g.lowerBound + g.upperBound) / 2, within: g) }
                 }
             }
-            Text("Or hold the rest itself. Joining makes the two and the pause one set, keeps the readings, and teaches detection pauses like this.")
+            Text("Joining makes the two and the pause one set and keeps the readings. Either choice teaches detection how your rests look.")
                 .font(StrandFont.caption)
                 .foregroundStyle(StrandPalette.textTertiary)
         }
@@ -900,7 +1089,9 @@ struct SetTimelineEditorView: View {
         if case .set(let id) = selection, editor.index(of: id) == nil { selection = nil }
         if case .gap(let id) = selection, editor.gap(after: id) == nil { selection = nil }
         let detected = timeline.detected.sorted { $0.start < $1.start }
-        timeline.edited = editor.sets == detected ? nil : editor.sets
+        // A rest you kept is your call on this workout too, so it counts as corrected (and teaches).
+        let kept = (baseHistory + editor.log).contains { $0.kind == .keepRest || $0.kind == .confirm }
+        timeline.edited = editor.sets == detected && !kept ? nil : editor.sets
         timeline.history = baseHistory + editor.log
         onChange(timeline)
         learnSoon()

@@ -56,32 +56,21 @@ struct LiveIntervalCard: View {
         } else if let mode = tracker.mode, let s = tracker.summary {
             NoopCard(tint: StrandPalette.accent) {
                 VStack(alignment: .leading, spacing: NoopMetrics.space3) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 1) {
-                            // What the workout is, so it's never just "a workout".
-                            if let sport = model.activeWorkout?.sport {
-                                Text(sport)
-                                    .font(StrandFont.subhead.weight(.semibold))
-                                    .foregroundStyle(StrandPalette.textPrimary)
-                            }
-                            Text(phaseTitle(mode, s))
-                                .font(StrandFont.overline)
-                                .tracking(1.4)
-                                .foregroundStyle(StrandPalette.textSecondary)
-                        }
-                        Spacer()
-                        Text("\(s.count) \(LiveIntervalModes.unitName(mode, count: s.count))")
-                            .font(StrandFont.captionNumber)
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(headerLine(mode, s))
+                            .font(StrandFont.overline)
+                            .tracking(1.2)
                             .foregroundStyle(StrandPalette.textSecondary)
-                        if mode == .lifting {
-                            Button { showSettings = true } label: {
-                                Image(systemName: "slider.horizontal.3")
-                                    .font(StrandFont.footnote)
-                                    .foregroundStyle(StrandPalette.accent)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Sets and rest settings")
+                            .lineLimit(1)
+                        Spacer()
+                        Button { showSettings = true } label: {
+                            Image(systemName: "slider.horizontal.3")
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.accent)
+                                .frame(width: 32, height: 24)
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Sets and rest settings")
                     }
                     HStack(alignment: .center, spacing: NoopMetrics.space3) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -92,6 +81,10 @@ struct LiveIntervalCard: View {
                                 .monospacedDigit()
                             if mode == .lifting, let rest = s.currentRestS {
                                 restTarget(rest)
+                            } else if let now = reps.currentReps, mode == .lifting {
+                                Text(String(localized: "\(now) reps so far"))
+                                    .font(StrandFont.caption)
+                                    .foregroundStyle(StrandPalette.textTertiary)
                             }
                         }
                         Spacer(minLength: 0)
@@ -101,38 +94,118 @@ struct LiveIntervalCard: View {
                             idleLight(s)
                         }
                     }
-                    if mode == .lifting {
-                        if reps.active || !reps.sets.isEmpty {
-                            repRow
-                        }
-                        if reps.active, let a = reps.analysis {
-                            MotionMapView(analysis: a)
-                        }
-                        Toggle(isOn: $repCounting) {
-                            Text("Count reps from wrist motion")
-                                .font(StrandFont.footnote)
-                                .foregroundStyle(StrandPalette.textSecondary)
-                        }
-                        .tint(StrandPalette.accent)
+                    setStrip(mode)
+                    if let line = restLine(s) {
+                        Text(line)
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .monospacedDigit()
                     }
-                    HStack(spacing: NoopMetrics.space4) {
-                        stat(String(localized: "Last rest"), s.lastRestS)
-                        stat(String(localized: "Avg rest"), s.avgRestS)
-                        stat(String(localized: "Longest"), s.longestRestS)
+                    if let line = recoveryLine {
+                        Text(line.text)
+                            .font(StrandFont.caption)
+                            .foregroundStyle(line.slowing ? StrandPalette.recovery030 : StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    if !tracker.recoveries.isEmpty { recoveryRow }
-                    Text(tracker.setsFromMotion
-                         ? "Sets from steady, rhythmic wrist motion that raised your heart rate. Moving around between sets counts as rest."
-                         : mode == .lifting
-                         ? "From heart rate. Rests under a minute can merge two sets into one."
-                         : "From heart rate. Very short recoveries can merge two intervals.")
-                        .font(StrandFont.caption)
-                        .foregroundStyle(StrandPalette.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if mode == .lifting, reps.active, let a = reps.analysis {
+                        MotionMapView(analysis: a)
+                    }
                 }
             }
             .accessibilityElement(children: .contain)
         }
+    }
+
+    /// "STRENGTH · SET 4" or "STRENGTH · RESTING".
+    private func headerLine(_ mode: WorkRestSegmenter.Mode, _ s: WorkRestSegmenter.Summary) -> String {
+        let sport = model.activeWorkout?.sport.uppercased()
+        return [sport, phaseTitle(mode, s)].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// One chip per set, numbered, with reps when counted. Tap a chip to fix it; + adds one it missed.
+    private func setStrip(_ mode: WorkRestSegmenter.Mode) -> some View {
+        let unit = LiveIntervalModes.unitName(mode, count: 1)
+        let repsByStart = Dictionary(reps.sets.map { (Int($0.start), $0.reps) }, uniquingKeysWith: { a, _ in a })
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(Array(tracker.sets.enumerated()), id: \.element.start) { i, span in
+                        Menu {
+                            Button(role: .destructive) { tracker.removeSet(at: i) } label: {
+                                Label(String(localized: "Not a \(unit)"), systemImage: "xmark")
+                            }
+                            if i > 0 {
+                                Button { tracker.joinWithPrevious(at: i) } label: {
+                                    Label(String(localized: "Same \(unit) as \(i)"), systemImage: "arrow.left.to.line")
+                                }
+                            }
+                        } label: {
+                            VStack(spacing: 0) {
+                                Text("\(i + 1)")
+                                    .font(StrandFont.subhead.weight(.bold))
+                                    .foregroundStyle(StrandPalette.textPrimary)
+                                Text(repsByStart[span.start].map { String(localized: "\($0) reps") }
+                                     ?? LiveIntervalTracker.clock(span.end - span.start))
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(StrandPalette.textTertiary)
+                            }
+                            .frame(minWidth: 40, minHeight: 36)
+                            .background(RoundedRectangle(cornerRadius: 9).fill(StrandPalette.surfaceInset))
+                        }
+                        .id(span.start)
+                    }
+                    Button { tracker.addSetJustDone() } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(StrandPalette.accent)
+                            .frame(width: 36, height: 36)
+                            .background(RoundedRectangle(cornerRadius: 9).stroke(StrandPalette.accent.opacity(0.5),
+                                                                                 style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Text(String(localized: "Add a \(unit) that just ended")))
+                    if tracker.canUndoEdit {
+                        Button { tracker.undoEdit() } label: {
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(StrandPalette.textSecondary)
+                                .frame(width: 36, height: 36)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Undo")
+                    }
+                }
+            }
+            .onChange(of: tracker.sets.count) { _, _ in
+                if let last = tracker.sets.last { withAnimation { proxy.scrollTo(last.start, anchor: .trailing) } }
+            }
+        }
+    }
+
+    /// "Rest last 1:45 · avg 1:52 · longest 3:10", or nil before there are two sets.
+    private func restLine(_ s: WorkRestSegmenter.Summary) -> String? {
+        guard let last = s.lastRestS else { return nil }
+        var parts = [String(localized: "Rest last \(LiveIntervalTracker.clock(last))")]
+        if let a = s.avgRestS { parts.append(String(localized: "avg \(LiveIntervalTracker.clock(a))")) }
+        if let l = s.longestRestS { parts.append(String(localized: "longest \(LiveIntervalTracker.clock(l))")) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Heart-rate recovery after the last set in one line, flagged when it's slowing.
+    private var recoveryLine: (text: String, slowing: Bool)? {
+        let recs = tracker.recoveries
+        guard let last = recs.last else { return nil }
+        let drops60 = recs.compactMap(\.drop60)
+        let avg: Int? = drops60.count >= 2 ? drops60.reduce(0, +) / drops60.count : nil
+        let value: String
+        if let d = last.drop60 { value = String(localized: "-\(d) bpm in 60 s") }
+        else if let d = last.drop30 { value = String(localized: "-\(d) bpm in 30 s") }
+        else { return nil }
+        var text = String(localized: "Recovery \(value)")
+        if let avg { text += " · " + String(localized: "avg -\(avg)") }
+        let slowing = avg.map { a in a > 0 && Double(last.drop60 ?? a) < Double(a) * 0.7 } ?? false
+        if slowing { text += ". " + String(localized: "Slowing: rest a little longer.") }
+        return (text, slowing)
     }
 
     /// Rest against the target: a thin bar and "1:10 of 2:00", or "+0:20 over".
@@ -183,59 +256,6 @@ struct LiveIntervalCard: View {
         }
     }
 
-    /// Heart-rate recovery after each set: the drop 60 seconds after its peak (30 s while the rest is
-    /// young), the last one against this workout's average, and a note when recovery is slowing.
-    private var recoveryRow: some View {
-        let recs = tracker.recoveries
-        let drops60 = recs.compactMap(\.drop60)
-        let last = recs.last
-        let lastValue: (Int, String)? = last.flatMap { r in
-            if let d = r.drop60 { return (d, "60 s") }
-            if let d = r.drop30 { return (d, "30 s") }
-            return nil
-        }
-        let avg: Int? = drops60.count >= 2 ? drops60.reduce(0, +) / drops60.count : nil
-        let slowing: Bool = {
-            guard let a = avg, a > 0, let d = last?.drop60 else { return false }
-            return Double(d) < Double(a) * 0.7
-        }()
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: "heart.circle")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.metricRose)
-                Text("Recovery").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                Spacer()
-            }
-            HStack(spacing: NoopMetrics.space4) {
-                VStack(alignment: .leading, spacing: NoopMetrics.spaceHalf) {
-                    Text("Last set").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                    Text(lastValue.map { "-\($0.0) bpm / \($0.1)" } ?? "–")
-                        .font(StrandFont.captionNumber)
-                        .foregroundStyle(slowing ? StrandPalette.recovery030 : StrandPalette.textPrimary)
-                }
-                VStack(alignment: .leading, spacing: NoopMetrics.spaceHalf) {
-                    Text("Avg 60 s").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                    Text(avg.map { "-\($0) bpm" } ?? "–")
-                        .font(StrandFont.captionNumber)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
-                VStack(alignment: .leading, spacing: NoopMetrics.spaceHalf) {
-                    Text("Peak").font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
-                    Text(last.map { "\($0.peak) bpm" } ?? "–")
-                        .font(StrandFont.captionNumber)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
-            }
-            if slowing {
-                Text("Recovery is slowing compared with your earlier sets. A longer rest helps the next set.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
     /// Green / yellow / red for the next set, with the heart rate it's waiting for.
     private func readyLight(_ r: SetReadiness.Reading) -> some View {
         let color: Color = r.light == .green ? StrandPalette.statusPositive
@@ -268,55 +288,11 @@ struct LiveIntervalCard: View {
         .accessibilityLabel(Text("Next set: \(word). Ready under \(r.thresholds.greenBpm) beats per minute."))
     }
 
-    /// Reps per finished set from wrist motion, plus the set in progress.
-    private var repRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: "hand.raised.fingers.spread")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.accent)
-                Text("Reps")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                if let now = reps.currentReps {
-                    Text(String(localized: "this set: \(now)"))
-                        .font(StrandFont.captionNumber)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                        .contentTransition(.numericText())
-                }
-                Spacer()
-            }
-            if !reps.sets.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(Array(reps.sets.enumerated()), id: \.offset) { i, set in
-                            VStack(spacing: 0) {
-                                Text("\(set.reps)")
-                                    .font(StrandFont.headline)
-                                    .foregroundStyle(StrandPalette.textPrimary)
-                                Text(String(localized: "set \(i + 1)"))
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(StrandPalette.textTertiary)
-                            }
-                            .frame(minWidth: 40)
-                            .padding(.vertical, 4)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(StrandPalette.surfaceInset))
-                        }
-                    }
-                }
-            } else {
-                Text("Counting from your strap's motion. Finished sets show here.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-            }
-        }
-    }
-
     private func phaseTitle(_ mode: WorkRestSegmenter.Mode, _ s: WorkRestSegmenter.Summary) -> String {
         switch s.phase {
         case .warmingUp:
-            return mode == .lifting ? String(localized: "WAITING FOR YOUR FIRST SET")
-                                    : String(localized: "WAITING FOR THE FIRST INTERVAL")
+            return mode == .lifting ? String(localized: "READY FOR SET 1")
+                                    : String(localized: "READY FOR INTERVAL 1")
         case .working:
             return mode == .lifting ? String(localized: "SET \(s.count + 1)")
                                     : String(localized: "INTERVAL \(s.count + 1)")
@@ -329,16 +305,5 @@ struct LiveIntervalCard: View {
         if let r = s.currentRestS { return LiveIntervalTracker.clock(r) }
         if let w = s.currentWorkS { return LiveIntervalTracker.clock(w) }
         return "–"
-    }
-
-    private func stat(_ label: String, _ seconds: Int?) -> some View {
-        VStack(alignment: .leading, spacing: NoopMetrics.spaceHalf) {
-            Text(label)
-                .font(StrandFont.caption)
-                .foregroundStyle(StrandPalette.textTertiary)
-            Text(seconds.map(LiveIntervalTracker.clock) ?? "–")
-                .font(StrandFont.captionNumber)
-                .foregroundStyle(StrandPalette.textPrimary)
-        }
     }
 }

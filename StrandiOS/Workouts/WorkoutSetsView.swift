@@ -132,6 +132,7 @@ struct WorkoutSetsEditor: View {
     @State private var history: [[WorkoutSetsRecord.SetSpan]] = []
     /// Starts of sets you made by splitting: the break before them isn't suggested for joining.
     @State private var userSplits: Set<Int> = []
+    @State private var showFixes = false
     @EnvironmentObject private var repo: Repository
     @Environment(\.dismiss) private var dismiss
 
@@ -153,48 +154,43 @@ struct WorkoutSetsEditor: View {
         List {
             Section {
                 editableChart
-                    .frame(height: 170)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
-                HStack(spacing: 10) {
-                    actionButton(addAt.map { String(localized: "Add at \(offset($0))") } ?? String(localized: "Add a \(unit)"),
-                                 icon: "plus") {
-                        if let t = addAt { add(at: t) } else { addAfterLast() }
-                    }
-                    actionButton(String(localized: "Undo"), icon: "arrow.uturn.backward", enabled: !history.isEmpty) { undo() }
-                    Spacer(minLength: 0)
-                }
-                .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 8, trailing: 12))
+                    .frame(height: 180)
+                    .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 6, trailing: 12))
+                actionBar
+                    .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 10, trailing: 12))
             } footer: {
                 Text(record.hr.isEmpty
-                     ? "No heart rate for this workout yet. Add your \(LiveIntervalModes.unitName(mode, count: 2)) and set their times and reps below."
-                     : "Drag an edge to move it. Drag over a gap to join the \(LiveIntervalModes.unitName(mode, count: 2)) either side, or over empty time to add one. Tap to select.")
+                     ? "No heart rate for this workout yet. Add your \(LiveIntervalModes.unitName(mode, count: 2)) with +."
+                     : "Drag an edge to move it, drag over a gap to join or add, tap to select.")
             }
 
             let fixes = suggestions
             if !fixes.isEmpty {
                 Section {
-                    ForEach(fixes) { f in
-                        HStack(alignment: .center, spacing: 10) {
-                            Image(systemName: f.icon)
+                    DisclosureGroup(isExpanded: $showFixes) {
+                        ForEach(fixes) { f in
+                            HStack(spacing: 10) {
+                                Text(f.text)
+                                    .font(StrandFont.footnote)
+                                    .foregroundStyle(StrandPalette.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: 4)
+                                Button(f.verb) { apply([f]) }
+                                    .font(StrandFont.footnote.weight(.semibold))
+                                    .buttonStyle(.borderless)
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Label(String(localized: "\(fixes.count) look off"), systemImage: "wand.and.stars")
+                                .font(StrandFont.subhead.weight(.semibold))
                                 .foregroundStyle(StrandPalette.statusWarning)
-                                .frame(width: 20)
-                            Text(f.text)
-                                .font(StrandFont.footnote)
-                                .foregroundStyle(StrandPalette.textPrimary)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 4)
-                            Button(f.verb) { apply([f]) }
-                                .font(StrandFont.footnote.weight(.semibold))
+                            Spacer()
+                            Button(String(localized: "Fix all")) { apply(fixes) }
+                                .font(StrandFont.subhead.weight(.semibold))
                                 .buttonStyle(.borderless)
-                                .tint(StrandPalette.accent)
                         }
                     }
-                    if fixes.count > 1 {
-                        Button(String(localized: "Fix all \(fixes.count)")) { apply(fixes) }
-                            .font(StrandFont.subhead.weight(.semibold))
-                    }
-                } header: {
-                    Text("Suggested fixes")
                 }
             }
 
@@ -206,44 +202,15 @@ struct WorkoutSetsEditor: View {
                         .listRowBackground(selected == i ? StrandPalette.accent.opacity(0.12) : nil)
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) { delete(i) } label: { Label("Delete", systemImage: "trash") }
-                            if i + 1 < sets.count {
-                                Button { merge(i) } label: { Label("Join next", systemImage: "arrow.down.to.line") }
-                                    .tint(StrandPalette.accent)
-                            }
                         }
                 }
             } header: {
                 Text("\(sets.count) \(LiveIntervalModes.unitName(mode, count: sets.count))")
-            }
-
-            if let i = selected, i < sets.count {
-                Section(String(localized: "\(unit.capitalized) \(i + 1)")) {
-                    edgeStepper(String(localized: "Starts"), value: sets[i].start, lo: i > 0 ? sets[i - 1].end + 1 : record.startTs,
-                                hi: sets[i].end - 5) { v in change { sets[i].start = v } }
-                    edgeStepper(String(localized: "Ends"), value: sets[i].end, lo: sets[i].start + 5,
-                                hi: i + 1 < sets.count ? sets[i + 1].start - 1 : record.endTs) { v in change { sets[i].end = v } }
-                    if mode == .lifting {
-                        Stepper(value: Binding(get: { sets[i].reps ?? 0 },
-                                               set: { v in change { sets[i].reps = v > 0 ? v : nil } }),
-                                in: 0...100) {
-                            Text(sets[i].reps.map { String(localized: "Reps: \($0)") } ?? String(localized: "Reps: not set"))
-                        }
-                    }
-                }
-            }
-
-            Section {
-                if record.edited != nil || sets != record.detected.sorted(by: { $0.start < $1.start }) {
-                    Button("Back to what was counted") {
-                        change { sets = record.detected.sorted { $0.start < $1.start } }
-                        selected = nil
-                    }
-                }
             } footer: {
                 Text(learningNote)
             }
         }
-        .navigationTitle(String(localized: "Correct \(LiveIntervalModes.unitName(mode, count: 2))"))
+        .navigationTitle(String(localized: "Edit \(LiveIntervalModes.unitName(mode, count: 2))"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
@@ -251,7 +218,72 @@ struct WorkoutSetsEditor: View {
                 Button(saving ? String(localized: "Saving…") : String(localized: "Save")) { Task { await save() } }
                     .disabled(saving)
             }
+            if record.edited != nil || sets != record.detected.sorted(by: { $0.start < $1.start }) {
+                ToolbarItem(placement: .bottomBar) {
+                    Button(String(localized: "Back to what was counted")) {
+                        change { sets = record.detected.sorted { $0.start < $1.start } }
+                        selected = nil
+                    }
+                    .font(StrandFont.footnote)
+                }
+            }
         }
+    }
+
+    /// Under the chart: what you can do right now. With a set selected, its reps and its actions; else
+    /// add and undo.
+    @ViewBuilder
+    private var actionBar: some View {
+        if let i = selected, i < sets.count {
+            HStack(spacing: 8) {
+                Text("\(i + 1)")
+                    .font(StrandFont.subhead.weight(.bold))
+                    .foregroundStyle(StrandPalette.accent)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(StrandPalette.accent.opacity(0.12)))
+                if mode == .lifting {
+                    Stepper(value: Binding(get: { sets[i].reps ?? 0 },
+                                           set: { v in change { sets[i].reps = v > 0 ? v : nil } }),
+                            in: 0...100) {
+                        Text(sets[i].reps.map { String(localized: "\($0) reps") } ?? String(localized: "Reps"))
+                            .font(StrandFont.footnote.weight(.semibold))
+                            .monospacedDigit()
+                    }
+                    .fixedSize()
+                }
+                Spacer(minLength: 0)
+                if sets[i].end - sets[i].start >= 20 {
+                    iconButton("scissors", label: "Split") { split(i) }
+                }
+                if i + 1 < sets.count {
+                    iconButton("arrow.down.to.line", label: "Join with next") { merge(i) }
+                }
+                iconButton("trash", label: "Delete", destructive: true) { delete(i) }
+            }
+        } else {
+            HStack(spacing: 10) {
+                actionButton(addAt.map { String(localized: "Add at \(offset($0))") } ?? String(localized: "Add a \(unit)"),
+                             icon: "plus") {
+                    if let t = addAt { add(at: t) } else { addAfterLast() }
+                }
+                Spacer(minLength: 0)
+                iconButton("arrow.uturn.backward", label: "Undo", enabled: !history.isEmpty) { undo() }
+            }
+        }
+    }
+
+    private func iconButton(_ icon: String, label: LocalizedStringKey, enabled: Bool = true, destructive: Bool = false,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 36, height: 32)
+                .background(RoundedRectangle(cornerRadius: 8).fill(StrandPalette.surfaceInset))
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(!enabled ? StrandPalette.textTertiary : (destructive ? StrandPalette.statusCritical : StrandPalette.accent))
+        .disabled(!enabled)
+        .accessibilityLabel(Text(label))
     }
 
     private func actionButton(_ title: String, icon: String, enabled: Bool = true,
@@ -358,22 +390,6 @@ struct WorkoutSetsEditor: View {
                     .foregroundStyle(StrandPalette.textTertiary)
             }
             Spacer()
-            Menu {
-                if i + 1 < sets.count {
-                    Button { merge(i) } label: { Label("Join with next", systemImage: "arrow.down.to.line") }
-                }
-                if s.end - s.start >= 20 {
-                    Button { split(i) } label: { Label("Split in two", systemImage: "scissors") }
-                }
-                Button(role: .destructive) { delete(i) } label: { Label("Delete", systemImage: "trash") }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.system(size: 20))
-                    .foregroundStyle(StrandPalette.textSecondary)
-                    .frame(width: 36, height: 36)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.borderless)
         }
     }
 

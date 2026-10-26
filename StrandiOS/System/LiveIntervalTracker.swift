@@ -57,6 +57,21 @@ final class LiveIntervalTracker: ObservableObject {
     }
     @Published private(set) var recoveries: [Recovery] = []
 
+    /// Your corrections during the workout, kept apart from what was counted so the counting can keep
+    /// going underneath them. Sets are named by their start time.
+    struct LiveEdits: Equatable {
+        var removed: Set<Int> = []
+        /// Sets you said belong to the one before.
+        var joinedIntoPrevious: Set<Int> = []
+        var added: [SetCalibration.Span] = []
+        var isEmpty: Bool { removed.isEmpty && joinedIntoPrevious.isEmpty && added.isEmpty }
+    }
+    @Published private(set) var edits = LiveEdits()
+    private var editHistory: [LiveEdits] = []
+    /// The sets as shown: what was counted, with your corrections applied.
+    @Published private(set) var sets: [SetCalibration.Span] = []
+    var canUndoEdit: Bool { !editHistory.isEmpty }
+
     private var segmenter: WorkRestSegmenter?
     /// Learned from your corrections (`SetTuningStore`); 0 = no HRV check.
     private var hrvDrop = 0.0
@@ -138,6 +153,9 @@ final class LiveIntervalTracker: ObservableObject {
         for s in w.samples { seg.ingest(ts: s.ts, bpm: s.bpm) }
         hrHistory = w.samples.map { ($0.ts, $0.bpm) }
         beats = []
+        edits = LiveEdits()
+        editHistory = []
+        sets = []
         recoveries = []
         segmenter = seg
         mode = m
@@ -158,6 +176,9 @@ final class LiveIntervalTracker: ObservableObject {
         for s in w.samples { seg.ingest(ts: s.ts, bpm: s.bpm) }
         hrHistory = w.samples.map { ($0.ts, $0.bpm) }
         beats = []
+        edits = LiveEdits()
+        editHistory = []
+        sets = []
         recoveries = []
         segmenter = seg
         mode = .lifting
@@ -177,6 +198,9 @@ final class LiveIntervalTracker: ObservableObject {
         readyBasis = nil
         hrHistory = []
         beats = []
+        edits = LiveEdits()
+        editHistory = []
+        sets = []
         recoveries = []
         setsFromMotion = false
         trackedStart = nil
@@ -190,9 +214,19 @@ final class LiveIntervalTracker: ObservableObject {
         let now = Int(Date().timeIntervalSince1970)
         let motion = mode == .lifting ? motionSummary(now: now) : nil
         if (motion != nil) != setsFromMotion { setsFromMotion = motion != nil }
-        let next = motion ?? WorkRestSegmenter.summary(intervals: heartRateSets(seg), phase: seg.phase, now: now)
+        let shown = Self.apply(edits, to: baseSpans(seg))
+        if shown != sets { sets = shown }
+        // The phase follows the counting, except that a rest runs from the last set you kept.
+        let basePhase = motion?.phase ?? seg.phase
+        let phase: WorkRestSegmenter.Phase
+        if case .working = basePhase { phase = basePhase }
+        else if let last = shown.last { phase = .resting(since: last.end) }
+        else { phase = .warmingUp }
+        let next = WorkRestSegmenter.summary(
+            intervals: shown.map { .init(startTs: $0.start, endTs: $0.end, peakBpm: peakHR($0) ?? 0) },
+            phase: phase, now: now)
         if next != summary { summary = next }
-        let rec = recoveryList(setEnds: setEnds(seg), now: now)
+        let rec = recoveryList(setEnds: shown.map(\.end), now: now)
         if rec != recoveries { recoveries = rec }
         let ready = readingNow(seg, next)
         if ready != readiness {
@@ -208,10 +242,8 @@ final class LiveIntervalTracker: ObservableObject {
     private func readingNow(_ seg: WorkRestSegmenter, _ s: WorkRestSegmenter.Summary) -> SetReadiness.Reading? {
         guard mode == .lifting, SetReadyPrefs.enabled, let basis = readyBasis,
               let rest = s.currentRestS, let hr = model?.live.heartRate, hr > 0 else { return nil }
-        let reps = LiveRepTracker.shared
-        let hrSets = heartRateSets(seg)
-        let peak = setsFromMotion ? reps.sets.last.flatMap { reps.peakHR($0) } : hrSets.last?.peakBpm
-        let startTs = setsFromMotion ? reps.sets.last.map { Int($0.start) } : hrSets.last?.startTs
+        let peak = sets.last.flatMap(peakHR)
+        let startTs = sets.last?.start
         return SetReadiness.read(config: SetReadyPrefs.config, currentBpm: hr, restS: rest,
                                  restingBpm: basis.resting, setPeakBpm: peak,
                                  age: basis.age, hrvRatio: basis.hrvRatio,
@@ -269,9 +301,72 @@ final class LiveIntervalTracker: ObservableObject {
             totalWorkS: works.reduce(0, +))
     }
 
-    /// When each finished set ended, from whichever source is counting sets.
-    private func setEnds(_ seg: WorkRestSegmenter) -> [Int] {
-        setsFromMotion ? LiveRepTracker.shared.sets.map { Int($0.end) } : heartRateSets(seg).map(\.endTs)
+    /// What's being counted, before your corrections: motion's sets when rep counting streams, else heart
+    /// rate's.
+    private func baseSpans(_ seg: WorkRestSegmenter) -> [SetCalibration.Span] {
+        setsFromMotion
+            ? LiveRepTracker.shared.sets.map { .init(start: Int($0.start), end: Int($0.end)) }
+            : heartRateSets(seg).map { .init(start: $0.startTs, end: $0.endTs) }
+    }
+
+    /// Peak heart rate during a set or just after it, where it usually lands.
+    private func peakHR(_ s: SetCalibration.Span) -> Int? {
+        hrHistory.filter { $0.ts >= s.start && $0.ts <= s.end + 20 }.map(\.bpm).max()
+    }
+
+    /// Counted sets with your corrections: removed ones gone, added ones in, joined ones as one.
+    static func apply(_ e: LiveEdits, to base: [SetCalibration.Span]) -> [SetCalibration.Span] {
+        let kept = (base.filter { !e.removed.contains($0.start) } + e.added).sorted { $0.start < $1.start }
+        var out: [SetCalibration.Span] = []
+        for x in kept {
+            if let last = out.last, e.joinedIntoPrevious.contains(x.start) {
+                out[out.count - 1] = .init(start: last.start, end: max(last.end, x.end))
+            } else {
+                out.append(x)
+            }
+        }
+        return out
+    }
+
+    // MARK: Corrections during the workout
+
+    private func edit(_ change: (inout LiveEdits) -> Void) {
+        editHistory.append(edits)
+        var e = edits
+        change(&e)
+        edits = e
+        refresh()
+    }
+
+    /// The set at `i` (as shown) wasn't one.
+    func removeSet(at i: Int) {
+        guard let seg = segmenter, i < sets.count else { return }
+        let span = sets[i]
+        edit { e in
+            for b in baseSpans(seg) where b.end >= span.start && b.start <= span.end { e.removed.insert(b.start) }
+            e.added.removeAll { $0.end >= span.start && $0.start <= span.end }
+        }
+    }
+
+    /// The set at `i` and the one before were one set.
+    func joinWithPrevious(at i: Int) {
+        guard i > 0, i < sets.count else { return }
+        let start = sets[i].start
+        edit { e in e.joinedIntoPrevious.insert(start) }
+    }
+
+    /// A set that wasn't counted, ending now: back to the end of the last rest, at most 45 s.
+    func addSetJustDone() {
+        let now = Int(Date().timeIntervalSince1970)
+        let from = max((sets.last?.end ?? (trackedStart ?? now - 45)) + 20, now - 45)
+        guard now - from >= 5 else { return }
+        edit { e in e.added.append(.init(start: from, end: now)) }
+    }
+
+    func undoEdit() {
+        guard let last = editHistory.popLast() else { return }
+        edits = last
+        refresh()
     }
 
     /// The heart-rate sets after your learned HRV check, with pauses inside a set joined.
@@ -283,15 +378,21 @@ final class LiveIntervalTracker: ObservableObject {
     private func saveRecord(start: Int, end: Int, sport: String) {
         guard let seg = segmenter, let m = mode else { return }
         let motionSets = LiveRepTracker.shared.notesLine(start: start) != nil ? LiveRepTracker.shared.sets : []
+        let repsByStart = Dictionary(motionSets.map { (Int($0.start), $0.reps) }, uniquingKeysWith: { a, _ in a })
         let detected: [WorkoutSetsRecord.SetSpan] = motionSets.isEmpty
             ? heartRateSets(seg).filter { $0.endTs <= end }.map { .init(start: $0.startTs, end: $0.endTs, reps: nil) }
             : motionSets.map { .init(start: Int($0.start), end: Int($0.end), reps: $0.reps) }
+        // Corrections made during the workout count as yours, and teach detection like any other.
+        let edited: [WorkoutSetsRecord.SetSpan]? = edits.isEmpty ? nil
+            : Self.apply(edits, to: baseSpans(seg)).filter { $0.end <= end }
+                .map { .init(start: $0.start, end: $0.end, reps: repsByStart[$0.start]) }
         let hr = hrHistory.filter { $0.ts >= start && $0.ts <= end }.map { SetCalibration.HRSampleTS(ts: $0.ts, bpm: $0.bpm) }
         guard hr.count >= 60 else { return }
         WorkoutSetsStore.save(WorkoutSetsRecord(
             startTs: start, endTs: end, sport: sport, mode: m.rawValue, hr: hr,
             beats: beats.filter { $0.ts >= start && $0.ts <= end },
-            detected: detected, detectedFrom: motionSets.isEmpty ? "heartRate" : "motion", edited: nil))
+            detected: detected, detectedFrom: motionSets.isEmpty ? "heartRate" : "motion", edited: edited))
+        if edited != nil { Task { _ = await SetTuningStore.refit(m) } }
     }
 
     /// For each set: its peak heart rate (up to 20 s after it ends, where it usually lands) and the drop
@@ -351,6 +452,15 @@ final class LiveIntervalTracker: ObservableObject {
     func notes(start: Int, end: Int) -> String? {
         guard let seg = segmenter, let m = mode, trackedStart == start else { return nil }
         saveRecord(start: start, end: end, sport: trackedSport ?? "")
+        if !edits.isEmpty, let r = WorkoutSetsStore.load(startTs: start, sport: trackedSport ?? "") {
+            // Your corrections decide the sets line.
+            let line = WorkoutSetsStore.notesLine(r)
+            let drops = recoveries.compactMap(\.drop60)
+            if drops.count >= 2, let first = drops.first, let last = drops.last {
+                return line + "\n" + String(localized: "HR recovery in 60 s: avg -\(drops.reduce(0, +) / drops.count) bpm over \(drops.count) rests (first -\(first), last -\(last))")
+            }
+            return line
+        }
         let inWorkout = heartRateSets(seg).filter { $0.endTs <= end }
         let reps = LiveRepTracker.shared.notesLine(start: start)
         guard !inWorkout.isEmpty else { return reps }

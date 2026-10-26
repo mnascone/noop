@@ -942,10 +942,21 @@ final class AICoachEngine: ObservableObject {
     /// chat) and the headless `generateBrief()` below (used by the scheduled morning-brief notification).
     /// Kept in one place so the two paths never drift.
     private static let briefInstruction = """
-    Based on the data above, give me TODAY'S coaching brief in three short parts: \
-    (1) my readiness in one line, citing charge, HRV and rest; \
-    (2) exactly what training to do today and what to avoid; \
-    (3) one specific thing to improve my charge. Be punchy and motivating.
+    Write my coaching brief for today from the data above. It is for me alone, so build it from my \
+    numbers and my routine, not general advice. Three short paragraphs: \
+    (1) The one thing that matters most today, in one sentence, with the number that shows it against \
+    my own usual (for example what moved Charge, or my HRV against my 30-day average). \
+    (2) Today's session: what my routine says I usually do on this weekday, and whether to do it as \
+    normal, lighter, or swap it, with a concrete target (how long, and an effort or heart-rate ceiling). \
+    If my last session's notes show sets, rest or heart-rate recovery, use them (for example rest \
+    longer between sets if recovery slowed, or keep the same if it held). Weigh cardio and lifting \
+    separately. \
+    (3) One thing for tonight that would most help tomorrow's Charge, taken from my own patterns when \
+    there are any. \
+    If I said how I feel, that is my own report next to Charge, not a correction of it. Under 110 \
+    words, plain text, no headings or lists, no greeting or sign-off, no hype, no exclamation marks. \
+    Never give advice that would fit anyone (drink water, listen to your body) unless my data points \
+    at it, and never invent a number that isn't above.
     """
 
     /// K5: Generate today's coaching brief WITHOUT touching the visible chat transcript. Used by the
@@ -981,6 +992,7 @@ final class AICoachEngine: ObservableObject {
     Charge because of it, but adapt the session (feeling off or sore on a good day means an easier \
     session or other muscles, unwell means rest, feeling good on a low day allows a light session at \
     most). \
+    Use my usual routine for today's weekday when there is one, and my last session's notes. \
     Name the session (or rest) and one thing to watch. Talk like a friend who coaches: plain, direct, \
     no headings, no lists, no greeting, no sign-off, no exclamation marks.
     """
@@ -1002,6 +1014,7 @@ final class AICoachEngine: ObservableObject {
     func buildFullContext() async -> String {
         var ctx = buildContext()
         ctx += "\n\n" + (await recentWorkoutsBlock())
+        ctx += "\n\n" + (await personalBlock())
         // Derived stress: a single Baevsky Stress Index summary line over today's R-R, computed the same
         // way StressView does. Gated here under `dataConsent` (the caller only reaches buildFullContext()
         // with consent on), so it rides the SAME consent + text-only channel as the HRV/RHR summary, a
@@ -1020,6 +1033,89 @@ final class AICoachEngine: ObservableObject {
         }
         return ctx
     }
+
+    /// What makes advice personal rather than generic: my routine by weekday, my last session's own
+    /// notes (sets, rest, heart-rate recovery), what moved Charge this morning, pace, stress now, and the
+    /// basics of my profile. All computed on the phone from my data, labelled as such.
+    func personalBlock() async -> String {
+        var lines = ["ABOUT ME AND MY ROUTINE (computed on this phone from my own data):"]
+        let days = repo.days
+        if let profile = AppModel.shared?.profile, profile.age > 0 {
+            var p = "  Profile: age \(profile.age)"
+            if !profile.sex.isEmpty { p += ", \(profile.sex)" }
+            p += ", max HR \(profile.hrMax)"
+            if let r = days.last(where: { ($0.restingHr ?? 0) > 0 })?.restingHr { p += ", resting HR \(r)" }
+            lines.append(p)
+        }
+        let rows = await repo.workoutRows(days: 60)   // newest first
+        let todayKey = Repository.localDayKey(Date())
+        let sessions = rows.map { (day: Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0.startTs))),
+                                   sport: $0.sport) }
+        let habits = TrainingHabits.habits(sessions, todayKey: todayKey)
+        let symbols = Self.weekdayFormatter.shortWeekdaySymbols ?? []
+        func dayName(_ wd: Int) -> String { wd >= 1 && wd <= symbols.count ? symbols[wd - 1] : "?" }
+        let todayName = Self.weekdayFormatter.weekdaySymbols?[Calendar(identifier: .gregorian).component(.weekday, from: Date()) - 1] ?? ""
+        if habits.isEmpty {
+            lines.append("  Routine: not enough workouts in the last 8 weeks to see a pattern.")
+        } else {
+            let parts = habits.prefix(5).map { h -> String in
+                var t = "\(h.sport) \(h.sessions)x in 8 weeks"
+                if !h.weekdays.isEmpty { t += ", usually \(h.weekdays.map(dayName).joined(separator: "/"))" }
+                if let d = h.daysSinceLast { t += ", last \(d == 0 ? "today" : d == 1 ? "yesterday" : "\(d) days ago")" }
+                return t
+            }
+            lines.append("  Routine: " + parts.joined(separator: "; "))
+            let usual = TrainingHabits.usualToday(habits, todayKey: todayKey)
+            lines.append("  Today is \(todayName). " + (usual.isEmpty
+                ? "Nothing I usually do on this weekday."
+                : "On \(todayName)s I usually do: \(usual.joined(separator: ", "))."))
+        }
+        if let last = rows.first(where: { !($0.notes ?? "").isEmpty }) ?? rows.first {
+            var t = "  Last session with details: \(dateString(last.startTs)) \(last.sport)"
+            if let dur = last.durationS { t += ", \(Int((dur / 60).rounded())) min" }
+            if let hr = last.avgHr { t += ", avg HR \(hr)" }
+            if let notes = last.notes?.trimmingCharacters(in: .whitespacesAndNewlines), !notes.isEmpty {
+                t += ". Its notes: " + notes.replacingOccurrences(of: "\n", with: " | ")
+            }
+            lines.append(t)
+        }
+        if let e = ChargeChange.explain(days.map {
+            ChargeChange.Night(day: $0.day, charge: $0.recovery, hrv: $0.avgHrv,
+                               restingHR: $0.restingHr.map(Double.init), sleepMin: $0.totalSleepMin,
+                               respRate: $0.respRateBpm, skinTempDev: $0.skinTempDevC)
+        }) {
+            var t = "  What moved Charge this morning: " + ChargeChangeCard.headline(e)
+            if !e.drivers.isEmpty {
+                t += ". " + e.drivers.prefix(3).map { ChargeChangeCard.title($0) + " (" + ChargeChangeCard.detail($0) + ")" }
+                    .joined(separator: " ")
+            }
+            lines.append(t)
+        }
+        let scale = UnitPrefs.resolveEffortScale(UserDefaults.standard.string(forKey: UnitPrefs.effortScaleKey) ?? "")
+        let stress = PacingDialCard.stressByDay(days)
+        let short = PacingMath.pacing(days: days, todayKey: todayKey, window: .short, stressByDay: stress)
+        let long = PacingMath.pacing(days: days, todayKey: todayKey, window: .long, stressByDay: stress)
+        if let overall = PacingMath.overall(short: short, long: long), let p = long ?? short {
+            lines.append("  Pace (load against recovery, vs my own normal): \(PacingDialCard.stateWord(overall)). "
+                         + PacingDialCard.detail(p, effortScale: scale) + ".")
+        }
+        let meter = StressNow.shared
+        if let d = meter.daily {
+            var t = "  Stress: this morning's score \(StressNow.band(d).title.capitalized) (\(Int(d.rounded())) of 100)"
+            if let r = meter.reading(), r.kind != .today, !r.active {
+                t += ", right now \(StressNow.band(r.value).title.capitalized) (\(StressNow.label(r.kind)))"
+            }
+            lines.append(t + ".")
+        }
+        lines.append("  Effort numbers are on my \(scale == .whoop ? "0-21" : "0-100") scale.")
+        return lines.joined(separator: "\n")
+    }
+
+    private static let weekdayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
 
     /// One derived stress line for the coach context: the Baevsky Stress Index over TODAY's R-R, read
     /// via the same device-aware repository R-R union as `StressView`,

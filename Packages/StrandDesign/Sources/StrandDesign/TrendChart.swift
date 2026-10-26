@@ -3,6 +3,9 @@
 // never shows it, so the whole file is excluded there. iOS/macOS unchanged.
 import SwiftUI
 import Charts
+#if canImport(UIKit) && !os(watchOS)
+import UIKit
+#endif
 
 // MARK: - Trend Chart (§9.4 Trends)
 //
@@ -138,6 +141,10 @@ public struct TrendChart: View {
     public var yAxisStep: Double?
     public var showsBarValues: Bool
     public var largeSelection: Bool
+    /// Touch: press and hold on the line, then slide, to read the exact value and time under your
+    /// finger (the same crosshair and tooltip hover shows). A quick swipe still scrolls the page.
+    public var pressToInspect: Bool
+    @State private var pressing = false
     @State private var selectedPoint: TrendPoint?
     @State private var holdingBar = false
 
@@ -194,7 +201,8 @@ public struct TrendChart: View {
         workoutTimeAxis: ClosedRange<Date>? = nil,
         yAxisStep: Double? = nil,
         showsBarValues: Bool = false,
-        largeSelection: Bool = false
+        largeSelection: Bool = false,
+        pressToInspect: Bool = false
     ) {
         let sorted = points.sorted { $0.date < $1.date }
         self.points = sorted
@@ -214,6 +222,7 @@ public struct TrendChart: View {
         self.yAxisStep = yAxisStep
         self.showsBarValues = showsBarValues
         self.largeSelection = largeSelection
+        self.pressToInspect = pressToInspect
         let avg = sorted.isEmpty
             ? valueRange.lowerBound
             : sorted.map(\.value).reduce(0, +) / Double(sorted.count)
@@ -508,6 +517,22 @@ public struct TrendChart: View {
                     }
                     .onEnded { _ in holdingBar = false; hoverX = nil },
                     including: showsHover && showsBars ? .all : .none)
+                .gesture(LongPressGesture(minimumDuration: 0.25, maximumDistance: 10)
+                    .sequenced(before: DragGesture(minimumDistance: 0))
+                    .onChanged { value in
+                        guard case .second(true, let drag) = value, let drag else { return }
+                        if !pressing {
+                            pressing = true
+                            #if canImport(UIKit) && !os(watchOS)
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            #endif
+                        }
+                        var tx = Transaction()
+                        tx.disablesAnimations = true
+                        withTransaction(tx) { hoverX = min(max(drag.location.x, plot.minX), plot.maxX) }
+                    }
+                    .onEnded { _ in pressing = false; hoverX = nil },
+                    including: showsHover && pressToInspect && !showsBars ? .all : .none)
                 .onContinuousHover(coordinateSpace: .local) { phase in
                     guard showsHover else { return }
                     // Update the hover position in a NON-animating transaction. Otherwise entering or

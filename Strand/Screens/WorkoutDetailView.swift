@@ -434,9 +434,16 @@ struct WorkoutDetailView: View {
                         valueRange: lo...hi,
                         showsArea: true,
                         valueFormat: { String(localized: "\(Int($0.rounded())) bpm") },
-                        dateFormat: { Self.tooltipTime.string(from: $0) },
+                        // The clock time, and how far into the workout: "7:41 PM · 23:10 in".
+                        dateFormat: { d in
+                            let into = max(0, Int(d.timeIntervalSince1970) - row.startTs)
+                            let el = into >= 3600 ? String(format: "%d:%02d:%02d", into / 3600, into / 60 % 60, into % 60)
+                                : String(format: "%d:%02d", into / 60, into % 60)
+                            return Self.tooltipTime.string(from: d) + " · " + String(localized: "\(el) in")
+                        },
                         accessibilityLabel: String(localized: "Heart rate during \(WorkoutSource.displaySport(row.sport))"),
-                        workoutTimeAxis: Date(timeIntervalSince1970: TimeInterval(row.startTs))...Date(timeIntervalSince1970: TimeInterval(row.endTs))
+                        workoutTimeAxis: Date(timeIntervalSince1970: TimeInterval(row.startTs))...Date(timeIntervalSince1970: TimeInterval(row.endTs)),
+                        pressToInspect: true
                     )
                 } footer: {
                     ChartFooter([

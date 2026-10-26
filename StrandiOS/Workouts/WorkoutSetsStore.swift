@@ -111,12 +111,19 @@ enum WorkoutSetsStore {
     /// The workout's sets line, from whatever its sets are now: count, rests, work, push/pull/legs, and
     /// heart-rate recovery.
     static func notes(_ t: SetTimeline) -> String {
-        let sum = SetSummary(t) { ExerciseCategoryStore.category(for: $0) }
+        let workout = WorkoutCategoryStore.shared.categories(startTs: t.startTs)
+        let sum = SetSummary(t, workout: WorkoutCategoryStore.shared.fallback(startTs: t.startTs)) {
+            ExerciseCategoryStore.category(for: $0)
+        }
         let mode = WorkRestSegmenter.Mode(rawValue: t.mode) ?? .lifting
         var parts = ["\(sum.count) \(LiveIntervalModes.unitName(mode, count: sum.count))"]
         if let a = sum.avgRestS { parts.append(String(localized: "avg rest \(LiveIntervalTracker.clock(a))")) }
         if let l = sum.longestRestS { parts.append(String(localized: "longest \(LiveIntervalTracker.clock(l))")) }
         parts.append(String(localized: "\(LiveIntervalTracker.clock(sum.workS)) working"))
+        if sum.byCategory.isEmpty, !workout.isEmpty {
+            // Chosen for the workout, with no set of its own to count: say what it was.
+            parts.append(StrengthCategory.allCases.filter(workout.contains).map(\.displayName).joined(separator: " + "))
+        }
         for c in StrengthCategory.allCases { if let n = sum.byCategory[c], n > 0 { parts.append("\(c.displayName) \(n)") } }
         var line = parts.joined(separator: " · ") + " "
             + (t.isCorrected ? String(localized: "(corrected by you)")

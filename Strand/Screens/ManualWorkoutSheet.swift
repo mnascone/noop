@@ -1,4 +1,5 @@
 import SwiftUI
+import StrandAnalytics
 import StrandDesign
 import WhoopStore
 
@@ -65,6 +66,8 @@ struct ManualWorkoutSheet: View {
     @State private var suggestionsHeight: CGFloat = 0
     /// iPhone: the sport list opens as its own sheet instead of a dropdown under a text field.
     @State private var showSportList = false
+    /// Push / pull / legs, for a strength workout.
+    @State private var categories: Set<StrengthCategory>
 
     /// `endingAt` seeds a fresh add's end time (a past day picked on the Workouts calendar); nil = now.
     init(editing: WorkoutRow? = nil, endingAt: Date? = nil,
@@ -88,6 +91,7 @@ struct ManualWorkoutSheet: View {
                        ?? defaultEnd.addingTimeInterval(-45 * 60))
         _end = State(initialValue: e.map { Date(timeIntervalSince1970: TimeInterval($0.endTs)) }
                      ?? defaultEnd)
+        _categories = State(initialValue: e.map { WorkoutCategoryStore.shared.categories(startTs: $0.startTs) } ?? [])
         _avgHrText = State(initialValue: e?.avgHr.map(String.init) ?? "")
         _kcalText = State(initialValue: e?.energyKcal.map { String(Int($0.rounded())) } ?? "")
         // Pre-fill the distance in the user's unit so an untouched edit round-trips the stored metres
@@ -164,6 +168,11 @@ struct ManualWorkoutSheet: View {
                 // Raise the Sport field above the following rows so its floating suggestion dropdown
                 // (an overlay, see `sportPicker`) draws ON TOP of Start / End / Duration, not behind them.
                 .zIndex(1)
+                if WorkoutCategoryStore.isStrength(sport) {
+                    field(String(localized: "Push / Pull / Legs")) {
+                        WorkoutCategoryPicker(selection: $categories)
+                    }
+                }
                 field(String(localized: "Start")) {
                     DatePicker("", selection: startBinding, in: ...Date(),
                                displayedComponents: [.date, .hourAndMinute])
@@ -530,6 +539,8 @@ struct ManualWorkoutSheet: View {
         guard let row = builtRow else { return }
         // #297: a confirmed save is a real selection — fold the (validated) sport into the recents.
         RecentSportsPrefs.recordSelection(row.sport)
+        if let e = editing { WorkoutCategoryStore.shared.move(from: e.startTs, to: row.startTs) }
+        WorkoutCategoryStore.shared.set(WorkoutCategoryStore.isStrength(row.sport) ? categories : [], startTs: row.startTs)
         onSave(row, editing)
         dismiss()
     }

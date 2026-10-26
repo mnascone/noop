@@ -58,6 +58,8 @@ public struct TimelineSet: Codable, Equatable, Hashable, Identifiable, Sendable 
     public var reps: Int?
     /// The exercise it was, when known. Its category comes from the exercise.
     public var exercise: String?
+    /// Push / pull / legs chosen for this set itself. Wins over its exercise's and the workout's.
+    public var category: StrengthCategory?
     /// How sure detection was, 0-1. Nil for a set you made or confirmed.
     public var confidence: Double?
     /// Weak evidence: shown, not counted, until you confirm or delete it.
@@ -67,13 +69,14 @@ public struct TimelineSet: Codable, Equatable, Hashable, Identifiable, Sendable 
     public var span: SetCalibration.Span { .init(start: start, end: end) }
 
     public init(id: String? = nil, start: Int, end: Int, reps: Int? = nil, exercise: String? = nil,
-                confidence: Double? = nil, uncertain: Bool = false) {
+                category: StrengthCategory? = nil, confidence: Double? = nil, uncertain: Bool = false) {
         self.id = id ?? "s\(start)-\(UUID().uuidString.prefix(6))"
         self.start = start; self.end = end; self.reps = reps; self.exercise = exercise
+        self.category = category
         self.confidence = confidence; self.uncertain = uncertain
     }
 
-    enum CodingKeys: String, CodingKey { case id, start, end, reps, exercise, confidence, uncertain }
+    enum CodingKeys: String, CodingKey { case id, start, end, reps, exercise, category, confidence, uncertain }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -82,6 +85,7 @@ public struct TimelineSet: Codable, Equatable, Hashable, Identifiable, Sendable 
         id = try c.decodeIfPresent(String.self, forKey: .id) ?? "s\(start)"
         reps = try c.decodeIfPresent(Int.self, forKey: .reps)
         exercise = try c.decodeIfPresent(String.self, forKey: .exercise)
+        category = try c.decodeIfPresent(StrengthCategory.self, forKey: .category)
         confidence = try c.decodeIfPresent(Double.self, forKey: .confidence)
         uncertain = try c.decodeIfPresent(Bool.self, forKey: .uncertain) ?? false
     }
@@ -93,6 +97,8 @@ public struct SetEditRecord: Codable, Equatable, Sendable {
         case add, delete, move, split, join, confirm, exercise, reps, reset, undo, redo
         /// A rest you said is a real rest: no change to the sets, but your word on it.
         case keepRest
+        /// Push / pull / legs set on a set.
+        case category
     }
     /// When you made it (unix seconds).
     public var at: Int
@@ -323,6 +329,18 @@ public struct SetTimelineEditor: Equatable {
         }
     }
 
+    /// Push / pull / legs for these sets themselves (nil: back to their exercise's or the workout's).
+    @discardableResult
+    public mutating func setCategory(_ ids: [String], to c: StrengthCategory?, now: Int = 0) -> Bool {
+        let idx = ids.compactMap(index(of:))
+        guard !idx.isEmpty else { return false }
+        let before = idx.map { sets[$0] }
+        return commit(.category, now: now, before: before) { list in
+            for i in idx { list[i].category = c }
+            return true
+        }
+    }
+
     @discardableResult
     public mutating func setReps(_ id: String, _ reps: Int?, now: Int = 0) -> Bool {
         guard let i = index(of: id) else { return false }
@@ -392,7 +410,9 @@ public struct SetSummary: Equatable, Sendable {
 
     /// From the counted sets and the recorded heart rate. `category` maps an exercise name to its
     /// push/pull/legs category.
-    public init(_ t: SetTimeline, category: (String) -> StrengthCategory? = { _ in nil }) {
+    /// A set's category: its own, else its exercise's (`category`), else the workout's (`workout`).
+    public init(_ t: SetTimeline, workout: StrengthCategory? = nil,
+                category: (String) -> StrengthCategory? = { _ in nil }) {
         let s = t.counted
         count = s.count
         workS = s.map(\.duration).reduce(0, +)
@@ -411,7 +431,9 @@ public struct SetSummary: Equatable, Sendable {
         }
         recoveries = rec
         var cats: [StrengthCategory: Int] = [:]
-        for set in s { if let e = set.exercise, let c = category(e) { cats[c, default: 0] += 1 } }
+        for set in s {
+            if let c = set.category ?? set.exercise.flatMap(category) ?? workout { cats[c, default: 0] += 1 }
+        }
         byCategory = cats
     }
 }

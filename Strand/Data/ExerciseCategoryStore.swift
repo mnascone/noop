@@ -71,6 +71,78 @@ final class ExerciseCategoryStore: ObservableObject {
     static func category(for name: String) -> StrengthCategory? { shared.category(for: name) }
 }
 
+/// Push / pull / legs for a whole strength workout, kept on this device by the workout's start. It's
+/// what the workout was, and the category of any set in it that has no exercise or category of its
+/// own; a set's own choice or its exercise's still wins, so one workout can mix all three.
+@MainActor
+final class WorkoutCategoryStore: ObservableObject {
+    static let shared = WorkoutCategoryStore()
+    private static let key = "noop.workoutCategories.v1"
+
+    /// Strength sports, by lower-cased name: the ones that count sets.
+    static let strengthSports: Set<String> = ["strength", "weightlifting", "bodybuilding", "powerlifting",
+                                              "calisthenics"]
+    static func isStrength(_ sport: String) -> Bool {
+        strengthSports.contains(sport.trimmingCharacters(in: .whitespaces).lowercased())
+    }
+
+    /// Start (unix seconds, as text) → category raw values.
+    @Published private(set) var stored: [String: [String]]
+
+    private init() {
+        stored = UserDefaults.standard.dictionary(forKey: Self.key) as? [String: [String]] ?? [:]
+    }
+
+    func categories(startTs: Int) -> Set<StrengthCategory> {
+        Set((stored[String(startTs)] ?? []).compactMap(StrengthCategory.init(rawValue:)))
+    }
+
+    /// The one category unassigned sets take: only when the workout is a single one.
+    func fallback(startTs: Int) -> StrengthCategory? {
+        let c = categories(startTs: startTs)
+        return c.count == 1 ? c.first : nil
+    }
+
+    func set(_ c: Set<StrengthCategory>, startTs: Int) {
+        let raw = StrengthCategory.allCases.filter(c.contains).map(\.rawValue)
+        if raw.isEmpty { stored[String(startTs)] = nil } else { stored[String(startTs)] = raw }
+        UserDefaults.standard.set(stored, forKey: Self.key)
+    }
+
+    /// Follow a workout whose start was edited.
+    func move(from old: Int, to new: Int) {
+        guard old != new, let v = stored[String(old)] else { return }
+        stored[String(old)] = nil
+        stored[String(new)] = v
+        UserDefaults.standard.set(stored, forKey: Self.key)
+    }
+}
+
+/// Push / Pull / Legs for a whole workout: any of the three, one tap each.
+struct WorkoutCategoryPicker: View {
+    @Binding var selection: Set<StrengthCategory>
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(StrengthCategory.allCases, id: \.self) { c in
+                let on = selection.contains(c)
+                Button {
+                    if on { selection.remove(c) } else { selection.insert(c) }
+                } label: {
+                    Text(c.displayName)
+                        .font(StrandFont.footnote.weight(.semibold))
+                        .foregroundStyle(on ? Color.white : StrandPalette.textSecondary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(Capsule().fill(on ? c.color : StrandPalette.surfaceInset))
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(on ? [.isSelected] : [])
+            }
+        }
+    }
+}
+
 extension StrengthCategory {
     var displayName: String {
         switch self {

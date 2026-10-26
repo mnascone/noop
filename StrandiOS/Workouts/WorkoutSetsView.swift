@@ -16,6 +16,7 @@ struct WorkoutSetsCard: View {
     @Binding var editing: Bool
     @EnvironmentObject private var repo: Repository
     @ObservedObject private var categories = ExerciseCategoryStore.shared
+    @ObservedObject private var workoutCategories = WorkoutCategoryStore.shared
     @State private var timeline: SetTimeline?
     @State private var lift = WorkoutSetsStore.LiftContext()
     @State private var loadedSeq: Int?
@@ -49,7 +50,7 @@ struct WorkoutSetsCard: View {
 
     private func content(_ t: SetTimeline) -> some View {
         let mode = t.segmenterMode
-        let sum = SetSummary(t) { categories.category(for: $0) }
+        let sum = SetSummary(t, workout: workoutCategories.fallback(startTs: t.startTs)) { categories.category(for: $0) }
         let uncertain = t.sets.count - t.counted.count
         return VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             SectionHeader(LocalizedStringKey(LiveIntervalModes.unitName(mode, count: 2).capitalized),
@@ -73,6 +74,13 @@ struct WorkoutSetsCard: View {
                             .font(StrandFont.footnote)
                             .foregroundStyle(StrandPalette.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if mode == .lifting {
+                        // What the workout was: one tap, any of the three. Sets with their own
+                        // exercise or category keep theirs.
+                        WorkoutCategoryPicker(selection: Binding(
+                            get: { workoutCategories.categories(startTs: t.startTs) },
+                            set: { workoutCategories.set($0, startTs: t.startTs); changed(t) }))
                     }
                     if !sum.byCategory.isEmpty {
                         CategoryCounts(counts: sum.byCategory)
@@ -230,7 +238,8 @@ struct SetTimelineChart: View {
             ctx.fill(Path(r), with: .color(StrandPalette.accent.opacity(0.28)))
             ctx.stroke(Path(r), with: .color(StrandPalette.accent), style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
         }
-        // Heart rate.
+        // Heart rate, with its scale.
+        if !compact { drawHeartRateScale(in: &ctx, w: w, h: plotH) }
         drawHeartRate(in: &ctx, w: w, h: plotH)
         // Reps and motion, on request.
         if showMarks {
@@ -254,12 +263,42 @@ struct SetTimelineChart: View {
         if !compact { drawAxis(in: &ctx, w: w, y: size.height - axisH) }
     }
 
+    /// The bpm range drawn: the whole workout's (so it doesn't jump as you pan), low end clear of spikes.
+    private var bpmRange: (lo: Double, hi: Double)? {
+        let all = timeline.hr.map(\.bpm).sorted()
+        guard all.count >= 2 else { return nil }
+        return (Double(all[all.count / 50]) - 4, Double(all.last!) + 4)
+    }
+
+    private func y(_ bpm: Double, h: CGFloat, range r: (lo: Double, hi: Double)) -> CGFloat {
+        h - CGFloat((bpm - r.lo) / Swift.max(1, r.hi - r.lo)) * (h - 18) - 4
+    }
+
+    /// Faint lines at round heart rates, labelled at the left: 10 bpm apart, or 20 over a wide range.
+    private func drawHeartRateScale(in ctx: inout GraphicsContext, w: CGFloat, h: CGFloat) {
+        guard let r = bpmRange else { return }
+        let step = r.hi - r.lo > 70 ? 20.0 : 10.0
+        var b = (r.lo / step).rounded(.up) * step
+        while b <= r.hi {
+            let py = y(b, h: h, range: r)
+            if py > 14, py < h - 4 {
+                var line = Path()
+                line.move(to: CGPoint(x: 28, y: py))
+                line.addLine(to: CGPoint(x: w, y: py))
+                ctx.stroke(line, with: .color(StrandPalette.hairline), style: StrokeStyle(lineWidth: 0.5, dash: [2, 3]))
+                ctx.draw(Text("\(Int(b))").font(.system(size: 9, weight: .medium)).foregroundColor(StrandPalette.textTertiary),
+                         at: CGPoint(x: 3, y: py), anchor: .leading)
+            }
+            b += step
+        }
+        ctx.draw(Text("bpm").font(.system(size: 8)).foregroundColor(StrandPalette.textTertiary),
+                 at: CGPoint(x: 3, y: 8), anchor: .leading)
+    }
+
     private func drawHeartRate(in ctx: inout GraphicsContext, w: CGFloat, h: CGFloat) {
         let hr = timeline.hr
-        guard hr.count >= 2 else { return }
-        let all = hr.map(\.bpm).sorted()
-        let lo = Double(all[all.count / 50]) - 4, hi = Double(all.last!) + 4
-        func y(_ bpm: Int) -> CGFloat { h - CGFloat((Double(bpm) - lo) / Swift.max(1, hi - lo)) * (h - 18) - 4 }
+        guard hr.count >= 2, let r = bpmRange else { return }
+        func y(_ bpm: Int) -> CGFloat { self.y(Double(bpm), h: h, range: r) }
         // Only the samples in view, thinned to about two per point.
         let lower = Int(window.lowerBound) - 5, upper = Int(window.upperBound) + 5
         var first = 0, last = hr.count
@@ -333,6 +372,7 @@ struct SetTimelineEditorView: View {
     @State private var naming = false
     @State private var newName = ""
     @ObservedObject private var categories = ExerciseCategoryStore.shared
+    @ObservedObject private var workoutCategories = WorkoutCategoryStore.shared
     @Environment(\.dismiss) private var dismiss
 
     struct Touch {
@@ -450,13 +490,23 @@ struct SetTimelineEditorView: View {
     private var summaryLine: some View {
         var t = timeline
         t.edited = editor.sets
-        let sum = SetSummary(t) { categories.category(for: $0) }
+        let sum = SetSummary(t, workout: workoutCategories.fallback(startTs: t.startTs)) { categories.category(for: $0) }
         let uncertain = editor.sets.count - editor.counted.count
         var parts = ["\(sum.count) \(LiveIntervalModes.unitName(mode, count: sum.count))",
                      String(localized: "\(LiveIntervalTracker.clock(sum.workS)) working")]
         if let a = sum.avgRestS { parts.append(String(localized: "avg rest \(LiveIntervalTracker.clock(a))")) }
         if let d = sum.avgDrop60 { parts.append(String(localized: "recovery -\(d) bpm/60 s")) }
         return VStack(alignment: .leading, spacing: 4) {
+            if mode == .lifting {
+                HStack(spacing: 8) {
+                    Text("Workout")
+                        .font(StrandFont.caption.weight(.semibold))
+                        .foregroundStyle(StrandPalette.textTertiary)
+                    WorkoutCategoryPicker(selection: Binding(
+                        get: { workoutCategories.categories(startTs: timeline.startTs) },
+                        set: { workoutCategories.set($0, startTs: timeline.startTs); onChange(timeline) }))
+                }
+            }
             Text(parts.joined(separator: " · "))
                 .font(StrandFont.footnote.weight(.semibold))
                 .foregroundStyle(StrandPalette.textPrimary)
@@ -982,8 +1032,35 @@ struct SetTimelineEditorView: View {
                 .font(StrandFont.footnote.weight(.semibold))
                 .foregroundStyle(s.exercise == nil ? StrandPalette.textTertiary : StrandPalette.textPrimary)
             }
-            if let ex = s.exercise {
-                StrengthCategoryPicker(exercise: ex)
+            setCategoryRow(s)
+        }
+    }
+
+    /// The set's push / pull / legs: tap one to set it for this set alone, tap it again to go back to
+    /// its exercise's or the workout's, which shows as the lighter choice.
+    private func setCategoryRow(_ s: TimelineSet) -> some View {
+        let inherited = s.exercise.flatMap { categories.category(for: $0) } ?? workoutCategories.fallback(startTs: timeline.startTs)
+        return HStack(spacing: 6) {
+            ForEach(StrengthCategory.allCases, id: \.self) { c in
+                let own = s.category == c
+                let shown = own || (s.category == nil && inherited == c)
+                Button {
+                    if editor.setCategory([s.id], to: own ? nil : c, now: now) { afterEdit() }
+                } label: {
+                    Text(c.displayName)
+                        .font(StrandFont.caption.weight(.semibold))
+                        .foregroundStyle(own ? Color.white : (shown ? c.color : StrandPalette.textSecondary))
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(own ? c.color : (shown ? c.color.opacity(0.16) : StrandPalette.surfaceInset)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(shown ? [.isSelected] : [])
+            }
+            if s.category == nil, inherited != nil {
+                Text(s.exercise != nil ? "from exercise" : "from workout")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
             }
         }
     }

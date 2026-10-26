@@ -5,8 +5,7 @@ import StrandAnalytics
 
 /// Which sports get live set or interval tracking.
 enum LiveIntervalModes {
-    static let liftingSports: Set<String> = ["strength", "weightlifting", "bodybuilding", "powerlifting",
-                                             "calisthenics"]
+    static var liftingSports: Set<String> { WorkoutCategoryStore.strengthSports }
     static let intervalSports: Set<String> = ["assault bike", "hiit", "crossfit", "boot camp", "spinning",
                                               "indoor cycle", "row machine"]
     static let sprintSports: Set<String> = ["sprints"]

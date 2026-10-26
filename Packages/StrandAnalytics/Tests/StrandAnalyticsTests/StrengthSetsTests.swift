@@ -430,4 +430,21 @@ final class StrengthSetsTests: XCTestCase {
         XCTAssertEqual(sum.byCategory, [.push: 2, .pull: 1, .legs: 1])
         XCTAssertEqual(sum.rests, [100, 110, 160])
     }
+
+    /// A set's own push / pull / legs wins, then its exercise's, then the workout's for anything else.
+    func testCategoryPerSetThenExerciseThenWorkout() {
+        var e = SetTimelineEditor(sets: [TimelineSet(id: "a", start: 10, end: 50, exercise: "Bench press"),
+                                         TimelineSet(id: "b", start: 150, end: 190),
+                                         TimelineSet(id: "c", start: 300, end: 340)], bounds: 0...1000)
+        XCTAssertTrue(e.setCategory(["c"], to: .legs, now: 1))
+        XCTAssertEqual(e.log.last?.kind, .category)
+        var t = SetTimeline(startTs: 0, endTs: 1000, sport: "Strength", mode: "lifting", hr: [], beats: [],
+                            detected: [], detectedFrom: "heartRate")
+        t.edited = e.sets
+        let sum = SetSummary(t, workout: .pull) { StrengthCategory.guess(name: $0) }
+        XCTAssertEqual(sum.byCategory, [.push: 1, .pull: 1, .legs: 1])
+        XCTAssertEqual(SetSummary(t) { StrengthCategory.guess(name: $0) }.byCategory, [.push: 1, .legs: 1])
+        let back = try? JSONDecoder().decode(SetTimeline.self, from: JSONEncoder().encode(t))
+        XCTAssertEqual(back?.sets.last?.category, .legs)
+    }
 }

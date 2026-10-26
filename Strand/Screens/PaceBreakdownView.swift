@@ -8,6 +8,7 @@ import WhoopStore
 struct PaceBreakdownView: View {
     let days: [DailyMetric]
     let effortScale: EffortScale
+    var todayEffortFloor: Double? = nil
     var onOpenTrends: (() -> Void)? = nil
 
     /// One input's push on the ring, -1...1 of a full ring: + toward Too hard, - toward Under.
@@ -21,8 +22,10 @@ struct PaceBreakdownView: View {
     var body: some View {
         let today = Repository.localDayKey(Date())
         let stress = PacingDialCard.stressByDay(days)
-        let short = PacingMath.pacing(days: days, todayKey: today, window: .short, stressByDay: stress)
-        let long = PacingMath.pacing(days: days, todayKey: today, window: .long, stressByDay: stress)
+        let short = PacingMath.pacing(days: days, todayKey: today, window: .short, stressByDay: stress,
+                                      todayEffortFloor: todayEffortFloor)
+        let long = PacingMath.pacing(days: days, todayKey: today, window: .long, stressByDay: stress,
+                                     todayEffortFloor: todayEffortFloor)
         let overall = PacingMath.overall(short: short, long: long)
         ScreenScaffold(title: "Pace", subtitle: "What's pushing your load against your recovery") {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
@@ -200,7 +203,8 @@ struct PaceBreakdownView: View {
 
     private func weekRow(_ key: String, today: String, day: DailyMetric?, stress: Double?) -> some View {
         let charge: String = day?.recovery.map { "\(Int($0.rounded()))" } ?? "–"
-        let effort: String = day?.strain.map { UnitFormatter.effortDisplay($0, scale: effortScale) } ?? "–"
+        let e: Double? = key == today ? PacingMath.larger(day?.strain, todayEffortFloor) : day?.strain
+        let effort: String = e.map { UnitFormatter.effortDisplay($0, scale: effortScale) } ?? "–"
         let stressText: String = stress.map { String(format: "%.1f", $0) } ?? "–"
         return HStack {
             Text(Self.dayLabel(key, today: today)).frame(maxWidth: .infinity, alignment: .leading)

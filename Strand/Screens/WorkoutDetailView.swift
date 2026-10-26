@@ -85,6 +85,10 @@ struct WorkoutDetailView: View {
                        topBackground: liquidScaffoldSky()) {
             headerCard
             statStrip
+            #if os(iOS)
+            // Sets or intervals counted for this workout, and the way to correct them.
+            WorkoutSetsCard(row: row)
+            #endif
             routeCard
             hrCurveCard
             zonesCard

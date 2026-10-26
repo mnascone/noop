@@ -1093,8 +1093,11 @@ final class AICoachEngine: ObservableObject {
         }
         let scale = UnitPrefs.resolveEffortScale(UserDefaults.standard.string(forKey: UnitPrefs.effortScaleKey) ?? "")
         let stress = PacingDialCard.stressByDay(days)
-        let short = PacingMath.pacing(days: days, todayKey: todayKey, window: .short, stressByDay: stress)
-        let long = PacingMath.pacing(days: days, todayKey: todayKey, window: .long, stressByDay: stress)
+        let floor = PacingMath.todayEffortFloor(rows, todayKey: todayKey)
+        let short = PacingMath.pacing(days: days, todayKey: todayKey, window: .short, stressByDay: stress,
+                                      todayEffortFloor: floor)
+        let long = PacingMath.pacing(days: days, todayKey: todayKey, window: .long, stressByDay: stress,
+                                     todayEffortFloor: floor)
         if let overall = PacingMath.overall(short: short, long: long), let p = long ?? short {
             lines.append("  Pace (load against recovery, vs my own normal): \(PacingDialCard.stateWord(overall)). "
                          + PacingDialCard.detail(p, effortScale: scale) + ".")

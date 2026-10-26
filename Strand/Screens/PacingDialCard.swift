@@ -38,8 +38,11 @@ enum PacingMath {
 
     /// The change in Effort beyond the change in Charge (log ratios), so a 20% rise in Effort with Charge
     /// flat reads the same as Effort flat with Charge down 20%. ±0.35 fills the dial.
+    /// `todayEffortFloor`: the hardest workout logged today. Today's Effort comes from the strap's synced
+    /// heart rate, which can lag a workout you just saved, so pace counts today as at least that workout
+    /// and moves the moment it's logged.
     static func pacing(days: [DailyMetric], todayKey: String, window w: Window,
-                       stressByDay: [String: Double] = [:]) -> Pacing? {
+                       stressByDay: [String: Double] = [:], todayEffortFloor: Double? = nil) -> Pacing? {
         let span = w.recentDays - 1 + w.usualDays
         let past = RestDayRules.pastDayKeys(count: span, todayKey: todayKey)
         guard past.count == span else { return nil }
@@ -47,10 +50,16 @@ enum PacingMath {
         let usualKeys = Set(past.dropFirst(w.recentDays - 1))
         var cR: [Double] = [], cU: [Double] = [], eR: [Double] = [], eU: [Double] = []
         var sR: [Double] = [], sU: [Double] = []
+        var sawToday = false
         for d in days {
             if recentKeys.contains(d.day) {
                 if let c = d.recovery { cR.append(c) }
-                if let e = d.strain { eR.append(e) }
+                if d.day == todayKey {
+                    sawToday = true
+                    if let e = Self.larger(d.strain, todayEffortFloor) { eR.append(e) }
+                } else if let e = d.strain {
+                    eR.append(e)
+                }
                 if let st = stressByDay[d.day] { sR.append(st) }
             } else if usualKeys.contains(d.day) {
                 if let c = d.recovery { cU.append(c) }
@@ -58,6 +67,7 @@ enum PacingMath {
                 if let st = stressByDay[d.day] { sU.append(st) }
             }
         }
+        if !sawToday, let f = todayEffortFloor { eR.append(f) }
         guard cR.count >= w.minRecent, eR.count >= w.minRecent, cU.count >= w.minUsual, eU.count >= w.minUsual
         else { return nil }
         func mean(_ a: [Double]) -> Double { a.reduce(0, +) / Double(a.count) }
@@ -75,6 +85,19 @@ enum PacingMath {
         }
         return Pacing(chargeRecent: p.0, chargeUsual: p.1, effortRecent: p.2, effortUsual: p.3,
                       stressDelta: stressDelta, balance: min(1, max(-1, s / 0.35)))
+    }
+
+    static func larger(_ a: Double?, _ b: Double?) -> Double? {
+        switch (a, b) {
+        case let (x?, y?): return Swift.max(x, y)
+        default: return a ?? b
+        }
+    }
+
+    /// The hardest Effort among workouts that started today (local day), or nil.
+    static func todayEffortFloor(_ rows: [WorkoutRow], todayKey: String) -> Double? {
+        rows.filter { Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0.startTs))) == todayKey }
+            .compactMap(\.strain).max()
     }
 
     /// Long term weighted 70/30 over short term when it exists, else the short term alone.
@@ -104,6 +127,8 @@ struct PacingDialCard: View {
     @EnvironmentObject private var repo: Repository
     @State private var showStress = false
     @State private var showPace = false
+    /// The hardest workout logged today, so pace moves as soon as one is saved.
+    @State private var todayFloor: Double?
 
     static let ringDiameter: CGFloat = 84
 
@@ -127,8 +152,10 @@ struct PacingDialCard: View {
     var body: some View {
         let today = Repository.localDayKey(Date())
         let stress = stressByDay
-        let short = PacingMath.pacing(days: days, todayKey: today, window: .short, stressByDay: stress)
-        let long = PacingMath.pacing(days: days, todayKey: today, window: .long, stressByDay: stress)
+        let short = PacingMath.pacing(days: days, todayKey: today, window: .short, stressByDay: stress,
+                                      todayEffortFloor: todayFloor)
+        let long = PacingMath.pacing(days: days, todayKey: today, window: .long, stressByDay: stress,
+                                     todayEffortFloor: todayFloor)
         let overall = PacingMath.overall(short: short, long: long)
         let shown = long ?? short
         NoopCard {
@@ -166,10 +193,17 @@ struct PacingDialCard: View {
         }
         .accessibilityElement(children: .contain)
         .onAppear { StressNow.shared.attach(model: model) }
-        .task(id: repo.refreshSeq) { await StressNow.shared.refreshStored(repo: repo) }
+        // Also on a workout just saved: its row may still be landing in the store, so it counts directly.
+        .task(id: "\(repo.refreshSeq)-\(model.lastWorkout?.startTs ?? 0)") {
+            let key = Repository.localDayKey(Date())
+            var rows = await repo.workoutRows(days: 2)
+            if let w = model.lastWorkout { rows.append(w) }
+            todayFloor = PacingMath.todayEffortFloor(rows, todayKey: key)
+            await StressNow.shared.refreshStored(repo: repo)
+        }
         .sheet(isPresented: $showPace) {
             NavigationStack {
-                PaceBreakdownView(days: days, effortScale: effortScale,
+                PaceBreakdownView(days: days, effortScale: effortScale, todayEffortFloor: todayFloor,
                                   onOpenTrends: openTrendsFromPace)
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {

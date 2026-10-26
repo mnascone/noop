@@ -39,6 +39,14 @@ public struct WorkRestSegmenter: Sendable {
         public var minRestS: Int
         /// Smoothing time constant (seconds).
         public var smoothS: Double
+
+        public init(riseBPM: Double, fallBPM: Double, minWorkS: Int, minRestS: Int, smoothS: Double) {
+            self.riseBPM = riseBPM
+            self.fallBPM = fallBPM
+            self.minWorkS = minWorkS
+            self.minRestS = minRestS
+            self.smoothS = smoothS
+        }
     }
 
     /// Thresholds per mode. `sensitivity` above 1 splits more readily (smaller swings count), below 1 less.
@@ -59,6 +67,12 @@ public struct WorkRestSegmenter: Sendable {
         public var endTs: Int
         public var peakBpm: Int
         public var durationS: Int { endTs - startTs }
+
+        public init(startTs: Int, endTs: Int, peakBpm: Int) {
+            self.startTs = startTs
+            self.endTs = endTs
+            self.peakBpm = peakBpm
+        }
     }
 
     public enum Phase: Sendable, Equatable {
@@ -111,6 +125,12 @@ public struct WorkRestSegmenter: Sendable {
     public init(mode: Mode, sensitivity: Double = 1.0) {
         self.mode = mode
         self.params = Self.params(for: mode, sensitivity: sensitivity)
+    }
+
+    /// With explicit thresholds, such as ones learned from your corrections (`SetCalibration`).
+    public init(mode: Mode, params: Params) {
+        self.mode = mode
+        self.params = params
     }
 
     /// Feed one heart-rate sample. Out-of-order or implausible samples are ignored.
@@ -190,7 +210,13 @@ public struct WorkRestSegmenter: Sendable {
     }
 
     public func summary(now: Int) -> Summary {
-        let r = rests
+        Self.summary(intervals: intervals, phase: phase, now: now)
+    }
+
+    /// A summary over any list of sets, such as the segmenter's after a heart-rate-variability check
+    /// dropped some.
+    public static func summary(intervals: [Interval], phase: Phase, now: Int) -> Summary {
+        let r = intervals.count > 1 ? (1..<intervals.count).map { intervals[$0].startTs - intervals[$0 - 1].endTs } : []
         let works = intervals.map(\.durationS)
         var currentRest: Int?
         var currentWork: Int?

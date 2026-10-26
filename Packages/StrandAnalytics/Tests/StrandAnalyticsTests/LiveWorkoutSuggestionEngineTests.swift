@@ -479,4 +479,29 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
         let out = feedWalk(&e, from: 0, to: E.walkMinBoutS + 120, bpm: 95, mps: 0.2)
         XCTAssertTrue(starts(out).isEmpty)
     }
+
+    // MARK: - Driving past a place
+
+    /// Driving through the area with heart rate up (a tense drive, a coffee) starts nothing.
+    func testDrivingThroughAPlaceStartsNothing() {
+        var e = engine(resting: 60)
+        _ = e.handle(.motion(.automotive), at: 0)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 10)
+        let out = feedHR(&e, from: 10, to: 10 + E.placeMinDwellS + 300) { _ in 95 }
+        XCTAssertTrue(starts(out).isEmpty)
+    }
+
+    /// Parking and walking in: the dwell runs from when the car stopped, then a lift starts as usual.
+    func testParkingRestartsTheDwellThenStarts() {
+        var e = engine(resting: 60)
+        _ = e.handle(.motion(.automotive), at: 0)
+        _ = e.handle(.placeEntered(id: "gym", params: .lifting), at: 10)
+        feedHR(&e, from: 10, to: 120) { _ in 70 }
+        _ = e.handle(.motion(.walking), at: 120)
+        var out = feedHR(&e, from: 120, to: 120 + E.placeMinDwellS - 5) { _ in 95 }
+        XCTAssertTrue(starts(out).isEmpty, "dwell counts from parking, not from crossing the edge")
+        out = feedHR(&e, from: 120 + E.placeMinDwellS - 5, to: 120 + E.placeMinDwellS + 60) { _ in 95 }
+        XCTAssertEqual(starts(out).first?.0, .place("gym"))
+        XCTAssertGreaterThanOrEqual(starts(out).first?.1 ?? 0, 120)
+    }
 }

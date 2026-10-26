@@ -16,7 +16,9 @@ import Foundation
 // during any active workout.
 //
 // Start rules:
-//   - Place: inside for `placeMinDwellS`, at least `minHRCoverageSamples` samples since arrival in the last
+//   - Place: inside and NOT driving for `placeMinDwellS` (driving inside a place restarts the dwell when
+//     it stops, so driving past or parking for a minute starts nothing), at least `minHRCoverageSamples`
+//     samples since arrival in the last
 //     `startWindowS`, and at least `elevatedFraction` of them at or above resting + the place's margin.
 //     Start is the first elevated sample of the current elevated stretch, never before arrival.
 //   - Walk / run: a walking or running bout held for `walkMinBoutS` (`runMinBoutS` when mostly running),
@@ -376,6 +378,10 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         } else if motion.isOnFoot {
             lastOnFootTs = ts
         }
+        // Stopped driving inside a place: the visit starts now, not when the car crossed the edge.
+        if m != .automotive, motion == .automotive, currentPlace != nil, let entered = placeEnteredAt {
+            placeEnteredAt = max(entered, ts)
+        }
         drivingSince = (m == .automotive) ? (drivingSince ?? ts) : nil
         motion = m
         lastMotionTs = ts
@@ -473,7 +479,7 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
 
     private mutating func evaluateStart(_ out: inout [Action]) {
         if config.placesEnabled, let place = currentPlace, !placeStartRaised, let entered = placeEnteredAt,
-           now - entered >= Self.placeMinDwellS {
+           motion != .automotive, drivingSince == nil, now - entered >= Self.placeMinDwellS {
             let window = recent(seconds: Self.startWindowS).filter { $0.ts >= entered }
             if window.count >= Self.minHRCoverageSamples {
                 let floor = max(config.restingBpm + placeParams.marginBPM,

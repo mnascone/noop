@@ -24,7 +24,7 @@ struct PlaceEditorView: View {
         if place != nil {
             _camera = State(initialValue: .region(MKCoordinateRegion(
                 center: CLLocationCoordinate2D(latitude: p.latitude, longitude: p.longitude),
-                latitudinalMeters: max(600, p.radiusM * 5), longitudinalMeters: max(600, p.radiusM * 5))))
+                latitudinalMeters: max(250, p.radiusM * 6), longitudinalMeters: max(250, p.radiusM * 6))))
         }
     }
 
@@ -70,10 +70,10 @@ struct PlaceEditorView: View {
                 }
                 .disabled(locating)
             } footer: {
-                Text("Tap the map to drop the pin. The circle is the area that counts as being there.")
+                Text("Tap the map to drop the pin on the building. The circle is the area that counts as being there.")
             }
 
-            Section("Details") {
+            Section {
                 TextField("Name, e.g. Gym, Rink", text: $place.name)
                 Picker("Sport", selection: $place.sport) {
                     ForEach(WorkoutCatalog.all.map(\.name), id: \.self) { name in
@@ -87,10 +87,15 @@ struct PlaceEditorView: View {
                     place.marginBPM = d.marginBPM
                     place.quietEndMin = d.quietEndMin
                 }
-                Stepper(value: $place.radiusM, in: AutoTrackingPrefs.minRadiusM...AutoTrackingPrefs.maxRadiusM,
-                        step: 25) {
-                    Text("Area: \(Int(place.radiusM)) m around the pin")
+                VStack(alignment: .leading, spacing: NoopMetrics.space1) {
+                    Text("Circle: \(Int(place.radiusM)) m around the pin")
+                    Slider(value: $place.radiusM, in: AutoTrackingPrefs.minRadiusM...300, step: 5)
+                        .tint(StrandPalette.accent)
                 }
+            } header: {
+                Text("Details")
+            } footer: {
+                Text("Keep it tight around the building. NOOP checks with GPS that you've stopped inside the circle, out of the car, before it counts you as there, so driving past or the shop next door starts nothing.")
             }
 
             Section {
@@ -183,8 +188,8 @@ struct PlaceEditorView: View {
         if place.name.isEmpty, let n = item.name { place.name = n }
         results = []
         query = ""
-        camera = .region(MKCoordinateRegion(center: c, latitudinalMeters: max(600, place.radiusM * 5),
-                                            longitudinalMeters: max(600, place.radiusM * 5)))
+        camera = .region(MKCoordinateRegion(center: c, latitudinalMeters: max(250, place.radiusM * 6),
+                                            longitudinalMeters: max(250, place.radiusM * 6)))
     }
 
     private func useMyLocation(movePinToo: Bool = true) {
@@ -196,8 +201,8 @@ struct PlaceEditorView: View {
                 place.latitude = loc.coordinate.latitude
                 place.longitude = loc.coordinate.longitude
             }
-            camera = .region(MKCoordinateRegion(center: loc.coordinate, latitudinalMeters: 800,
-                                                longitudinalMeters: 800))
+            camera = .region(MKCoordinateRegion(center: loc.coordinate, latitudinalMeters: 400,
+                                                longitudinalMeters: 400))
         }
     }
 }

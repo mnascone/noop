@@ -35,8 +35,9 @@ enum AutoTrackingPrefs {
     static let intervalSensitivityKey = "noopIntervalSensitivity"
     static let placesKey = "noopWorkoutPlaces"
 
-    static let defaultRadiusM = 150.0
-    static let minRadiusM = 100.0
+    /// Your circle. Small ones work: the geofence only wakes the check, and GPS decides you're inside.
+    static let defaultRadiusM = 60.0
+    static let minRadiusM = 20.0
     static let maxRadiusM = 500.0
 
     enum Mode: String, CaseIterable, Identifiable {

@@ -161,7 +161,8 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         places = AutoTrackingPrefs.loadPlaces()
         syncRegions(enabled: placesOn)
 
-        if walkOn, CMMotionActivityManager.isActivityAvailable() {
+        // Motion runs for places too: it's how an arrival tells parking from driving past.
+        if walkOn || placesOn, CMMotionActivityManager.isActivityAvailable() {
             if !motionUpdatesRunning {
                 motionUpdatesRunning = true
                 motionManager.startActivityUpdates(to: .main) { [weak self] activity in
@@ -200,7 +201,8 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
             // iOS allows 20 monitored regions per app.
             for p in places.prefix(19) {
                 let center = CLLocationCoordinate2D(latitude: p.latitude, longitude: p.longitude)
-                let radius = min(p.radiusM, locationManager.maximumRegionMonitoringDistance)
+                // At least the wake size: smaller circles are checked by GPS once this fires.
+                let radius = min(max(p.radiusM, Self.wakeRadiusM), locationManager.maximumRegionMonitoringDistance)
                 let r = CLCircularRegion(center: center, radius: radius, identifier: Self.regionPrefix + p.id)
                 r.notifyOnEntry = true
                 r.notifyOnExit = true
@@ -302,22 +304,87 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
     /// when the motion classifier still says walking), while a walking bout is being judged, and in the
     /// window after leaving a place. Off the rest of the time: continuous location costs phone battery.
     private var watchingSpeed = false
+    /// GPS is on, for walking pace or for checking an arrival.
+    private var updatingLocation = false
     /// The last good fix, for working out speed when a fix carries none.
     private var lastSpeedFix: CLLocation?
+
+    // MARK: Arrivals
+    //
+    // iOS geofences are coarse (they fire somewhere around 100-200 m out, and late), so a crossing only
+    // WAKES the check. A place counts as arrived when precise GPS puts you inside YOUR circle, slower than
+    // walking pace and not in a car, for `arrivalConfirmS`. Driving past, stopping at the light outside,
+    // or the coffee shop next door never gets that far. The visit, and its dwell, start at the first fix
+    // that held.
+
+    /// The registered geofence is at least this big, whatever the circle: iOS doesn't fire reliably on
+    /// smaller ones. The circle itself is checked by GPS.
+    static let wakeRadiusM = 120.0
+    static let arrivalConfirmS: TimeInterval = 45
+    /// Stop checking a crossing that hasn't become an arrival after this long.
+    static let arrivalWatchMaxS: TimeInterval = 20 * 60
+    /// Inside the geofence, not yet confirmed: when the check began, and the first fix that's held since.
+    private var arriving: [String: (since: Date, heldFrom: Date?)] = [:]
+
+    private func beginArrivalCheck(_ id: String) {
+        guard engine.currentPlace != id, arriving[id] == nil else { return }
+        arriving[id] = (Date(), nil)
+        if let p = place(id: id) { log("auto: near \(p.name), checking you've arrived") }
+        syncLocationUpdates()
+    }
+
+    /// One fix against every place being checked.
+    private func checkArrivals(_ fix: CLLocation) {
+        guard !arriving.isEmpty, fix.horizontalAccuracy >= 0, fix.horizontalAccuracy < 100,
+              Date().timeIntervalSince(fix.timestamp) < 30 else { return }
+        for (id, state) in arriving {
+            guard let p = place(id: id) else { arriving[id] = nil; continue }
+            if Date().timeIntervalSince(state.since) > Self.arrivalWatchMaxS {
+                arriving[id] = nil
+                log("auto: didn't settle at \(p.name), stopped checking")
+                continue
+            }
+            let centre = CLLocation(latitude: p.latitude, longitude: p.longitude)
+            // Half the fix's uncertainty (at most 40 m) counts in your favour: indoors GPS is loose.
+            let inside = fix.distance(from: centre) - min(fix.horizontalAccuracy * 0.5, 40) <= p.radiusM
+            let slow = fix.speed < 0 || fix.speed < 2.0
+            let notDriving = lastFedMotion != .automotive
+            guard inside, slow, notDriving else {
+                arriving[id] = (state.since, nil)
+                continue
+            }
+            let held = state.heldFrom ?? fix.timestamp
+            if fix.timestamp.timeIntervalSince(held) >= Self.arrivalConfirmS {
+                arriving[id] = nil
+                log("auto: arrived at \(p.name)")
+                feed(.placeEntered(id: id, params: p.params), at: held)
+            } else {
+                arriving[id] = (state.since, held)
+            }
+        }
+        syncLocationUpdates()
+    }
+
     private func syncLocationUpdates() {
-        let want = engine.wantsLocationUpdates && AutoTrackingPrefs.walkEnabled
-            && (locationAuth == .authorizedAlways || locationAuth == .authorizedWhenInUse)
-        if want, !watchingSpeed {
-            watchingSpeed = true
+        let authorized = locationAuth == .authorizedAlways || locationAuth == .authorizedWhenInUse
+        let wantSpeed = engine.wantsLocationUpdates && AutoTrackingPrefs.walkEnabled && authorized
+        let wantArrival = !arriving.isEmpty && AutoTrackingPrefs.placesEnabled && authorized
+        if wantSpeed != watchingSpeed {
+            watchingSpeed = wantSpeed
+            lastSpeedFix = nil
+            if wantSpeed { log("auto: watching walking pace by GPS") }
+        }
+        let want = wantSpeed || wantArrival
+        locationManager.desiredAccuracy = wantArrival ? kCLLocationAccuracyBest : kCLLocationAccuracyNearestTenMeters
+        if want, !updatingLocation {
+            updatingLocation = true
             if locationAuth == .authorizedAlways { locationManager.allowsBackgroundLocationUpdates = true }
-            // Keep fixes coming while standing still: a stop is exactly what this watches for.
+            // Keep fixes coming while standing still: a stop, or settling in, is exactly what this watches for.
             locationManager.pausesLocationUpdatesAutomatically = false
             locationManager.activityType = .fitness
-            lastSpeedFix = nil
             locationManager.startUpdatingLocation()
-            log("auto: watching walking pace by GPS")
-        } else if !want, watchingSpeed {
-            watchingSpeed = false
+        } else if !want, updatingLocation {
+            updatingLocation = false
             locationManager.stopUpdatingLocation()
             locationManager.allowsBackgroundLocationUpdates = false
             lastSpeedFix = nil
@@ -381,7 +448,7 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
     }
 
     private func catchUpMotion() {
-        guard AutoTrackingPrefs.walkEnabled, CMMotionActivityManager.isActivityAvailable() else { return }
+        guard AutoTrackingPrefs.anyEnabled, CMMotionActivityManager.isActivityAvailable() else { return }
         lastCatchUp = Date()
         let now = Date()
         let from = max(lastFedActivityStart ?? .distantPast, now.addingTimeInterval(-45 * 60))
@@ -681,11 +748,13 @@ extension AutoWorkoutTracker: @preconcurrency CLLocationManagerDelegate {
         guard let id = Self.placeId(from: region.identifier), let p = place(id: id) else { return }
         switch state {
         case .inside:
-            if engine.currentPlace != id { log("auto: arrived at \(p.name)") }
-            feed(.placeEntered(id: id, params: p.params))
+            // Near, not yet there: GPS confirms you've stopped inside your circle, out of the car.
+            beginArrivalCheck(id)
         case .outside:
+            arriving[id] = nil
             if engine.currentPlace == id { log("auto: left \(p.name)") }
             feed(.placeExited(id: id))
+            syncLocationUpdates()
         case .unknown:
             break
         }
@@ -703,6 +772,9 @@ extension AutoWorkoutTracker: @preconcurrency CLLocationManagerDelegate {
             if let best { lastKnownLocation = best.coordinate }
             done(best)
             return
+        }
+        if !arriving.isEmpty, let best = locations.min(by: { $0.horizontalAccuracy < $1.horizontalAccuracy }) {
+            checkArrivals(best)
         }
         if watchingSpeed {
             for loc in locations where loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy < 50 {

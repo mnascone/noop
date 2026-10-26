@@ -40,6 +40,12 @@ struct WorkoutSetsCard: View {
                                     .foregroundStyle(StrandPalette.textSecondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
+                            if let n = Self.likelyFixes(r), n > 0 {
+                                Label(String(localized: "\(n) suggested fixes: short breaks or very short sets"),
+                                      systemImage: "exclamationmark.circle")
+                                    .font(StrandFont.caption.weight(.semibold))
+                                    .foregroundStyle(StrandPalette.statusWarning)
+                            }
                             Button {
                                 editing = true
                             } label: {
@@ -89,6 +95,15 @@ struct WorkoutSetsCard: View {
         }
     }
 
+    /// How many fixes the editor would suggest, for a record you haven't corrected yet.
+    static func likelyFixes(_ r: WorkoutSetsRecord) -> Int? {
+        guard r.edited == nil else { return nil }
+        let s = r.sets.sorted { $0.start < $1.start }
+        let short = s.filter { $0.end - $0.start < WorkoutSetsEditor.shortSetS }.count
+        let breaks = s.count > 1 ? (1..<s.count).filter { s[$0].start - s[$0 - 1].end < WorkoutSetsEditor.shortBreakS }.count : 0
+        return short + breaks
+    }
+
     private func overline(_ r: WorkoutSetsRecord) -> LocalizedStringKey {
         if r.edited != nil { return "Corrected by you" }
         if r.hr.isEmpty { return "Not counted yet" }
@@ -113,6 +128,10 @@ struct WorkoutSetsEditor: View {
     @State private var paint: ClosedRange<Int>?
     @State private var saving = false
     @State private var fitNote: String?
+    /// Earlier versions of `sets`, for Undo.
+    @State private var history: [[WorkoutSetsRecord.SetSpan]] = []
+    /// Starts of sets you made by splitting: the break before them isn't suggested for joining.
+    @State private var userSplits: Set<Int> = []
     @EnvironmentObject private var repo: Repository
     @Environment(\.dismiss) private var dismiss
 
@@ -126,29 +145,57 @@ struct WorkoutSetsEditor: View {
     private var mode: WorkRestSegmenter.Mode { record.segmenterMode }
     private var unit: String { LiveIntervalModes.unitName(mode, count: 1) }
 
+    /// A break this short between two sets is suggested for joining; a set this short for deleting.
+    static let shortBreakS = 45
+    static let shortSetS = 12
+
     var body: some View {
         List {
             Section {
                 editableChart
-                    .frame(height: 160)
+                    .frame(height: 170)
                     .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
-                if let t = addAt {
-                    Button {
-                        add(at: t)
-                    } label: {
-                        Label(String(localized: "Add a \(unit) at \(offset(t))"), systemImage: "plus.circle.fill")
+                HStack(spacing: 10) {
+                    actionButton(addAt.map { String(localized: "Add at \(offset($0))") } ?? String(localized: "Add a \(unit)"),
+                                 icon: "plus") {
+                        if let t = addAt { add(at: t) } else { addAfterLast() }
                     }
-                } else {
-                    Button {
-                        addAfterLast()
-                    } label: {
-                        Label(String(localized: "Add a \(unit)"), systemImage: "plus.circle")
-                    }
+                    actionButton(String(localized: "Undo"), icon: "arrow.uturn.backward", enabled: !history.isEmpty) { undo() }
+                    Spacer(minLength: 0)
                 }
+                .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 8, trailing: 12))
             } footer: {
                 Text(record.hr.isEmpty
                      ? "No heart rate for this workout yet. Add your \(LiveIntervalModes.unitName(mode, count: 2)) and set their times and reps below."
-                     : "Drag a \(unit)'s edge to move it. Drag across a break to join the \(LiveIntervalModes.unitName(mode, count: 2)) either side, or across empty time to add one. Tap to select.")
+                     : "Drag an edge to move it. Drag over a gap to join the \(LiveIntervalModes.unitName(mode, count: 2)) either side, or over empty time to add one. Tap to select.")
+            }
+
+            let fixes = suggestions
+            if !fixes.isEmpty {
+                Section {
+                    ForEach(fixes) { f in
+                        HStack(alignment: .center, spacing: 10) {
+                            Image(systemName: f.icon)
+                                .foregroundStyle(StrandPalette.statusWarning)
+                                .frame(width: 20)
+                            Text(f.text)
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 4)
+                            Button(f.verb) { apply([f]) }
+                                .font(StrandFont.footnote.weight(.semibold))
+                                .buttonStyle(.borderless)
+                                .tint(StrandPalette.accent)
+                        }
+                    }
+                    if fixes.count > 1 {
+                        Button(String(localized: "Fix all \(fixes.count)")) { apply(fixes) }
+                            .font(StrandFont.subhead.weight(.semibold))
+                    }
+                } header: {
+                    Text("Suggested fixes")
+                }
             }
 
             Section {
@@ -167,18 +214,17 @@ struct WorkoutSetsEditor: View {
                 }
             } header: {
                 Text("\(sets.count) \(LiveIntervalModes.unitName(mode, count: sets.count))")
-            } footer: {
-                Text("Swipe left to delete one that wasn't real, or join it with the next when two were one.")
             }
 
             if let i = selected, i < sets.count {
-                Section(String(localized: "Selected \(unit)")) {
+                Section(String(localized: "\(unit.capitalized) \(i + 1)")) {
                     edgeStepper(String(localized: "Starts"), value: sets[i].start, lo: i > 0 ? sets[i - 1].end + 1 : record.startTs,
-                                hi: sets[i].end - 5) { sets[i].start = $0 }
+                                hi: sets[i].end - 5) { v in change { sets[i].start = v } }
                     edgeStepper(String(localized: "Ends"), value: sets[i].end, lo: sets[i].start + 5,
-                                hi: i + 1 < sets.count ? sets[i + 1].start - 1 : record.endTs) { sets[i].end = $0 }
+                                hi: i + 1 < sets.count ? sets[i + 1].start - 1 : record.endTs) { v in change { sets[i].end = v } }
                     if mode == .lifting {
-                        Stepper(value: Binding(get: { sets[i].reps ?? 0 }, set: { sets[i].reps = $0 > 0 ? $0 : nil }),
+                        Stepper(value: Binding(get: { sets[i].reps ?? 0 },
+                                               set: { v in change { sets[i].reps = v > 0 ? v : nil } }),
                                 in: 0...100) {
                             Text(sets[i].reps.map { String(localized: "Reps: \($0)") } ?? String(localized: "Reps: not set"))
                         }
@@ -189,7 +235,7 @@ struct WorkoutSetsEditor: View {
             Section {
                 if record.edited != nil || sets != record.detected.sorted(by: { $0.start < $1.start }) {
                     Button("Back to what was counted") {
-                        sets = record.detected.sorted { $0.start < $1.start }
+                        change { sets = record.detected.sorted { $0.start < $1.start } }
                         selected = nil
                     }
                 }
@@ -208,14 +254,103 @@ struct WorkoutSetsEditor: View {
         }
     }
 
+    private func actionButton(_ title: String, icon: String, enabled: Bool = true,
+                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(StrandFont.footnote.weight(.semibold))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Capsule().fill(StrandPalette.accent.opacity(enabled ? 0.12 : 0.05)))
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(enabled ? StrandPalette.accent : StrandPalette.textTertiary)
+        .disabled(!enabled)
+    }
+
+    // MARK: Suggestions
+
+    struct Fix: Identifiable {
+        enum Kind { case join(start: Int), delete(start: Int) }
+        let kind: Kind
+        let text: String
+        let verb: String
+        let icon: String
+        var id: String {
+            switch kind {
+            case .join(let s): return "j\(s)"
+            case .delete(let s): return "d\(s)"
+            }
+        }
+    }
+
+    /// Short breaks inside what looks like one set, and sets too short to be real. Keyed by set start, so
+    /// applying one doesn't shift the others. Breaks you made by splitting aren't suggested back.
+    private var suggestions: [Fix] {
+        var out: [Fix] = []
+        for i in sets.indices {
+            let s = sets[i]
+            if s.end - s.start < Self.shortSetS {
+                out.append(Fix(kind: .delete(start: s.start),
+                               text: String(localized: "\(unit.capitalized) \(i + 1) lasts \(LiveIntervalTracker.clock(s.end - s.start)). Probably not a real one."),
+                               verb: String(localized: "Delete"), icon: "minus.circle"))
+            }
+            if i + 1 < sets.count {
+                let gap = sets[i + 1].start - s.end
+                if gap < Self.shortBreakS, !userSplits.contains(sets[i + 1].start) {
+                    out.append(Fix(kind: .join(start: s.start),
+                                   text: String(localized: "Only \(LiveIntervalTracker.clock(gap)) between \(i + 1) and \(i + 2). Probably one \(unit)."),
+                                   verb: String(localized: "Join"), icon: "arrow.left.and.right"))
+                }
+            }
+        }
+        return out
+    }
+
+    private func apply(_ fixes: [Fix]) {
+        change {
+            // Joins first, latest first, so earlier starts stay put; then deletes.
+            let joins = fixes.compactMap { f -> Int? in if case .join(let s) = f.kind { return s } else { return nil } }
+            for start in joins.sorted(by: >) {
+                if let i = sets.firstIndex(where: { $0.start == start }), i + 1 < sets.count { joinRaw(i) }
+            }
+            let deletes = fixes.compactMap { f -> Int? in if case .delete(let s) = f.kind { return s } else { return nil } }
+            for start in deletes {
+                // A short set that a join above swallowed is gone already, and that's fine.
+                sets.removeAll { $0.start == start && $0.end - $0.start < Self.shortSetS }
+            }
+        }
+        selected = nil
+    }
+
+    // MARK: Undo
+
+    private func change(_ edit: () -> Void) {
+        history.append(sets)
+        if history.count > 50 { history.removeFirst() }
+        edit()
+    }
+
+    private func undo() {
+        guard let last = history.popLast() else { return }
+        sets = last
+        selected = nil
+        addAt = nil
+    }
+
     // MARK: Rows
 
     private func setRow(_ i: Int, _ s: WorkoutSetsRecord.SetSpan) -> some View {
         let rest = i > 0 ? s.start - sets[i - 1].end : nil
         let peak = record.hr.filter { $0.ts >= s.start && $0.ts <= s.end + 20 }.map(\.bpm).max()
-        return HStack(alignment: .firstTextBaseline) {
+        return HStack(alignment: .center) {
+            Text("\(i + 1)")
+                .font(StrandFont.subhead.weight(.bold))
+                .foregroundStyle(StrandPalette.accent)
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(StrandPalette.accent.opacity(0.12)))
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(unit.capitalized) \(i + 1)")
+                Text(LiveIntervalTracker.clock(s.end - s.start) + (s.reps.map { " · " + String(localized: "\($0) reps") } ?? ""))
                     .font(StrandFont.subhead.weight(.semibold))
                     .foregroundStyle(StrandPalette.textPrimary)
                 Text(detailLine(s, rest: rest, peak: peak))
@@ -223,16 +358,27 @@ struct WorkoutSetsEditor: View {
                     .foregroundStyle(StrandPalette.textTertiary)
             }
             Spacer()
-            if let reps = s.reps {
-                Text(String(localized: "\(reps) reps"))
-                    .font(StrandFont.caption.weight(.semibold))
+            Menu {
+                if i + 1 < sets.count {
+                    Button { merge(i) } label: { Label("Join with next", systemImage: "arrow.down.to.line") }
+                }
+                if s.end - s.start >= 20 {
+                    Button { split(i) } label: { Label("Split in two", systemImage: "scissors") }
+                }
+                Button(role: .destructive) { delete(i) } label: { Label("Delete", systemImage: "trash") }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 20))
                     .foregroundStyle(StrandPalette.textSecondary)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.borderless)
         }
     }
 
     private func detailLine(_ s: WorkoutSetsRecord.SetSpan, rest: Int?, peak: Int?) -> String {
-        var parts = ["\(offset(s.start))–\(offset(s.end))", LiveIntervalTracker.clock(s.end - s.start)]
+        var parts = ["\(offset(s.start))–\(offset(s.end))"]
         if let rest { parts.append(String(localized: "rest \(LiveIntervalTracker.clock(rest)) before")) }
         if let peak { parts.append(String(localized: "peak \(peak) bpm")) }
         return parts.joined(separator: " · ")
@@ -265,7 +411,8 @@ struct WorkoutSetsEditor: View {
                 t0 + Int((Double(Swift.min(w, Swift.max(0, x)) / w) * Double(t1 - t0)).rounded())
             }
             let toX: (Int) -> CGFloat = { ts in CGFloat(Double(ts - t0) / Double(t1 - t0)) * w }
-            SetsChart(record: record, sets: sets, selected: selected, marker: addAt, paint: paint)
+            SetsChart(record: record, sets: sets, selected: selected, marker: addAt, paint: paint,
+                      labelled: true, flagBreaksUnder: Self.shortBreakS)
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 6)
@@ -288,6 +435,7 @@ struct WorkoutSetsEditor: View {
             }
             dragMode = best?.mode ?? .paint(from: toTs(x))
             addAt = nil
+            history.append(sets)
         }
         let ts = toTs(v.location.x)
         switch dragMode {
@@ -312,9 +460,13 @@ struct WorkoutSetsEditor: View {
             let end = ([r.upperBound] + touched.map(\.end)).max()!
             let reps = touched.compactMap(\.reps).reduce(0, +)
             sets.removeAll { $0.end >= r.lowerBound && $0.start <= r.upperBound }
+            userSplits.subtract(touched.map(\.start))
             sets.append(.init(start: start, end: end, reps: reps > 0 ? reps : nil))
             sets.sort { $0.start < $1.start }
             selected = sets.firstIndex { $0.start == start }
+        } else if case .paint? = dragMode {
+            // A tiny drag that changed nothing shouldn't take an Undo step.
+            if history.last == sets { history.removeLast() }
         } else {
             normalize()
         }
@@ -357,8 +509,10 @@ struct WorkoutSetsEditor: View {
         let start = max(before + 1, ts - 20)
         let end = min(after - 1, start + 40)
         guard end - start >= 5 else { return }
-        sets.append(.init(start: start, end: end, reps: nil))
-        sets.sort { $0.start < $1.start }
+        change {
+            sets.append(.init(start: start, end: end, reps: nil))
+            sets.sort { $0.start < $1.start }
+        }
         selected = sets.firstIndex { $0.start == start }
         addAt = nil
     }
@@ -368,23 +522,49 @@ struct WorkoutSetsEditor: View {
         let start = min(record.endTs - 10, (sets.last?.end ?? record.startTs) + (sets.isEmpty ? 60 : 90))
         let end = min(record.endTs, start + 40)
         guard end - start >= 5 else { return }
-        sets.append(.init(start: start, end: end, reps: nil))
-        sets.sort { $0.start < $1.start }
+        change {
+            sets.append(.init(start: start, end: end, reps: nil))
+            sets.sort { $0.start < $1.start }
+        }
         selected = sets.firstIndex { $0.start == start }
     }
 
     private func delete(_ i: Int) {
-        sets.remove(at: i)
+        change { sets.remove(at: i) }
         selected = nil
     }
 
     private func merge(_ i: Int) {
         guard i + 1 < sets.count else { return }
+        change { joinRaw(i) }
+        selected = i
+    }
+
+    /// Set `i` and the next become one, reps added.
+    private func joinRaw(_ i: Int) {
         let a = sets[i], b = sets[i + 1]
         let reps: Int? = (a.reps ?? 0) + (b.reps ?? 0) > 0 ? (a.reps ?? 0) + (b.reps ?? 0) : nil
         sets[i] = .init(start: a.start, end: b.end, reps: reps)
         sets.remove(at: i + 1)
-        selected = i
+        userSplits.remove(b.start)
+    }
+
+    /// Two sets where heart rate dips lowest in the middle of this one (or at its middle without heart
+    /// rate), with a short break between.
+    private func split(_ i: Int) {
+        let s = sets[i]
+        let lo = s.start + (s.end - s.start) / 5, hi = s.end - (s.end - s.start) / 5
+        let inside = record.hr.filter { $0.ts >= lo && $0.ts <= hi }
+        let cut = inside.min(by: { $0.bpm < $1.bpm })?.ts ?? (s.start + s.end) / 2
+        let first = WorkoutSetsRecord.SetSpan(start: s.start, end: max(s.start + 5, cut - 3), reps: nil)
+        let second = WorkoutSetsRecord.SetSpan(start: min(s.end - 5, cut + 3), end: s.end, reps: nil)
+        guard second.start > first.end else { return }
+        change {
+            sets[i] = first
+            sets.insert(second, at: i + 1)
+        }
+        userSplits.insert(second.start)
+        selected = i + 1
     }
 
     // MARK: Save
@@ -439,6 +619,10 @@ struct SetsChart: View {
     var marker: Int? = nil
     /// A span being drawn, outlined.
     var paint: ClosedRange<Int>? = nil
+    /// Number each set at its top.
+    var labelled = false
+    /// Mark breaks shorter than this (seconds) in amber.
+    var flagBreaksUnder: Int? = nil
     var onTap: ((Int) -> Void)? = nil
 
     var body: some View {
@@ -464,6 +648,20 @@ struct SetsChart: View {
                     lastTs = s.ts
                 }
                 ctx.stroke(line, with: .color(StrandPalette.metricRose), lineWidth: 1.5)
+                if labelled {
+                    for (i, s) in sets.enumerated() where x(s.end) - x(s.start) >= 12 {
+                        ctx.draw(Text("\(i + 1)").font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(StrandPalette.accent),
+                                 at: CGPoint(x: (x(s.start) + x(s.end)) / 2, y: 8))
+                    }
+                }
+                if let limit = flagBreaksUnder, sets.count > 1 {
+                    for i in 0..<(sets.count - 1) where sets[i + 1].start - sets[i].end < limit {
+                        let mid = (x(sets[i].end) + x(sets[i + 1].start)) / 2
+                        let r = CGRect(x: mid - 7, y: size.height - 7, width: 14, height: 5)
+                        ctx.fill(Path(roundedRect: r, cornerRadius: 2.5), with: .color(StrandPalette.statusWarning))
+                    }
+                }
                 if let i = selected, i < sets.count {
                     // Handles on the selected set's edges, to drag.
                     for edge in [sets[i].start, sets[i].end] {

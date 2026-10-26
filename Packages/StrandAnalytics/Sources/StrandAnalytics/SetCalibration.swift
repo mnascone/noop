@@ -9,6 +9,8 @@ import Foundation
 /// pulls heart-rate variability down and fidgeting or talking mostly doesn't. Each of the five knobs is
 /// fitted separately.
 ///
+/// Breaks under `minGapS` always join, so a set is never split by a pause inside it.
+///
 /// Fitting re-runs detection over every corrected workout's recorded heart rate and beats for each
 /// combination on a grid, and keeps the one whose sets best match yours: a missed or extra set costs 1,
 /// and set edges a few seconds off cost a little. A small pull toward the defaults keeps one corrected
@@ -88,7 +90,25 @@ public enum SetCalibration {
                               tuning: Tuning) -> [WorkRestSegmenter.Interval] {
         var seg = WorkRestSegmenter(mode: mode, params: tuning.params(mode))
         for s in hr { seg.ingest(ts: s.ts, bpm: s.bpm) }
-        return hrvFilter(seg.intervals, beats: beats, drop: tuning.hrvDrop)
+        return joinShortGaps(hrvFilter(seg.intervals, beats: beats, drop: tuning.hrvDrop))
+    }
+
+    /// A break shorter than this is a pause inside a set (re-gripping, a breath at the top), never a rest,
+    /// whatever has been learned.
+    public static let minGapS = 20
+
+    /// Join sets whose break is under `minGapS`.
+    public static func joinShortGaps(_ sets: [WorkRestSegmenter.Interval]) -> [WorkRestSegmenter.Interval] {
+        var out: [WorkRestSegmenter.Interval] = []
+        for s in sets.sorted(by: { $0.startTs < $1.startTs }) {
+            if let last = out.last, s.startTs - last.endTs < minGapS {
+                out[out.count - 1] = .init(startTs: last.startTs, endTs: max(last.endTs, s.endTs),
+                                           peakBpm: max(last.peakBpm, s.peakBpm))
+            } else {
+                out.append(s)
+            }
+        }
+        return out
     }
 
     /// Drop sets whose RMSSD isn't at least `drop` below the minute before them. A set without enough
@@ -183,7 +203,7 @@ public enum SetCalibration {
                             t.hrvDrop = gate
                             var c = prior(t)
                             for (i, ex) in usable.enumerated() {
-                                c += cost(spans(hrvFilter(raw[i], beats: ex.beats, drop: gate)), ex.truth)
+                                c += cost(spans(joinShortGaps(hrvFilter(raw[i], beats: ex.beats, drop: gate))), ex.truth)
                             }
                             if best == nil || c < best!.cost - 1e-9 { best = (t, c) }
                         }

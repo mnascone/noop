@@ -83,4 +83,15 @@ final class SetCalibrationTests: XCTestCase {
     func testNothingToFitWithoutCorrections() {
         XCTAssertNil(C.fit([], mode: .lifting))
     }
+
+    /// A pause of a few seconds inside a set never shows as a break, whatever was learned.
+    func testShortPausesNeverSplitASet() {
+        let parts = [WorkRestSegmenter.Interval(startTs: 0, endTs: 30, peakBpm: 120),
+                     WorkRestSegmenter.Interval(startTs: 34, endTs: 60, peakBpm: 130),
+                     WorkRestSegmenter.Interval(startTs: 150, endTs: 190, peakBpm: 128)]
+        let joined = C.joinShortGaps(parts)
+        XCTAssertEqual(joined.map(\.startTs), [0, 150])
+        XCTAssertEqual(joined.first?.endTs, 60)
+        XCTAssertEqual(joined.first?.peakBpm, 130)
+    }
 }

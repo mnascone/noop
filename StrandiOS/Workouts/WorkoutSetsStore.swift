@@ -48,8 +48,25 @@ enum WorkoutSetsStore {
     }
 
     static func load(startTs: Int, sport: String) -> WorkoutSetsRecord? {
-        guard let url = file(startTs: startTs, sport: sport), let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(WorkoutSetsRecord.self, from: data)
+        guard let url = file(startTs: startTs, sport: sport), let data = try? Data(contentsOf: url),
+              var r = try? JSONDecoder().decode(WorkoutSetsRecord.self, from: data) else { return nil }
+        // Counted before short pauses were always joined: join them now, so a set isn't shown split.
+        if r.edited == nil { r.detected = joinShortGaps(r.detected) }
+        return r
+    }
+
+    /// Sets whose break is under `SetCalibration.minGapS` become one, reps added.
+    static func joinShortGaps(_ sets: [WorkoutSetsRecord.SetSpan]) -> [WorkoutSetsRecord.SetSpan] {
+        var out: [WorkoutSetsRecord.SetSpan] = []
+        for s in sets.sorted(by: { $0.start < $1.start }) {
+            if let last = out.last, s.start - last.end < SetCalibration.minGapS {
+                let reps = (last.reps ?? 0) + (s.reps ?? 0)
+                out[out.count - 1] = .init(start: last.start, end: max(last.end, s.end), reps: reps > 0 ? reps : nil)
+            } else {
+                out.append(s)
+            }
+        }
+        return out
     }
 
     static func save(_ r: WorkoutSetsRecord) {

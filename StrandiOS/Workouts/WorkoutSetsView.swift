@@ -106,6 +106,11 @@ struct WorkoutSetsEditor: View {
     @State private var selected: Int?
     /// A tapped spot on the chart outside any set: offered as a new set.
     @State private var addAt: Int?
+    /// What a drag on the chart is doing.
+    private enum DragMode { case moveStart(Int), moveEnd(Int), paint(from: Int) }
+    @State private var dragMode: DragMode?
+    /// The span a drag across the chart covers so far.
+    @State private var paint: ClosedRange<Int>?
     @State private var saving = false
     @State private var fitNote: String?
     @EnvironmentObject private var repo: Repository
@@ -124,8 +129,8 @@ struct WorkoutSetsEditor: View {
     var body: some View {
         List {
             Section {
-                SetsChart(record: record, sets: sets, selected: selected, marker: addAt) { ts in tapped(ts) }
-                    .frame(height: 150)
+                editableChart
+                    .frame(height: 160)
                     .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
                 if let t = addAt {
                     Button {
@@ -143,7 +148,7 @@ struct WorkoutSetsEditor: View {
             } footer: {
                 Text(record.hr.isEmpty
                      ? "No heart rate for this workout yet. Add your \(LiveIntervalModes.unitName(mode, count: 2)) and set their times and reps below."
-                     : "Tap a shaded \(unit) to select it, or a gap to add one there.")
+                     : "Drag a \(unit)'s edge to move it. Drag across a break to join the \(LiveIntervalModes.unitName(mode, count: 2)) either side, or across empty time to add one. Tap to select.")
             }
 
             Section {
@@ -250,6 +255,89 @@ struct WorkoutSetsEditor: View {
     /// "12:34" into the workout.
     private func offset(_ ts: Int) -> String { LiveIntervalTracker.clock(ts - record.startTs) }
 
+    // MARK: Chart gestures
+
+    private var editableChart: some View {
+        GeometryReader { g in
+            let w = Swift.max(g.size.width, 1)
+            let t0 = record.startTs, t1 = Swift.max(record.endTs, record.startTs + 1)
+            let toTs: (CGFloat) -> Int = { x in
+                t0 + Int((Double(Swift.min(w, Swift.max(0, x)) / w) * Double(t1 - t0)).rounded())
+            }
+            let toX: (Int) -> CGFloat = { ts in CGFloat(Double(ts - t0) / Double(t1 - t0)) * w }
+            SetsChart(record: record, sets: sets, selected: selected, marker: addAt, paint: paint)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 6)
+                        .onChanged { v in dragChanged(v, toTs: toTs, toX: toX) }
+                        .onEnded { v in dragEnded(v, toTs: toTs) }
+                )
+                .simultaneousGesture(SpatialTapGesture().onEnded { v in tapped(toTs(v.location.x)) })
+        }
+    }
+
+    private func dragChanged(_ v: DragGesture.Value, toTs: (CGFloat) -> Int, toX: (Int) -> CGFloat) {
+        if dragMode == nil {
+            // Grab the nearest edge within a finger's width, else draw a span.
+            let x = v.startLocation.x
+            var best: (mode: DragMode, d: CGFloat)?
+            for (i, s) in sets.enumerated() {
+                let ds = abs(toX(s.start) - x), de = abs(toX(s.end) - x)
+                if ds < 16, ds < (best?.d ?? .infinity) { best = (.moveStart(i), ds) }
+                if de < 16, de < (best?.d ?? .infinity) { best = (.moveEnd(i), de) }
+            }
+            dragMode = best?.mode ?? .paint(from: toTs(x))
+            addAt = nil
+        }
+        let ts = toTs(v.location.x)
+        switch dragMode {
+        case .moveStart(let i)?:
+            selected = i
+            sets[i].start = Swift.max(record.startTs, Swift.min(ts, sets[i].end - 5))
+        case .moveEnd(let i)?:
+            selected = i
+            sets[i].end = Swift.min(record.endTs, Swift.max(ts, sets[i].start + 5))
+        case .paint(let from)?:
+            paint = Swift.min(from, ts)...Swift.max(from, ts)
+        case nil:
+            break
+        }
+    }
+
+    private func dragEnded(_ v: DragGesture.Value, toTs: (CGFloat) -> Int) {
+        if case .paint? = dragMode, let r = paint, r.upperBound - r.lowerBound >= 5 {
+            // Everything the span touches becomes one set: joins a split set, or adds a missed one.
+            let touched = sets.filter { $0.end >= r.lowerBound && $0.start <= r.upperBound }
+            let start = ([r.lowerBound] + touched.map(\.start)).min()!
+            let end = ([r.upperBound] + touched.map(\.end)).max()!
+            let reps = touched.compactMap(\.reps).reduce(0, +)
+            sets.removeAll { $0.end >= r.lowerBound && $0.start <= r.upperBound }
+            sets.append(.init(start: start, end: end, reps: reps > 0 ? reps : nil))
+            sets.sort { $0.start < $1.start }
+            selected = sets.firstIndex { $0.start == start }
+        } else {
+            normalize()
+        }
+        dragMode = nil
+        paint = nil
+    }
+
+    /// After moving an edge: in order, and overlapping or touching sets joined.
+    private func normalize() {
+        let keep = selected.flatMap { $0 < sets.count ? sets[$0].start : nil }
+        var out: [WorkoutSetsRecord.SetSpan] = []
+        for s in sets.sorted(by: { $0.start < $1.start }) {
+            if let last = out.last, s.start <= last.end + 2 {
+                let reps = (last.reps ?? 0) + (s.reps ?? 0)
+                out[out.count - 1] = .init(start: last.start, end: Swift.max(last.end, s.end), reps: reps > 0 ? reps : nil)
+            } else {
+                out.append(s)
+            }
+        }
+        sets = out
+        selected = keep.flatMap { k in out.firstIndex { k >= $0.start && k <= $0.end } }
+    }
+
     // MARK: Edits
 
     private func tapped(_ ts: Int) {
@@ -349,6 +437,8 @@ struct SetsChart: View {
     let sets: [WorkoutSetsRecord.SetSpan]
     let selected: Int?
     var marker: Int? = nil
+    /// A span being drawn, outlined.
+    var paint: ClosedRange<Int>? = nil
     var onTap: ((Int) -> Void)? = nil
 
     var body: some View {
@@ -374,6 +464,20 @@ struct SetsChart: View {
                     lastTs = s.ts
                 }
                 ctx.stroke(line, with: .color(StrandPalette.metricRose), lineWidth: 1.5)
+                if let i = selected, i < sets.count {
+                    // Handles on the selected set's edges, to drag.
+                    for edge in [sets[i].start, sets[i].end] {
+                        let r = CGRect(x: x(edge) - 3, y: size.height / 2 - 14, width: 6, height: 28)
+                        ctx.fill(Path(roundedRect: r, cornerRadius: 3), with: .color(StrandPalette.accent))
+                    }
+                }
+                if let p = paint {
+                    let r = CGRect(x: x(p.lowerBound), y: 1, width: max(2, x(p.upperBound) - x(p.lowerBound)),
+                                   height: size.height - 2)
+                    ctx.fill(Path(roundedRect: r, cornerRadius: 3), with: .color(StrandPalette.accent.opacity(0.15)))
+                    ctx.stroke(Path(roundedRect: r, cornerRadius: 3), with: .color(StrandPalette.accent),
+                               style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                }
                 if let m = marker {
                     var p = Path()
                     p.move(to: CGPoint(x: x(m), y: 0))
@@ -383,10 +487,11 @@ struct SetsChart: View {
                 }
             }
             .contentShape(Rectangle())
-            .onTapGesture { loc in
+            // Only when the caller wants taps here; the editor handles its own taps and drags.
+            .gesture(SpatialTapGesture().onEnded { v in
                 guard let onTap, w > 0 else { return }
-                onTap(Int(t0 + Double(loc.x / w) * (t1 - t0)))
-            }
+                onTap(Int(t0 + Double(v.location.x / w) * (t1 - t0)))
+            }, including: onTap == nil ? .none : .all)
             .overlay(alignment: .topLeading) {
                 Text("\(Int(hi)) bpm").font(.system(size: 9)).foregroundStyle(StrandPalette.textTertiary)
             }

@@ -274,9 +274,9 @@ final class LiveIntervalTracker: ObservableObject {
         setsFromMotion ? LiveRepTracker.shared.sets.map { Int($0.end) } : heartRateSets(seg).map(\.endTs)
     }
 
-    /// The heart-rate sets after your learned HRV check.
+    /// The heart-rate sets after your learned HRV check, with pauses inside a set joined.
     private func heartRateSets(_ seg: WorkRestSegmenter) -> [WorkRestSegmenter.Interval] {
-        SetCalibration.hrvFilter(seg.intervals, beats: beats, drop: hrvDrop)
+        SetCalibration.joinShortGaps(SetCalibration.hrvFilter(seg.intervals, beats: beats, drop: hrvDrop))
     }
 
     /// Keep this workout's sets, heart rate and beats so they can be shown and corrected afterwards.

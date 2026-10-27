@@ -29,6 +29,18 @@ enum WorkoutSetsStore {
         return try? JSONDecoder().decode(SetTimeline.self, from: data)
     }
 
+    /// Follow a workout whose sport was changed. Sets you corrected go with it; ones only detected are
+    /// dropped, to be counted again the new sport's way.
+    static func move(startTs: Int, from old: String, to new: String) {
+        guard let oldURL = file(startTs: startTs, sport: old), oldURL != file(startTs: startTs, sport: new),
+              var t = load(startTs: startTs, sport: old) else { return }
+        if t.isCorrected {
+            t.sport = new
+            save(t)
+        }
+        try? FileManager.default.removeItem(at: oldURL)
+    }
+
     static func save(_ t: SetTimeline) {
         guard let url = file(startTs: t.startTs, sport: t.sport), let data = try? JSONEncoder().encode(t) else { return }
         try? data.write(to: url, options: .atomic)

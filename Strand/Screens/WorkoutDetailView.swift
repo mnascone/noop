@@ -28,7 +28,10 @@ import MapKit
 // MetricDetailView, StressView opening Breathe).
 
 struct WorkoutDetailView: View {
-    let row: WorkoutRow
+    /// The workout shown. State, so a sport changed here shows at once.
+    @State private var row: WorkoutRow
+
+    init(row: WorkoutRow) { _row = State(initialValue: row) }
 
     @EnvironmentObject private var repo: Repository
     @StateObject private var profile = ProfileStore()
@@ -90,6 +93,7 @@ struct WorkoutDetailView: View {
             #if os(iOS)
             // Sets or intervals counted for this workout, and the way to correct them.
             WorkoutSetsCard(row: row, editing: $editingSets)
+                .id(row.sport)
             #endif
             routeCard
             hrCurveCard
@@ -111,7 +115,7 @@ struct WorkoutDetailView: View {
             }
             #endif
         }
-        .task { await load() }
+        .task(id: row.sport) { await load() }
     }
 
     // MARK: - Load
@@ -237,10 +241,7 @@ struct WorkoutDetailView: View {
                                     in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(WorkoutSource.displaySport(row.sport))
-                            .font(StrandFont.title2)
-                            .foregroundStyle(StrandPalette.textPrimary)
-                            .lineLimit(1)
+                        sportTitle
                         Text("\(dateLabel(row.startTs)) · \(timeRangeLabel(row.startTs, row.endTs))")
                             .font(StrandFont.footnote)
                             .foregroundStyle(StrandPalette.textTertiary)
@@ -256,6 +257,81 @@ struct WorkoutDetailView: View {
                 }
                 #endif
             }
+        }
+    }
+
+    // MARK: - Sport
+
+    /// The sport, as a menu to change it for a workout logged here or detected from the strap. Imported
+    /// ones (WHOOP, Apple Health, files) keep the sport their source gave.
+    @ViewBuilder private var sportTitle: some View {
+        let title = Text(WorkoutSource.displaySport(row.sport))
+            .font(StrandFont.title2)
+            .foregroundStyle(StrandPalette.textPrimary)
+            .lineLimit(1)
+        if canChangeSport {
+            Menu {
+                Section {
+                    ForEach(Self.quickSports, id: \.self) { sportButton($0) }
+                }
+                Menu("All sports") {
+                    ForEach(WorkoutCatalog.all) { sportButton($0.name) }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    title
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(Text("Changes this workout's sport"))
+        } else {
+            title
+        }
+    }
+
+    private var canChangeSport: Bool {
+        let kind = WorkoutSource.classify(row.source)
+        return kind == .manual || kind == .detected
+    }
+
+    /// The sports most often switched between, first in the menu.
+    private static let quickSports = ["Strength", "Weightlifting", "HIIT", "CrossFit", "Walking", "Running",
+                                      "Cycling", "Yoga"]
+
+    private func sportButton(_ sport: String) -> some View {
+        Button { changeSport(to: sport) } label: {
+            if sport.lowercased() == row.sport.lowercased() {
+                Label(sport, systemImage: "checkmark")
+            } else {
+                Text(sport)
+            }
+        }
+    }
+
+    /// Save the workout under another sport. A detected one becomes a workout of yours, as relabelling it
+    /// from the list does; its route and corrected sets follow it.
+    private func changeSport(to sport: String) {
+        let old = row
+        guard sport.lowercased() != old.sport.lowercased() else { return }
+        let detected = WorkoutSource.classify(old.source) == .detected
+        let new = WorkoutRow(startTs: old.startTs, endTs: old.endTs, sport: sport,
+                             source: detected ? "manual" : old.source, durationS: old.durationS,
+                             energyKcal: old.energyKcal, avgHr: old.avgHr, maxHr: old.maxHr, strain: old.strain,
+                             distanceM: old.distanceM, zonesJSON: old.zonesJSON, notes: old.notes, steps: old.steps)
+        Task {
+            if detected {
+                await repo.relabelDetected(old, sport: sport)
+            } else {
+                await repo.saveManualWorkout(new, replacing: old)
+            }
+            #if os(iOS)
+            WorkoutSetsStore.move(startTs: old.startTs, from: old.sport, to: sport)
+            #endif
+            row = new
+            await repo.refresh()
         }
     }
 

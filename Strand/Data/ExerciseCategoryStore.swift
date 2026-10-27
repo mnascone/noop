@@ -141,7 +141,7 @@ final class WorkoutCategoryStore: ObservableObject {
 
     /// Strength sports, by lower-cased name: the ones that count sets.
     static let strengthSports: Set<String> = ["strength", "weightlifting", "bodybuilding", "powerlifting",
-                                              "calisthenics"]
+                                              "calisthenics", "strength training", "functional fitness"]
     static func isStrength(_ sport: String) -> Bool {
         strengthSports.contains(sport.trimmingCharacters(in: .whitespaces).lowercased())
     }

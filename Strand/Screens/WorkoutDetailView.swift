@@ -109,9 +109,11 @@ struct WorkoutDetailView: View {
                 Button("Done") { dismiss() }
             }
             #if os(iOS)
-            // Any workout's sets can be entered or corrected after it's logged.
-            ToolbarItem(placement: .primaryAction) {
-                Button("Edit sets") { editingSets = true }
+            // Sets or intervals can be entered or corrected for a sport that has them (not a walk or a run).
+            if LiveIntervalModes.mode(forSport: row.sport) != nil {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Edit sets") { editingSets = true }
+                }
             }
             #endif
         }

@@ -10,7 +10,8 @@ import Foundation
 //   - Walks and runs from the strap's step counter, a minute at a time: 50+ steps a minute is walking,
 //     under 25 is still (the phone pedometer's cuts, `LiveWorkoutSuggestionEngine.stepWalkPerMin` /
 //     `stepStillPerMin`). A walk ends at its last walking minute once 3 still minutes follow, or 5 minutes
-//     pass without a walking one. At least 5 minutes, or 3 for a run. A run is a bout the strap's gait
+//     pass without a walking one. At least 15 minutes for a walk (a walk to class or around the office
+//     isn't a workout), 3 for a run. A run is a bout the strap's gait
 //     class mostly calls running, or at 140+ steps a minute.
 //   - Other workouts (a lift, a game) from heart rate: resting + 20 bpm, the lifting margin a pinned gym
 //     uses. Stretches of it hold across dips of up to 5 minutes (rest between sets, a bench), stretches of
@@ -65,7 +66,7 @@ public enum MissedWorkoutFinder {
     public static let stillStepsPerMin = 25
     public static let stillMinutesEnd = 3
     public static let noWalkMinutesEnd = 5
-    public static let walkMinS = 5 * 60
+    public static let walkMinS = 15 * 60
     public static let runMinS = 3 * 60
     public static let runStepsPerMin = 140
     public static let runShare = 0.5

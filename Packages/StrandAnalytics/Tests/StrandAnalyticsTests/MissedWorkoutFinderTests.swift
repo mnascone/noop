@@ -32,6 +32,14 @@ final class MissedWorkoutFinderTests: XCTestCase {
         XCTAssertTrue(F.find(steps: steps, hr: [], motion: [], restingBpm: 58, exclude: [], dataEnd: 4000).isEmpty)
     }
 
+    /// A walk under 15 minutes isn't added afterwards.
+    func testWalkUnderFifteenMinutesIsNot() {
+        let steps = minutes([(0, 840, 110, 0), (840, 1500, 0, 0)])
+        XCTAssertTrue(F.find(steps: steps, hr: [], motion: [], restingBpm: 58, exclude: [], dataEnd: 1500).isEmpty)
+        let long = minutes([(0, 900, 110, 0), (900, 1500, 0, 0)])
+        XCTAssertEqual(F.find(steps: long, hr: [], motion: [], restingBpm: 58, exclude: [], dataEnd: 1500).count, 1)
+    }
+
     /// A walk still going where the data stops isn't over yet.
     func testOpenWalkWaits() {
         let steps = minutes([(0, 1200, 100, 0)])

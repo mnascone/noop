@@ -250,6 +250,8 @@ struct ChipFlow: Layout {
 struct StrengthTypeChips: View {
     var chosen: Set<StrengthCategory>
     var shaded: StrengthCategory? = nil
+    /// Worked out rather than chosen: shown lightly.
+    var suggested: Set<StrengthCategory> = []
     var small = false
     var onTap: (StrengthCategory) -> Void
     /// A type just added: usually chosen at once.
@@ -263,7 +265,7 @@ struct StrengthTypeChips: View {
         ChipFlow(spacing: 6) {
             ForEach(types.types, id: \.self) { c in
                 let on = chosen.contains(c)
-                let light = !on && shaded == c
+                let light = !on && (shaded == c || suggested.contains(c))
                 Button { onTap(c) } label: {
                     HStack(spacing: 4) {
                         Text(c.displayName)

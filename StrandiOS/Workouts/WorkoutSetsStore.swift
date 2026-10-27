@@ -154,6 +154,12 @@ enum WorkoutSetsStore {
     }
 
     /// Write the workout's notes from its timeline, for a workout NOOP saved itself (others are read-only).
+    /// A workout's types were changed away from the sets card: bring its notes along.
+    static func typesChanged(row: WorkoutRow, repo: Repository) async {
+        guard let t = load(startTs: row.startTs, sport: row.sport), !t.sets.isEmpty else { return }
+        await syncNotes(t, row: row, repo: repo)
+    }
+
     static func syncNotes(_ t: SetTimeline, row: WorkoutRow, repo: Repository) async {
         guard WorkoutSource.classify(row.source) == .manual else { return }
         let notes = notes(t)

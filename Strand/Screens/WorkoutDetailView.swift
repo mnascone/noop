@@ -227,25 +227,34 @@ struct WorkoutDetailView: View {
 
     private var headerCard: some View {
         NoopCard(tint: StrandPalette.effortColor) {
-            HStack(alignment: .center, spacing: 14) {
-                Image(systemName: sportSymbol(row.sport))
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(StrandPalette.effortColor)
-                    .frame(width: 44, height: 44)
-                    .background(StrandPalette.effortColor.opacity(0.14),
-                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(WorkoutSource.displaySport(row.sport))
-                        .font(StrandFont.title2)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                        .lineLimit(1)
-                    Text("\(dateLabel(row.startTs)) · \(timeRangeLabel(row.startTs, row.endTs))")
-                        .font(StrandFont.footnote)
-                        .foregroundStyle(StrandPalette.textTertiary)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .center, spacing: 14) {
+                    Image(systemName: sportSymbol(row.sport))
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(StrandPalette.effortColor)
+                        .frame(width: 44, height: 44)
+                        .background(StrandPalette.effortColor.opacity(0.14),
+                                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(WorkoutSource.displaySport(row.sport))
+                            .font(StrandFont.title2)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                            .lineLimit(1)
+                        Text("\(dateLabel(row.startTs)) · \(timeRangeLabel(row.startTs, row.endTs))")
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                    }
+                    Spacer(minLength: 0)
+                    sourceBadge(row.source)
                 }
-                Spacer(minLength: 0)
-                sourceBadge(row.source)
+                #if os(iOS)
+                // A strength workout's types (Push, Pull, Legs…), set right here.
+                if WorkoutCategoryStore.isStrength(row.sport) {
+                    WorkoutTypeRow(row: row)
+                        .padding(.top, NoopMetrics.space3)
+                }
+                #endif
             }
         }
     }

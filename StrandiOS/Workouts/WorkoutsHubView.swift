@@ -308,9 +308,11 @@ struct WorkoutsHubView: View {
                             WorkoutDetailView(row: row).environmentObject(repo)
                         } label: { logRowLabel(row) }
                         .buttonStyle(.plain)
+                        .contextMenu { typeMenu(row) }
                     } else {
                         Button { detail = WorkoutDetailTarget(row: row) } label: { logRowLabel(row) }
                             .buttonStyle(.plain)
+                            .contextMenu { typeMenu(row) }
                     }
                 }
             }
@@ -385,6 +387,26 @@ struct WorkoutsHubView: View {
         .padding(.horizontal, NoopMetrics.cardPadding)
         .frame(minHeight: 56)
         .contentShape(Rectangle())
+    }
+
+    /// Hold a strength workout to set its types without opening it.
+    @ViewBuilder
+    private func typeMenu(_ row: WorkoutRow) -> some View {
+        if WorkoutCategoryStore.isStrength(row.sport) {
+            let chosen = workoutTypes.categories(startTs: row.startTs)
+            Section("Type") {
+                ForEach(strengthTypes.types, id: \.self) { c in
+                    Button {
+                        var s = chosen
+                        if s.contains(c) { s.remove(c) } else { s.insert(c) }
+                        workoutTypes.set(s, startTs: row.startTs)
+                        Task { await WorkoutSetsStore.typesChanged(row: row, repo: repo) }
+                    } label: {
+                        if chosen.contains(c) { Label(c.displayName, systemImage: "checkmark") } else { Text(c.displayName) }
+                    }
+                }
+            }
+        }
     }
 
     private func rowSubtitle(_ row: WorkoutRow, counts: Bool) -> String {

@@ -19,7 +19,7 @@ struct StressLevelDay: Codable, Equatable, Sendable {
     var computedAt: Int
     /// Which scoring made it. A finished day from an older scoring is scored again.
     var version: Int? = nil
-    static let currentVersion = 2
+    static let currentVersion = 3
 
     var summary: StressLevel.Summary { StressLevel.summary(epochs) }
     var measured: [StressLevel.Epoch] { epochs.filter { $0.state == .measured } }
@@ -67,8 +67,14 @@ final class StressLevelService: ObservableObject {
     /// The workout running now, if any: activity, not stress, from its start.
     var activeWorkoutStart: Int?
 
+    /// Writes a line to the app log (set by `StressNow`).
+    var log: ((String) -> Void)?
+
     private var lastFingerprint: String?
     private var refreshing = false
+    private var lastDiagnosis: String?
+    /// What made today's activity, from the last scoring: for the log.
+    private static var diagnosis: String?
 
     private init() {
         today = StressLevelStore.load(StressLevelStore.dayKey(Date()))
@@ -102,13 +108,19 @@ final class StressLevelService: ObservableObject {
         if !force, fpKey == lastFingerprint, today?.day == key { return }
         lastFingerprint = fpKey
         let stored = StressLevelStore.load(key)
-        // The day's first scoring: score the days before it first, so today's calm level can come from
-        // your recent days rather than from today alone.
-        if stored == nil { await ensureHistory(repo: repo, days: 6) }
+        // The day's first scoring (or the first after the scoring changed): score the days before it
+        // first, so today's calm level can come from your recent days rather than from today alone.
+        if stored == nil || stored?.version != StressLevelDay.currentVersion {
+            await ensureHistory(repo: repo, days: 6)
+        }
         guard let day = await Self.score(day: key, from: from, to: to, repo: repo, workouts: workouts,
                                          stored: stored, activeSince: activeWorkoutStart) else { return }
         StressLevelStore.save(day)
         today = day
+        if let d = Self.diagnosis, d != lastDiagnosis {
+            lastDiagnosis = d
+            log?("stress: \(d)")
+        }
     }
 
     /// Make sure the last `days` days are scored and stored (for the week view), oldest first so each can
@@ -205,11 +217,14 @@ final class StressLevelService: ObservableObject {
         // Activity: logged workouts, the one running now, and walking, running or cycling the phone saw.
         var workouts = rows.filter { $0.endTs > from && $0.startTs < to }.map { $0.startTs...$0.endTs }
         if let a = activeSince, a < to { workouts.append(max(a, from)...to) }
-        workouts += await Self.phoneActivity(from: from, to: to)
+        let logged = workouts
+        let phone = await Self.phoneActivity(from: from, to: to)
+        workouts += phone
         // The morning factors: last night's resting heart rate and HRV against your 30 days, 0-3.
         let morning = wholeDay ? (stored?.baseline.morning ?? StressModel(days: repo.days, stored: [])?.score)
             : StressModel(days: repo.days, stored: [])?.score
-        let restingHR = repo.days.last { $0.restingHr != nil }?.restingHr.map(Double.init)
+        let rests = repo.days.suffix(14).compactMap(\.restingHr).sorted()
+        let restingHR = rests.isEmpty ? nil : Double(rests[rests.count / 2])
         let history = historyBaseline(before: key)
 
         let built: StressLevelDay = await runUnescalated {
@@ -225,9 +240,11 @@ final class StressLevelService: ObservableObject {
             // so it keeps up with late-synced data and a refined calm level; a finished day is kept as is.
             let baseline: StressLevel.Baseline
             if let h = history {
-                baseline = .init(calmHR: h.hr, typicalRMSSD: h.rmssd ?? today.rmssd, morning: morning, source: "history")
+                baseline = .init(calmHR: StressLevel.calmHR(floor: h.hr, restingHR: restingHR),
+                                 typicalRMSSD: h.rmssd ?? today.rmssd, morning: morning, source: "history")
             } else if let f = today.hr {
-                baseline = .init(calmHR: f, typicalRMSSD: today.rmssd, morning: morning, source: "today")
+                baseline = .init(calmHR: StressLevel.calmHR(floor: f, restingHR: restingHR),
+                                 typicalRMSSD: today.rmssd, morning: morning, source: "today")
             } else {
                 baseline = .init(calmHR: (restingHR ?? 60) + 8, typicalRMSSD: nil, morning: morning, source: "resting")
             }
@@ -235,6 +252,20 @@ final class StressLevelService: ObservableObject {
             let epochs = StressLevel.score(raws, baseline: baseline)
             return StressLevelDay(day: key, baseline: baseline, frozen: frozen, epochs: epochs,
                                   computedAt: to, version: StressLevelDay.currentVersion)
+        }
+        if !wholeDay {
+            // Which source made each active stretch: a logged or running workout, the phone, else the strap.
+            var w = 0, p = 0, strap = 0
+            for e in built.epochs where e.state == .active {
+                let span = e.start...(e.start + StressLevel.epochSeconds - 1)
+                if logged.contains(where: { $0.overlaps(span) }) { w += 1 }
+                else if phone.contains(where: { $0.overlaps(span) }) { p += 1 }
+                else { strap += 1 }
+            }
+            let after = built.epochs.filter { $0.state == .afterActivity }.count
+            let calm = Int(built.baseline.calmHR.rounded())
+            diagnosis = "today calm \(calm) bpm (\(built.baseline.source)), active 3-min stretches: "
+                + "workout \(w), phone \(p), strap \(strap), after activity \(after)"
         }
         return built
     }

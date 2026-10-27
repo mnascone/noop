@@ -15,7 +15,8 @@ import WhoopStore
 ///   2. Measured: a one-minute measurement taken in the last 30 minutes.
 ///   3. Recent: the newest stored 3-minute value, when it's from the last 15 minutes.
 ///   4. Earlier: the newest stored value today, shown with its time.
-/// A stretch spent moving reads Active, never a stale number.
+/// While you're moving (a workout running, the phone walking, the strap's newest stretch active) the
+/// reading is marked active and carries your last measured value, so nothing reads as stress from effort.
 ///
 /// The morning factors (last night's resting heart rate and HRV against your 30 days, the 0-3 score)
 /// stay available as `daily` for the Stress screen's breakdown, and tilt the level through the baseline.
@@ -39,8 +40,10 @@ final class StressNow: ObservableObject {
         /// 0-100.
         let value: Double
         let kind: Kind
-        /// Moving: heart rate is up from activity, so it says nothing about stress.
+        /// Moving: heart rate is up from activity, so it says nothing about stress. `value` is then the
+        /// last measured level, when there is one (`hasValue`).
         var active = false
+        var hasValue = true
 
         /// A reading from now rather than from earlier today.
         var isCurrent: Bool {
@@ -71,12 +74,17 @@ final class StressNow: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var endTask: Task<Void, Never>?
     private var ticker: Timer?
+    /// When the phone last saw walking, running or cycling, and when that was last asked.
+    private var phoneMovingAt: Date?
+    private var phoneAskedAt: Date?
+    private var lastActiveReason: String?
 
     private init() {}
 
     func attach(model: AppModel) {
         guard self.model == nil else { return }
         self.model = model
+        StressLevelService.shared.log = { [weak model] line in model?.live.append(log: AppModel.stamped(line)) }
         let live = model.live
         live.$rrSeq
             .removeDuplicates()
@@ -207,18 +215,25 @@ final class StressNow: ObservableObject {
     /// The reading to show now. See the type's notes for the order.
     func reading() -> Reading? {
         let now = Date()
+        let service = StressLevelService.shared
+        let last = service.latest?.level.map(Double.init)
         if let l = liveState, now.timeIntervalSince(l.at) < (measureEnd != nil ? 60 : 20),
            streaming || measureEnd != nil {
-            return Reading(value: l.value, kind: .live, active: l.active)
+            if l.active { return Reading(value: last ?? 0, kind: .live, active: true, hasValue: last != nil) }
+            return Reading(value: l.value, kind: .live)
         }
         if let m = measured, now.timeIntervalSince(m.at) < 1800 {
             return Reading(value: m.value, kind: .measured(m.at))
         }
-        let service = StressLevelService.shared
-        if let s = service.latestState, now.timeIntervalSince1970 - Double(s.start) < 15 * 60,
-           s.state == .active || s.state == .afterActivity {
-            return Reading(value: 0, kind: .recent(Date(timeIntervalSince1970: TimeInterval(s.start))), active: true)
+        // The strap's newest stretch was movement, in the last 10 minutes. Coming down after it isn't
+        // shown as activity: the last measured value stands.
+        if let s = service.latestState, s.state == .active, now.timeIntervalSince1970 - Double(s.start) < 600 {
+            let hr = s.meanHR.map { String(Int($0)) } ?? "?"
+            note(active: "stored 3-min stretch at \(Self.clock(s.start)), HR \(hr)")
+            return Reading(value: last ?? 0, kind: .recent(Date(timeIntervalSince1970: TimeInterval(s.start))),
+                           active: true, hasValue: last != nil)
         }
+        if !streaming { note(active: nil) }
         if let e = service.latest, let v = e.level {
             let at = Date(timeIntervalSince1970: TimeInterval(e.start + StressLevel.epochSeconds))
             let kind: Kind = now.timeIntervalSince(at) < 15 * 60 ? .recent(at) : .earlier(at)
@@ -254,16 +269,51 @@ final class StressNow: ObservableObject {
         let bufHR: Double? = window.isEmpty ? nil : Double(window.reduce(0, +)) / Double(window.count)
         guard let hr = beatHR ?? bufHR ?? model?.live.heartRate.map(Double.init) else { return nil }
         let b = baseline
-        // Moving, or still coming down from it: a workout running, heart rate far over calm, or the latest
-        // stored stretch (in the last 10 minutes) was activity and heart rate hasn't settled yet.
-        let recentActivity = StressLevelService.shared.latestState.map {
-            ($0.state == .active || $0.state == .afterActivity)
-                && Date().timeIntervalSince1970 - Double($0.start) < 600
+        // Moving: a workout running, the phone walking in the last 2 minutes, or the strap's newest stored
+        // stretch (in the last 10 minutes) was movement and heart rate is still up. Heart rate alone isn't
+        // movement: high while still is stress.
+        askPhone()
+        let now = Date()
+        let strapMoved = StressLevelService.shared.latestState.map {
+            $0.state == .active && now.timeIntervalSince1970 - Double($0.start) < 600
         } ?? false
-        let active = model?.activeWorkout != nil || hr > b.calmHR + StressLevel.exertionOverCalmBPM
-            || (recentActivity && hr > b.calmHR + StressLevel.afterActivityBPM)
+        let phoneMoving = phoneMovingAt.map { now.timeIntervalSince($0) < 120 } ?? false
+        let reason: String? = model?.activeWorkout != nil ? "workout running"
+            : phoneMoving ? "phone saw walking, running or cycling"
+            : strapMoved && hr > b.calmHR + StressLevel.afterActivityBPM ? "strap moved, HR \(Int(hr)) still up"
+            : nil
+        let active = reason != nil
+        note(active: reason.map { "live: \($0)" })
         let rmssd = StressLevel.cleanRMSSD(rr)
         return (Double(StressLevel.level(meanHR: hr, rmssd: rmssd, baseline: b)), rmssd != nil, active)
+    }
+
+    /// Ask the phone's motion history, at most once a minute, whether you were moving in the last 3 minutes.
+    private func askPhone() {
+        let now = Date()
+        if let a = phoneAskedAt, now.timeIntervalSince(a) < 60 { return }
+        phoneAskedAt = now
+        let to = Int(now.timeIntervalSince1970)
+        Task { @MainActor [weak self] in
+            let ranges = await StressLevelService.phoneActivity(from: to - 180, to: to)
+            if let end = ranges.map(\.upperBound).max() {
+                self?.phoneMovingAt = Date(timeIntervalSince1970: TimeInterval(end))
+            }
+        }
+    }
+
+    /// Log why the reading is active, once each time the reason changes.
+    private func note(active reason: String?) {
+        guard reason != lastActiveReason else { return }
+        lastActiveReason = reason
+        guard let reason, let live = model?.live else { return }
+        // Not during a view update: the log is published.
+        let line = AppModel.stamped("stress: active, \(reason)")
+        Task { @MainActor in live.append(log: line) }
+    }
+
+    private static func clock(_ ts: Int) -> String {
+        Date(timeIntervalSince1970: TimeInterval(ts)).formatted(date: .omitted, time: .shortened)
     }
 
     /// The level's band: Rest, Low, Medium, High (Garmin's 25 / 50 / 75 cuts).

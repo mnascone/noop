@@ -41,7 +41,10 @@ struct StressRightNowCard: View {
         guard let r else {
             return stress.measureEnd != nil ? String(localized: "Measuring…") : String(localized: "No reading yet")
         }
-        if r.active { return String(localized: "Active · \(StressNow.label(r.kind))") }
+        if r.active {
+            guard r.hasValue else { return String(localized: "Moving") }
+            return "\(StressNow.band(r.value).title.capitalized) · \(String(localized: "Moving"))"
+        }
         let band = StressNow.band(r.value).title.capitalized
         return "\(band) · \(StressNow.label(r.kind))"
     }

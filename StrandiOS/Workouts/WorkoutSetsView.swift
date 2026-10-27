@@ -75,13 +75,6 @@ struct WorkoutSetsCard: View {
                             .foregroundStyle(StrandPalette.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    if mode == .lifting {
-                        // What the workout was: one tap, any of the three. Sets with their own
-                        // exercise or category keep theirs.
-                        WorkoutCategoryPicker(selection: Binding(
-                            get: { workoutCategories.categories(startTs: t.startTs) },
-                            set: { workoutCategories.set($0, startTs: t.startTs); changed(t) }))
-                    }
                     if !sum.byCategory.isEmpty {
                         CategoryCounts(counts: sum.byCategory)
                     }

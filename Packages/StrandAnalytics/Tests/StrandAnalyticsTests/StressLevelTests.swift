@@ -138,11 +138,44 @@ final class StressLevelTests: XCTestCase {
         XCTAssertTrue(e.allSatisfy { $0.state == .active })
     }
 
-    /// With no motion stream, hard exertion is recognised from heart rate alone.
-    func testExertionWithoutMotion() {
+    /// Heart rate alone never makes a stretch activity: sitting still with a high heart rate is stress.
+    func testHighHeartRateWhileStillIsStress() {
+        let hr = (0..<600).map { L.HRPoint(ts: $0, bpm: 100) }
+        let still = (0..<600).map { L.Motion(ts: $0, intensity: 0.02) }
+        for inputs in [L.Inputs(hr: hr), L.Inputs(hr: hr, motion: still)] {
+            let e = L.score(L.raw(from: 0, to: 600, inputs), baseline: base)
+            XCTAssertTrue(e.allSatisfy { $0.state == .measured && $0.band == .high }, "\(e.map(\.state))")
+        }
+    }
+
+    /// Hard exertion with some movement, short of walking (an unlogged lift), is activity.
+    func testExertionWithSomeMovement() {
         let hr = (0..<600).map { L.HRPoint(ts: $0, bpm: 120) }
-        let e = L.score(L.raw(from: 0, to: 600, L.Inputs(hr: hr)), baseline: base)
+        let motion = (0..<600).map { L.Motion(ts: $0, intensity: $0 % 6 == 0 ? 0.4 : 0.02) }
+        let e = L.score(L.raw(from: 0, to: 600, L.Inputs(hr: hr, motion: motion)), baseline: base)
         XCTAssertTrue(e.allSatisfy { $0.state == .active })
+    }
+
+    /// Fidgeting at a desk isn't activity, and after a short walk scoring resumes within minutes.
+    func testDeskFidgetAndShortWalk() {
+        // 15 minutes at 70, a 3-minute walk, then 75 (13 over calm) for good.
+        let hr = (0..<1800).map { L.HRPoint(ts: $0, bpm: $0 < 900 ? 70 : $0 < 1080 ? 95 : 75) }
+        let motion = (0..<1800).map { t in
+            L.Motion(ts: t, intensity: (900..<1080).contains(t) ? 0.4 : (t % 30 == 0 ? 0.3 : 0.02))
+        }
+        let e = L.score(L.raw(from: 0, to: 1800, L.Inputs(hr: hr, motion: motion)), baseline: base)
+        XCTAssertTrue(e.filter { $0.start < 900 }.allSatisfy { $0.state == .measured })
+        XCTAssertEqual(e.first { $0.start == 900 }?.state, .active)
+        let after = e.filter { $0.start >= 1080 }
+        XCTAssertEqual(after.prefix(3).map(\.state), [.afterActivity, .afterActivity, .afterActivity])
+        XCTAssertTrue(after.dropFirst(3).allSatisfy { $0.state == .measured }, "\(after.map(\.state))")
+    }
+
+    /// The calm floor never sits under resting heart rate plus a margin.
+    func testCalmFloorAboveResting() {
+        XCTAssertEqual(L.calmHR(floor: 52, restingHR: 55), 59)
+        XCTAssertEqual(L.calmHR(floor: 64, restingHR: 55), 64)
+        XCTAssertEqual(L.calmHR(floor: 64, restingHR: nil), 64)
     }
 
     /// A logged workout is activity whatever the heart rate does.

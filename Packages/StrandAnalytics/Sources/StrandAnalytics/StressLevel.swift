@@ -50,16 +50,22 @@ public enum StressLevel {
     /// floor (0.20 g, the codebase's calibrated walking threshold).
     public static let motionThreshold = 0.20
     public static let activeShare = 0.25
-    /// Without motion saying so, heart rate this far over the calm floor is still taken as exertion, not
-    /// stress: sitting or standing, a mental stressor lifts heart rate 10-20 bpm, rarely 30.
+    /// Heart rate this far over the calm floor is taken as exertion, not stress, when the strap felt some
+    /// movement too (`lightMotionShare`): an unlogged lift moves the wrist less than walking does. Heart
+    /// rate alone never makes a stretch activity: high heart rate while still is what stress is.
     public static let exertionOverCalmBPM = 30.0
+    /// The share of an epoch's motion samples over `motionThreshold` that counts as some movement.
+    public static let lightMotionShare = 0.10
+    /// The calm floor is never taken below resting heart rate plus this: a floor at sleeping heart rate
+    /// (a night the sleep wasn't recognised) would make ordinary sitting read as stress.
+    public static let calmOverRestingMinBPM = 4.0
     /// After activity heart rate takes a while to come down (Firstbeat's "recovery from activity"): the
     /// following epochs are "after activity", not scored, while heart rate is still this far over the calm
     /// floor, for up to `afterActivityBase` epochs plus one per epoch of activity, at most
-    /// `afterActivityMaxEpochs` (an hour).
+    /// `afterActivityMaxEpochs` (half an hour).
     public static let afterActivityBPM = 10.0
-    public static let afterActivityBase = 4
-    public static let afterActivityMaxEpochs = 20
+    public static let afterActivityBase = 2
+    public static let afterActivityMaxEpochs = 10
     /// The calm floor: this percentile of the awake, still epochs' mean heart rates.
     public static let calmPercentile = 0.10
 
@@ -196,6 +202,8 @@ public enum StressLevel {
         public let rmssd: Double?
         public let moving: Bool
         public let asleep: Bool
+        /// Some movement: under walking, enough to say a high heart rate came from effort.
+        public var stirring: Bool = false
     }
 
     /// Group the samples into clock-aligned epochs over `from..<to`.
@@ -217,11 +225,20 @@ public enum StressLevel {
             let s = first + i * epochSeconds
             let span = s...(s + epochSeconds - 1)
             let inWorkout = x.workouts.contains { $0.overlaps(span) }
-            let movingByMotion = mN[i] > 0 && Double(mAct[i]) / Double(mN[i]) >= activeShare
+            let share = mN[i] > 0 ? Double(mAct[i]) / Double(mN[i]) : 0
+            let movingByMotion = share >= activeShare
             let asleep = x.sleeps.contains { $0.contains(s + epochSeconds / 2) }
             return Raw(start: s, meanHR: hrN[i] >= minHRSamples ? hrSum[i] / Double(hrN[i]) : nil,
-                       rmssd: cleanRMSSD(beats[i]), moving: inWorkout || movingByMotion, asleep: asleep)
+                       rmssd: cleanRMSSD(beats[i]), moving: inWorkout || movingByMotion, asleep: asleep,
+                       stirring: share >= lightMotionShare)
         }
+    }
+
+    /// The calm heart rate to score against: `floor`, never under resting heart rate plus
+    /// `calmOverRestingMinBPM`.
+    public static func calmHR(floor: Double, restingHR: Double?) -> Double {
+        guard let r = restingHR, r > 25 else { return floor }
+        return Swift.max(floor, r + calmOverRestingMinBPM)
     }
 
     /// The calm floor from epochs: the `calmPercentile` of awake, still epochs' mean heart rate. Nil
@@ -250,8 +267,8 @@ public enum StressLevel {
                 else if sinceActive != .max { sinceActive += 1 }
                 continue
             }
-            // Hard exertion by heart rate alone, when motion didn't say so.
-            let exertion = !r.asleep && hr > b.calmHR + exertionOverCalmBPM
+            // Hard exertion: heart rate far up with some movement, short of what reads as walking.
+            let exertion = !r.asleep && r.stirring && hr > b.calmHR + exertionOverCalmBPM
             if r.moving || exertion {
                 if sinceActive != 0 { activeRun = 0 }
                 sinceActive = 0

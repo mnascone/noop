@@ -172,13 +172,13 @@ final class LiveActivityController {
     }
 
     /// Stress 0-100 for the banner, and its colour, from the same reading as the Today ring and the
-    /// Stress screen. "Active" while heart rate is up from moving. Only a live or recently measured
+    /// Stress screen. While moving, the last measured value. Only a live or recently measured
     /// reading is shown: this morning's score would read as current on the Lock Screen.
     private func stressText(_ model: AppModel) -> (text: String, hex: String)? {
         let meter = StressNow.shared
         meter.attach(model: model)
         guard let r = meter.reading(), r.isCurrent else { return nil }
-        if r.active { return (String(localized: "Active"), "8E8E93") }
+        if r.active && !r.hasValue { return ("–", "8E8E93") }
         return ("\(Int(r.value.rounded()))", Self.stressHex(r.value))
     }
 

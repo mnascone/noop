@@ -369,32 +369,30 @@ struct StressNowColumn: View {
 }
 
 /// The ring itself: fills to the level, coloured by its band (blue rest, deepening orange for low, medium
-/// and high), with the number and band in the middle. "Active" while moving, where heart rate and HRV say
-/// nothing about stress.
+/// and high), with the number and band in the middle. While moving, where heart rate and HRV say nothing
+/// about stress, it keeps the last measured value with a moving figure in place of the band.
 struct StressRing: View {
     let reading: StressNow.Reading?
     var diameter: CGFloat = 84
 
     var body: some View {
-        let shown = reading.flatMap { $0.active ? nil : $0 }
+        let shown = reading.flatMap { $0.hasValue ? $0 : nil }
         ArcGauge(to: shown.map { $0.value / 100 } ?? 0,
                  color: shown.map { StressNow.color($0.value) } ?? StrandPalette.textTertiary,
                  diameter: diameter, lineWidth: diameter >= 80 ? 8 : 7) {
             VStack(spacing: 0) {
+                Text(shown.map { "\(Int($0.value.rounded()))" } ?? "–")
+                    .font(StrandFont.rounded(diameter * 0.3, weight: .bold))
+                    .foregroundStyle(StrandPalette.textPrimary)
+                    .monospacedDigit()
                 if reading?.active == true {
-                    Text("Active")
-                        .font(StrandFont.subhead.weight(.semibold))
+                    Image(systemName: "figure.walk")
+                        .font(.system(size: diameter * 0.14, weight: .semibold))
                         .foregroundStyle(StrandPalette.textSecondary)
-                } else {
-                    Text(shown.map { "\(Int($0.value.rounded()))" } ?? "–")
-                        .font(StrandFont.rounded(diameter * 0.3, weight: .bold))
-                        .foregroundStyle(StrandPalette.textPrimary)
-                        .monospacedDigit()
-                    if let s = shown {
-                        Text(StressNow.band(s.value).title)
-                            .font(StrandFont.caption.weight(.semibold))
-                            .foregroundStyle(StressNow.color(s.value))
-                    }
+                } else if let s = shown {
+                    Text(StressNow.band(s.value).title)
+                        .font(StrandFont.caption.weight(.semibold))
+                        .foregroundStyle(StressNow.color(s.value))
                 }
             }
             .lineLimit(1)
@@ -407,7 +405,9 @@ struct StressRing: View {
 
     private var spoken: String {
         guard let r = reading else { return String(localized: "No data yet") }
-        if r.active { return String(localized: "Active") }
+        if r.active {
+            return r.hasValue ? String(localized: "Moving, last \(Int(r.value.rounded()))") : String(localized: "Moving")
+        }
         let band = StressNow.band(r.value).title
         return "\(Int(r.value.rounded())), \(band), \(StressNow.label(r.kind))"
     }

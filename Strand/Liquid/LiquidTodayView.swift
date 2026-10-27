@@ -1290,15 +1290,20 @@ struct LiquidTodayView: View {
             .overlay(alignment: .bottomTrailing) {
                 if coachEnabled, selectedDayOffset == 0, recommendation.available {
                     Button { recommendation.forceRefresh() } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(StrandFont.footnote.weight(.semibold))
-                            .foregroundStyle(recommendation.loading ? StrandPalette.textTertiary : StrandPalette.accent)
-                            .rotationEffect(.degrees(recommendation.loading ? 180 : 0))
-                            .animation(recommendation.loading
-                                       ? .linear(duration: 0.8).repeatForever(autoreverses: false) : .default,
-                                       value: recommendation.loading)
-                            .padding(10)
-                            .contentShape(Rectangle())
+                        // Spun from the clock, not with a repeating animation: a repeatForever animation
+                        // also animated the button's POSITION, so while the brief loaded and the card's
+                        // text changed height, the arrow flew around the screen.
+                        TimelineView(.animation(paused: !recommendation.loading)) { ctx in
+                            let turn = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.8) / 0.8
+                            Image(systemName: "arrow.clockwise")
+                                .font(StrandFont.footnote.weight(.semibold))
+                                .foregroundStyle(recommendation.loading ? StrandPalette.textTertiary : StrandPalette.accent)
+                                .rotationEffect(.degrees(recommendation.loading ? turn * 360 : 0))
+                        }
+                        .frame(width: 18, height: 18)
+                        .padding(10)
+                        .contentShape(Rectangle())
+                        .transaction { $0.animation = nil }
                     }
                     .buttonStyle(.plain)
                     .disabled(recommendation.loading)

@@ -11,7 +11,7 @@ import WhoopStore
 /// the same way against the same baseline. Every reading carries its kind and its time.
 ///
 /// In order, the first that exists wins:
-///   1. Live: beats arriving in the last 15 s, the last three minutes of them.
+///   1. Live: beats or live heart rate in the last 15 s, the last three minutes of them.
 ///   2. Measured: a one-minute measurement taken in the last 30 minutes.
 ///   3. Recent: the newest stored 3-minute value, when it's from the last 15 minutes.
 ///   4. Earlier: the newest stored value today, shown with its time.
@@ -63,6 +63,8 @@ final class StressNow: ObservableObject {
     @Published private(set) var daily: Double?
 
     private var beats: [(t: Date, ms: Int)] = []
+    /// Live heart rate as published, for the current reading when no beats arrive.
+    private var hrBuf: [(t: Date, bpm: Int)] = []
     private var liveState: (value: Double, withHRV: Bool, active: Bool, at: Date)?
     private var measureStartedAt: Date?
     private weak var model: AppModel?
@@ -83,11 +85,16 @@ final class StressNow: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] packet in self?.ingest(packet) }
             .store(in: &cancellables)
-        // With no beats at all (some straps send heart rate only), heart rate still drives an estimate.
+        // Live heart rate keeps the reading current between stored values, beats or not.
         live.$heartRate
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self, self.measureEnd != nil, !self.streaming else { return }
+            .sink { [weak self] hr in
+                guard let self, let hr, hr > 25 else { return }
+                let now = Date()
+                self.hrBuf.append((now, hr))
+                if let f = self.hrBuf.first, now.timeIntervalSince(f.t) > 240 {
+                    self.hrBuf.removeAll { now.timeIntervalSince($0.t) > 240 }
+                }
                 self.updateLive()
             }
             .store(in: &cancellables)
@@ -125,8 +132,12 @@ final class StressNow: ObservableObject {
         return beats.filter { $0.t >= from }.map(\.ms)
     }
 
-    /// The last beat arrived in the last 15 seconds.
-    var streaming: Bool { beats.last.map { Date().timeIntervalSince($0.t) < 15 } ?? false }
+    /// Beats or live heart rate arrived in the last 15 seconds.
+    var streaming: Bool {
+        let now = Date()
+        return (beats.last.map { now.timeIntervalSince($0.t) < 15 } ?? false)
+            || (hrBuf.last.map { now.timeIntervalSince($0.t) < 15 } ?? false)
+    }
 
     func toggleMeasure() {
         if measureEnd != nil { finish() } else { start() }
@@ -189,9 +200,9 @@ final class StressNow: ObservableObject {
     /// The reading to show now. See the type's notes for the order.
     func reading() -> Reading? {
         let now = Date()
-        if let l = liveState, now.timeIntervalSince(l.at) < (measureEnd != nil ? 60 : 15),
+        if let l = liveState, now.timeIntervalSince(l.at) < (measureEnd != nil ? 60 : 20),
            streaming || measureEnd != nil {
-            return Reading(value: l.value, kind: l.withHRV || streaming ? .live : .estimate, active: l.active)
+            return Reading(value: l.value, kind: .live, active: l.active)
         }
         if let m = measured, now.timeIntervalSince(m.at) < 1800 {
             return Reading(value: m.value, kind: .measured(m.at))
@@ -231,7 +242,10 @@ final class StressNow: ObservableObject {
     private func rawLive() -> (value: Double, withHRV: Bool, active: Bool)? {
         let rr = freshBeats
         let beatHR: Double? = rr.count >= 10 ? 60_000 / (Double(rr.reduce(0, +)) / Double(rr.count)) : nil
-        guard let hr = beatHR ?? model?.live.heartRate.map(Double.init) else { return nil }
+        let from = Date().addingTimeInterval(-TimeInterval(StressLevel.epochSeconds))
+        let window = hrBuf.filter { $0.t >= from }.map(\.bpm)
+        let bufHR: Double? = window.isEmpty ? nil : Double(window.reduce(0, +)) / Double(window.count)
+        guard let hr = beatHR ?? bufHR ?? model?.live.heartRate.map(Double.init) else { return nil }
         let b = baseline
         let active = model?.activeWorkout != nil || hr > b.calmHR + StressLevel.exertionOverCalmBPM
         let rmssd = StressLevel.cleanRMSSD(rr)

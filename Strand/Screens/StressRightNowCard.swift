@@ -22,12 +22,8 @@ struct StressRightNowCard: View {
                         Text(headline(r))
                             .font(StrandFont.subhead.weight(.semibold))
                             .foregroundStyle(StrandPalette.textPrimary)
-                        Text(Self.explain(r))
-                            .font(StrandFont.caption)
-                            .foregroundStyle(StrandPalette.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
                         if let a = service.today?.summary.awakeAverage {
-                            Text(String(localized: "Today's average \(a) · \(StressLevel.Band(level: a).title.capitalized)"))
+                            Text(String(localized: "Today \(a) avg"))
                                 .font(StrandFont.caption.weight(.semibold))
                                 .foregroundStyle(StressLevel.Band(level: a).color)
                         }
@@ -43,7 +39,7 @@ struct StressRightNowCard: View {
 
     private func headline(_ r: StressNow.Reading?) -> String {
         guard let r else {
-            return stress.measureEnd != nil ? String(localized: "Measuring…") : String(localized: "No reading yet today")
+            return stress.measureEnd != nil ? String(localized: "Measuring…") : String(localized: "No reading yet")
         }
         if r.active { return String(localized: "Active · \(StressNow.label(r.kind))") }
         let band = StressNow.band(r.value).title.capitalized
@@ -79,7 +75,7 @@ struct StressRightNowCard: View {
         } else if live.connected {
             pill(String(localized: "Measure now"), icon: "waveform.path.ecg", filled: true) { stress.start() }
         } else {
-            Text("Connect your strap to measure.")
+            Text("Strap not connected")
                 .font(StrandFont.caption)
                 .foregroundStyle(StrandPalette.textTertiary)
         }

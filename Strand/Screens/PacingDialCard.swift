@@ -157,12 +157,10 @@ struct PacingDialCard: View {
         let long = PacingMath.pacing(days: days, todayKey: today, window: .long, stressByDay: stress,
                                      todayEffortFloor: todayFloor)
         let overall = PacingMath.overall(short: short, long: long)
-        let shown = long ?? short
-        let now = Self.today(days)
         NoopCard {
             VStack(alignment: .leading, spacing: NoopMetrics.space3) {
                 HStack(alignment: .top, spacing: 0) {
-                    paceColumn(overall, sub: long == nil ? String(localized: "3 days") : String(localized: "7 vs 28 days"))
+                    paceColumn(overall)
                         .contentShape(Rectangle())
                         .onTapGesture { showPace = true }
                         .accessibilityAddTraits(.isButton)
@@ -172,23 +170,6 @@ struct PacingDialCard: View {
                         .frame(width: 1, height: Self.ringDiameter)
                         .padding(.top, 4)
                     StressNowColumn(diameter: Self.ringDiameter) { showStress = true }
-                }
-                if let overall {
-                    Text(Self.compactLine(overall, today: now))
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if let p = shown {
-                    Text(Self.detail(p, effortScale: effortScale, today: now, long: long != nil))
-                        .font(StrandFont.caption)
-                        .foregroundStyle(StrandPalette.textTertiary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text("Pace needs about 2 weeks of Charge and Effort.")
-                        .font(StrandFont.caption)
-                        .foregroundStyle(StrandPalette.textTertiary)
                 }
             }
         }
@@ -234,7 +215,7 @@ struct PacingDialCard: View {
         }
     }
 
-    private func paceColumn(_ overall: Double?, sub: String) -> some View {
+    private func paceColumn(_ overall: Double?) -> some View {
         let color = overall.map(Self.stateColor) ?? StrandPalette.textTertiary
         return VStack(spacing: 4) {
             ArcGauge(from: 0.5, to: overall.map { ($0 + 1) / 2 } ?? 0.5, color: color,
@@ -247,7 +228,6 @@ struct PacingDialCard: View {
                     .minimumScaleFactor(0.7)
             }
             Text("Pace").font(StrandFont.subhead.weight(.semibold)).foregroundStyle(StrandPalette.textPrimary)
-            Text(sub).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)

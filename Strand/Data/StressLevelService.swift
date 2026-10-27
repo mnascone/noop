@@ -10,7 +10,7 @@ struct StressLevelDay: Codable, Equatable, Sendable {
     /// Local day, "yyyy-MM-dd".
     let day: String
     var baseline: StressLevel.Baseline
-    /// Once frozen the baseline stops moving, so the day's values don't drift as it goes on.
+    /// A finished day: kept as it is. Today is never frozen.
     var frozen: Bool
     var epochs: [StressLevel.Epoch]
     var computedAt: Int
@@ -47,7 +47,8 @@ enum StressLevelStore {
 }
 
 /// The all-day stress level, for every surface that shows stress: worked out from the strap's stored heart
-/// rate, beats and motion every 3 minutes, stored per day, and read back unchanged. Live beats score the
+/// rate, beats and motion every 3 minutes and stored per day. Today keeps updating as data syncs; a finished
+/// day is kept as it was. Live heart rate and beats score the
 /// current stretch the same way, against the same baseline.
 @MainActor
 final class StressLevelService: ObservableObject {
@@ -153,11 +154,12 @@ final class StressLevelService: ObservableObject {
         return f
     }()
 
-    /// Score one day's stored samples into epochs, merged into what was already stored.
+    /// Score one day's stored samples into epochs.
     private static func score(day key: String, from: Int, to: Int, repo: Repository, workouts rows: [WorkoutRow],
                               stored: StressLevelDay?, wholeDay: Bool = false) async -> StressLevelDay? {
         let hr = await repo.hrSamples(from: from, to: to, limit: 200_000)
-        guard !hr.isEmpty || stored != nil else { return nil }
+        // Nothing readable (a store hiccup, or samples aged out): keep what was stored rather than blank it.
+        guard !hr.isEmpty else { return stored }
         let rr = await repo.rrIntervals(from: from, to: to, limit: 200_000)
         let gravity = await repo.gravitySamplesUnion(from: from, to: to, limit: 200_000)
         let sleeps = await repo.sleepSessions(from: from - 12 * 3600, to: to, limit: 20)
@@ -165,7 +167,8 @@ final class StressLevelService: ObservableObject {
             .map { $0.effectiveStartTs...$0.endTs }
         let workouts = rows.filter { $0.endTs > from && $0.startTs < to }.map { $0.startTs...$0.endTs }
         // The morning factors: last night's resting heart rate and HRV against your 30 days, 0-3.
-        let morning = stored?.baseline.morning ?? StressModel(days: repo.days, stored: [])?.score
+        let morning = wholeDay ? (stored?.baseline.morning ?? StressModel(days: repo.days, stored: [])?.score)
+            : StressModel(days: repo.days, stored: [])?.score
         let restingHR = repo.days.last { $0.restingHr != nil }?.restingHr.map(Double.init)
         let history = historyBaseline(before: key)
 
@@ -177,27 +180,19 @@ final class StressLevelService: ObservableObject {
                 workouts: workouts, sleeps: sleeps)
             let raws = StressLevel.raw(from: from, to: to, inputs)
             let today = StressLevel.calmFloor(raws)
-            // The baseline: kept once frozen; else your recent days; else today's own floor; else resting
-            // heart rate plus a little (awake and still runs a few bpm over sleeping).
+            // The baseline: your recent days; else the day's own floor; else resting heart rate plus a
+            // little (awake and still runs a few bpm over sleeping). Today is re-scored in full every time,
+            // so it keeps up with late-synced data and a refined calm level; a finished day is kept as is.
             let baseline: StressLevel.Baseline
-            var frozen = false
-            if let s = stored, s.frozen {
-                baseline = s.baseline
-                frozen = true
-            } else if let h = history {
+            if let h = history {
                 baseline = .init(calmHR: h.hr, typicalRMSSD: h.rmssd ?? today.rmssd, morning: morning, source: "history")
-                frozen = true
             } else if let f = today.hr {
                 baseline = .init(calmHR: f, typicalRMSSD: today.rmssd, morning: morning, source: "today")
-                // Two hours of awake, still readings is enough to stop it moving.
-                frozen = raws.filter { !$0.moving && !$0.asleep && $0.meanHR != nil }.count >= 40 || wholeDay
             } else {
                 baseline = .init(calmHR: (restingHR ?? 60) + 8, typicalRMSSD: nil, morning: morning, source: "resting")
             }
-            let fresh = StressLevel.score(raws, baseline: baseline)
-            // A baseline that only just froze (or is still provisional) rescores the day so far, once.
-            let rescore = !(stored?.frozen ?? false)
-            let epochs = StressLevel.merge(stored: stored?.epochs ?? [], fresh: fresh, rescoreAll: rescore)
+            let frozen = wholeDay
+            let epochs = StressLevel.score(raws, baseline: baseline)
             return StressLevelDay(day: key, baseline: baseline, frozen: frozen, epochs: epochs,
                                   computedAt: to)
         }

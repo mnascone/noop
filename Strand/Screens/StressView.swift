@@ -77,7 +77,7 @@ struct StressView: View {
     @State private var selectedDay = StressLevelStore.dayKey(Date())
 
     var body: some View {
-        ScreenScaffold(title: "Stress", subtitle: "Stress level through your day, every 3 minutes",
+        ScreenScaffold(title: "Stress",
                        // PERF (scroll): lazy column — byte-identical layout (LazyVStack == eager VStack
                        // alignment/spacing/header). The content is one inner eager VStack, so the staggered
                        // section reveal is unchanged; this only defers building that stack until it scrolls in.
@@ -210,7 +210,7 @@ struct StressView: View {
             // 2. The week's averages; tap a day to show it above.
             if weekDays.count >= 2 {
                 VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-                    SectionHeader("Last 7 days", overline: "Average stress level")
+                    SectionHeader("Last 7 days")
                     NoopCard(tint: StressRamp.calm) {
                         StressWeekBars(days: weekDays, selected: $selectedDay)
                     }
@@ -221,8 +221,7 @@ struct StressView: View {
             // 3. What's behind it: the morning factors, which also tilt the day's level.
             if let model {
                 VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-                    SectionHeader("Morning factors", overline: "Behind today's level",
-                                  trailing: String(localized: "vs 30-day baseline"))
+                    SectionHeader("Morning factors", trailing: String(localized: "vs 30 days"))
                     heroCard(model)
                     tileGrid(model)
                 }
@@ -239,8 +238,6 @@ struct StressView: View {
                     .staggeredAppear(index: 4)
             }
 
-            methodologyCard(model)
-                .staggeredAppear(index: 4)
         }
         .sheet(isPresented: $showBreathe) {
             NavigationStack {
@@ -263,21 +260,15 @@ struct StressView: View {
         let isToday = selectedDay == todayKey
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             SectionHeader(isToday ? "Today" : LocalizedStringKey(Self.dayTitle(selectedDay)),
-                          overline: "Stress level, every 3 minutes",
                           trailing: d?.summary.average.map { String(localized: "avg \($0)") })
             NoopCard(tint: StressRamp.calm) {
                 VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
                     if let d, d.epochs.contains(where: { $0.state != .noData }) {
                         StressDayChart(day: d, dayStart: dayStart(d.day))
-                        Text("Press and hold the chart to read any 3 minutes.")
-                            .font(StrandFont.caption)
-                            .foregroundStyle(StrandPalette.textTertiary)
                         Divider().overlay(StrandPalette.hairline)
                         StressDaySummary(day: d)
                     } else {
-                        Text(isToday
-                             ? "No readings yet today. Values appear as the strap's heart rate syncs, one every 3 minutes you're still."
-                             : "No readings for this day.")
+                        Text("No readings")
                             .font(StrandFont.subhead)
                             .foregroundStyle(StrandPalette.textTertiary)
                             .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
@@ -319,10 +310,6 @@ struct StressView: View {
                     Spacer()
                     StatePill("\(minutes) min high", tone: .warning, showsDot: true)
                 }
-                Text("Your stress level has stayed High for \(minutes) minutes while you've been still. A few minutes of slow breathing can bring it down.")
-                    .font(StrandFont.subhead)
-                    .foregroundStyle(StrandPalette.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
                 NoopButton("Start a Breathe session", systemImage: "wind", kind: .primary, fullWidth: true) {
                     showBreathe = true
                 }
@@ -484,7 +471,7 @@ struct StressView: View {
         NoopCard(tint: StressRamp.calm) {
             VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
                 HStack {
-                    Text("This morning's score, 0-3").strandOverline()
+                    Text("This morning, 0-3").strandOverline()
                     Spacer()
                     StatePill("\(model.band.title)", tone: model.band.tone, showsDot: true)
                 }
@@ -499,18 +486,9 @@ struct StressView: View {
                             .font(StrandFont.overline)
                             .tracking(StrandFont.overlineTracking)
                             .foregroundStyle(StressRamp.color(model.score))
-                        // One plain-English line beside the gauge.
-                        Text(model.explanation)
-                            .font(StrandFont.subhead)
-                            .foregroundStyle(StrandPalette.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
                 }
-                Text("Set once a day from last night's resting heart rate and HRV against your 30 days. It tilts today's stress level a little: a High morning reads a few points higher all day, a Low one a few lower.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -537,9 +515,6 @@ struct StressView: View {
                 HStack {
                     Text("Advanced HRV").strandOverline()
                     Spacer()
-                    Text("on demand · today's R-R")
-                        .font(StrandFont.footnote)
-                        .foregroundStyle(StrandPalette.textTertiary)
                 }
 
                 LazyVGrid(
@@ -552,7 +527,7 @@ struct StressView: View {
                         StatTile(
                             label: "Baevsky Stress Index",
                             value: "\(Int(si.si.rounded()))",
-                            caption: String(localized: "Autonomic rigidity from your heart-rate rhythm. Higher means a more rigid, stressed rhythm."),
+                            caption: nil,
                             accent: StressRamp.tense
                         )
                     }
@@ -564,24 +539,20 @@ struct StressView: View {
                             StatTile(
                                 label: "Autonomic balance (LF/HF)",
                                 value: StressTrace.formatRatio(ratio),
-                                caption: String(localized: "Sympathetic vs parasympathetic tone from frequency-domain HRV. Higher leans sympathetic (stress-ward)."),
+                                caption: nil,
                                 accent: StressRamp.steady
                             )
                         } else if f.hf > 0 {
                             StatTile(
                                 label: "HF power",
                                 value: "\(Int(f.hf.rounded()))",
-                                caption: String(localized: "Parasympathetic (rest) band of your HRV."),
+                                caption: nil,
                                 accent: StressRamp.steady
                             )
                         }
                     }
                 }
 
-                Text("These are extra, on-demand HRV lenses computed from today's R-R intervals. They are informational and do not change the stress score above.")
-                    .font(StrandFont.footnote)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -706,7 +677,7 @@ struct StressView: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
                 NoopCard(tint: StressRamp.calm) {
-                    Text("Not enough recent days to chart a trend yet. Import a history or keep wearing your strap.")
+                    Text("Not enough days yet")
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)

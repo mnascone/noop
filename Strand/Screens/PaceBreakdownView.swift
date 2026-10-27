@@ -66,18 +66,10 @@ struct PaceBreakdownView: View {
                         .lineLimit(2)
                         .minimumScaleFactor(0.7)
                 }
-                VStack(alignment: .leading, spacing: NoopMetrics.space1) {
-                    Text(overall.map { PacingDialCard.compactLine($0, today: PacingDialCard.today(days)) }
-                         ?? String(localized: "Pace needs about 2 weeks of Charge and Effort."))
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text(hasLong
-                         ? String(localized: "Long term counts for 70% of the ring, short term 30%.")
-                         : String(localized: "Short term only, until there are 4 weeks of history."))
-                        .font(StrandFont.caption)
-                        .foregroundStyle(StrandPalette.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                if let overall {
+                    Text(PacingDialCard.stateWord(overall))
+                        .font(StrandFont.title2)
+                        .foregroundStyle(PacingDialCard.stateColor(overall))
                 }
                 Spacer(minLength: 0)
             }
@@ -100,12 +92,12 @@ struct PaceBreakdownView: View {
                  value: charge),
         ]
         if let d = p.stressDelta {
-            out.append(Push(id: "stress", title: String(localized: "Stress"),
-                            detail: String(localized: "\(String(format: "%+.1f", d)) on the 0-3 scale against usual"),
+            out.append(Push(id: "stress", title: String(localized: "Morning factors"),
+                            detail: String(localized: "\(String(format: "%+.1f", d)) of 3 vs usual"),
                             value: 0.15 * d / 0.35))
         } else {
-            out.append(Push(id: "stress", title: String(localized: "Stress"),
-                            detail: String(localized: "Not enough daily stress yet to compare"), value: nil))
+            out.append(Push(id: "stress", title: String(localized: "Morning factors"),
+                            detail: "–", value: nil))
         }
         return out
     }
@@ -137,9 +129,6 @@ struct PaceBreakdownView: View {
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textSecondary)
                 }
-                Text(String(localized: "Counts for \(Int((weight * 100).rounded()))% of the ring."))
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
             }
         }
     }
@@ -194,9 +183,6 @@ struct PaceBreakdownView: View {
                 ForEach(keys, id: \.self) { key in
                     weekRow(key, today: today, day: byDay[key], stress: stress[key])
                 }
-                Text("Stress is the daily 0-3 score from resting heart rate and HRV.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
             }
         }
     }
@@ -205,7 +191,10 @@ struct PaceBreakdownView: View {
         let charge: String = day?.recovery.map { "\(Int($0.rounded()))" } ?? "–"
         let e: Double? = key == today ? PacingMath.larger(day?.strain, todayEffortFloor) : day?.strain
         let effort: String = e.map { UnitFormatter.effortDisplay($0, scale: effortScale) } ?? "–"
-        let stressText: String = stress.map { String(format: "%.1f", $0) } ?? "–"
+        // The day's average stress level, the same number the Stress screen shows for that day.
+        let level = key == today ? StressLevelService.shared.today?.summary.average
+            : StressLevelStore.load(key)?.summary.average
+        let stressText: String = level.map(String.init) ?? "–"
         return HStack {
             Text(Self.dayLabel(key, today: today)).frame(maxWidth: .infinity, alignment: .leading)
             Text(charge).frame(width: 60, alignment: .trailing)

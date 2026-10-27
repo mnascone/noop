@@ -21,8 +21,10 @@ final class StressLevelTests: XCTestCase {
 
     /// Calm floor reads rest; the validated margin over it reads High; below the floor reads lower.
     func testHeartRateAnchorsTheCurve() {
-        XCTAssertEqual(L.level(meanHR: 62, rmssd: nil, baseline: base), 20)
-        XCTAssertEqual(L.level(meanHR: 77, rmssd: nil, baseline: base), 76)
+        XCTAssertEqual(L.level(meanHR: 62, rmssd: nil, baseline: base), 15)
+        XCTAssertEqual(L.level(meanHR: 77, rmssd: nil, baseline: base), 66)
+        XCTAssertEqual(L.Band(level: L.level(meanHR: 82, rmssd: nil, baseline: base)), .high, "about 20 over reads High")
+        XCTAssertEqual(L.Band(level: L.level(meanHR: 72, rmssd: nil, baseline: base)), .low, "10 over is still Low")
         XCTAssertLessThan(L.level(meanHR: 55, rmssd: nil, baseline: base), 10)
         let typicalDesk = L.level(meanHR: 68, rmssd: nil, baseline: base)
         XCTAssertEqual(L.Band(level: typicalDesk), .low, "a few bpm over the floor is low stress, \(typicalDesk)")
@@ -68,7 +70,7 @@ final class StressLevelTests: XCTestCase {
             let bpm: Int
             switch t {
             case 0..<7200: bpm = 52                       // asleep
-            case 14_400..<16_200: bpm = 80                // tense, still
+            case 14_400..<16_200: bpm = 84                // tense, still
             case 18_000..<19_800: bpm = 105               // walking
             case 19_800..<20_400: bpm = 88                // coming down after
             case 23_400..<25_200: continue                // off wrist
@@ -90,13 +92,13 @@ final class StressLevelTests: XCTestCase {
         XCTAssertEqual(at(3600).state, .measured)
         XCTAssertTrue(at(3600).asleep)
         XCTAssertEqual(at(3600).band, .rest)
-        XCTAssertEqual(at(10_000).band, .low)
-        XCTAssertEqual(at(15_000).band, .high, "18 bpm over the floor while still")
+        XCTAssertEqual(at(10_000).band, .rest, "calm desk time at the floor rests")
+        XCTAssertEqual(at(15_000).band, .high, "20 bpm over the floor while still")
         XCTAssertEqual(at(18_500).state, .active, "walking isn't stress")
         XCTAssertNil(at(18_500).level)
         XCTAssertEqual(at(19_900).state, .afterActivity, "heart rate still up after the walk")
         XCTAssertEqual(at(24_000).state, .noData)
-        XCTAssertEqual(at(27_000).band, .low)
+        XCTAssertEqual(at(27_000).band, .rest)
 
         let sum = L.summary(e)
         XCTAssertNotNil(sum.average)
@@ -105,6 +107,35 @@ final class StressLevelTests: XCTestCase {
         XCTAssertEqual(sum.seconds[.high], 1800)
         XCTAssertEqual(sum.activeSeconds, 1800 + 3 * 180)
         XCTAssertEqual(sum.unmeasuredSeconds, 1800)
+    }
+
+    /// After a workout heart rate stays up for a long while: that isn't stress. A long session earns a long
+    /// recovery window, and scoring resumes as soon as heart rate is back near calm.
+    func testRecoveryAfterAWorkoutIsNotStress() {
+        // 45 minutes lifting (logged), then heart rate easing from 95 to 64 over 40 minutes, then calm.
+        var hr: [L.HRPoint] = []
+        for t in 0..<(2 * 3600) {
+            let bpm: Int
+            switch t {
+            case 0..<2700: bpm = 125
+            case 2700..<5100: bpm = 95 - (t - 2700) * 31 / 2400
+            default: bpm = 64
+            }
+            hr.append(.init(ts: t, bpm: bpm))
+        }
+        let e = L.score(L.raw(from: 0, to: 7200, L.Inputs(hr: hr, workouts: [0...2699])), baseline: base)
+        let after = e.filter { $0.start >= 2700 && $0.start < 5100 }
+        let scoredHigh = after.filter { ($0.level ?? 0) >= 51 }
+        XCTAssertTrue(scoredHigh.isEmpty, "the cool-down never reads medium or high: \(scoredHigh.map(\.level))")
+        XCTAssertTrue(after.prefix(10).allSatisfy { $0.state != .measured }, "the first half hour isn't scored")
+        XCTAssertEqual(e.last?.band, .rest, "back to calm")
+    }
+
+    /// Walking the phone saw is activity, like a logged workout.
+    func testPhoneWalkingIsActivity() {
+        let hr = (0..<900).map { L.HRPoint(ts: $0, bpm: 88) }
+        let e = L.score(L.raw(from: 0, to: 900, L.Inputs(hr: hr, workouts: [0...899])), baseline: base)
+        XCTAssertTrue(e.allSatisfy { $0.state == .active })
     }
 
     /// With no motion stream, hard exertion is recognised from heart rate alone.

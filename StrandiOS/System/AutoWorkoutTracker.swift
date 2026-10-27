@@ -66,6 +66,10 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
 
     private let locationManager = CLLocationManager()
     private let motionManager = CMMotionActivityManager()
+    /// The phone's step counter, read a minute at a time during a walk or run: it keeps counting indoors,
+    /// where GPS has no fix and the motion classifier can stick on walking.
+    private let pedometer = CMPedometer()
+    private var lastStepPoll = Date.distantPast
     private var engine = LiveWorkoutSuggestionEngine(config: .init(restingBpm: 60))
     private weak var model: AppModel?
     private var cancellables: Set<AnyCancellable> = []
@@ -298,6 +302,26 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         if currentPlaceId != engine.currentPlace { currentPlaceId = engine.currentPlace }
         syncRealtime()
         syncLocationUpdates()
+        pollStepsIfWalking()
+    }
+
+    /// During a walk or run, once a minute: the last five minutes' steps, a minute at a time.
+    private func pollStepsIfWalking() {
+        guard engine.workoutActive, engine.workoutContext == .walk || engine.workoutContext == .run,
+              CMPedometer.isStepCountingAvailable(), Date().timeIntervalSince(lastStepPoll) >= 60 else { return }
+        lastStepPoll = Date()
+        let thisMinute = (Int(Date().timeIntervalSince1970) / 60) * 60
+        for back in 1...5 {
+            let start = thisMinute - back * 60
+            let from = Date(timeIntervalSince1970: TimeInterval(start))
+            pedometer.queryPedometerData(from: from, to: from.addingTimeInterval(60)) { [weak self] data, _ in
+                guard let data else { return }
+                let steps = data.numberOfSteps.intValue
+                DispatchQueue.main.async {
+                    self?.feed(.steps(minuteStart: start, count: steps))
+                }
+            }
+        }
     }
 
     /// GPS speed while the engine wants it: during a walk or run (so it can tell when you've stopped, even

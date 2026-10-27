@@ -98,6 +98,13 @@ final class StressNow: ObservableObject {
                 self.updateLive()
             }
             .store(in: &cancellables)
+        // A running workout is activity, not stress, from its start.
+        model.$activeWorkout
+            .map { $0.map { Int($0.start.timeIntervalSince1970) } }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { start in StressLevelService.shared.activeWorkoutStart = start }
+            .store(in: &cancellables)
         // A new 3-minute value every 3 minutes while the app is open.
         StressLevelService.shared.objectWillChange
             .receive(on: DispatchQueue.main)
@@ -247,7 +254,14 @@ final class StressNow: ObservableObject {
         let bufHR: Double? = window.isEmpty ? nil : Double(window.reduce(0, +)) / Double(window.count)
         guard let hr = beatHR ?? bufHR ?? model?.live.heartRate.map(Double.init) else { return nil }
         let b = baseline
+        // Moving, or still coming down from it: a workout running, heart rate far over calm, or the latest
+        // stored stretch (in the last 10 minutes) was activity and heart rate hasn't settled yet.
+        let recentActivity = StressLevelService.shared.latestState.map {
+            ($0.state == .active || $0.state == .afterActivity)
+                && Date().timeIntervalSince1970 - Double($0.start) < 600
+        } ?? false
         let active = model?.activeWorkout != nil || hr > b.calmHR + StressLevel.exertionOverCalmBPM
+            || (recentActivity && hr > b.calmHR + StressLevel.afterActivityBPM)
         let rmssd = StressLevel.cleanRMSSD(rr)
         return (Double(StressLevel.level(meanHR: hr, rmssd: rmssd, baseline: b)), rmssd != nil, active)
     }

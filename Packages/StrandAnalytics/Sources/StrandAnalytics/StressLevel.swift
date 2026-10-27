@@ -14,8 +14,10 @@ import Foundation
 //   - Heart rate carries most of the weight. An independent study of Garmin's score found it tracks HR
 //     (within-person r 0.74) far more than RMSSD (r -0.41), and this app's own comparison found daytime
 //     wrist RMSSD artifact-prone, so HRV here only adjusts the level, capped, and only from clean beats.
-//   - The high threshold: heart rate 15 bpm over your calm awake floor reads High (76), the margin this
-//     codebase validated against Oura's stress signal (`DaytimeStress.baselineRelativeHighMarginBPM`).
+//   - The scale's anchor: heart rate 15 bpm over your calm awake floor reads 66, the top third, which is
+//     where this codebase's comparison against Oura's stress signal put "high" on its 0-3 scale
+//     (`DaytimeStress.baselineRelativeHighMarginBPM`). Garmin's High (76) then needs about 18-20 bpm, and
+//     ordinary sitting a few bpm over the floor reads Low, as Garmin's typical days do.
 //
 // The morning factors (last night's resting HR and HRV against your 30-day normal, the 0-3 score) shift
 // the day's level a little: a stressed morning reads slightly higher all day, a well-recovered one lower.
@@ -35,7 +37,7 @@ public enum StressLevel {
     /// physiological (under 200 ms). Below either, HRV says nothing for that epoch.
     public static let minBeats = 60
     public static let minCleanShare = 0.85
-    /// Heart rate this far over the calm floor reads High: the validated margin.
+    /// Heart rate this far over the calm floor reads 66 (two thirds up the scale): the validated margin.
     public static let highMarginBPM = 15.0
     /// The most the HRV term can move the level, in the same units as `highMarginBPM` fractions.
     public static let maxHRVTerm = 0.6
@@ -48,19 +50,23 @@ public enum StressLevel {
     /// floor (0.20 g, the codebase's calibrated walking threshold).
     public static let motionThreshold = 0.20
     public static let activeShare = 0.25
-    /// With no motion data, heart rate this far over the calm floor is taken as exertion, not stress.
-    public static let exertionOverCalmBPM = 40.0
-    /// After activity, heart rate stays up for a while: the next epochs are "after activity" (not
-    /// scored) while heart rate is still this far over the calm floor, for up to this many epochs.
-    public static let afterActivityBPM = 15.0
-    public static let afterActivityEpochs = 3
+    /// Without motion saying so, heart rate this far over the calm floor is still taken as exertion, not
+    /// stress: sitting or standing, a mental stressor lifts heart rate 10-20 bpm, rarely 30.
+    public static let exertionOverCalmBPM = 30.0
+    /// After activity heart rate takes a while to come down (Firstbeat's "recovery from activity"): the
+    /// following epochs are "after activity", not scored, while heart rate is still this far over the calm
+    /// floor, for up to `afterActivityBase` epochs plus one per epoch of activity, at most
+    /// `afterActivityMaxEpochs` (an hour).
+    public static let afterActivityBPM = 10.0
+    public static let afterActivityBase = 4
+    public static let afterActivityMaxEpochs = 20
     /// The calm floor: this percentile of the awake, still epochs' mean heart rates.
     public static let calmPercentile = 0.10
 
-    // The curve: level = 100 / (1 + e^-(a z + b)), with z = 0 at the calm floor reading 20 (rest) and
-    // z = 1 (calm + 15 bpm) reading 76 (the High floor).
-    static let curveB = log(20.0 / 80.0)
-    static let curveA = log(76.0 / 24.0) - curveB
+    // The curve: level = 100 / (1 + e^-(a z + b)), with z = 0 at the calm floor reading 15 (rest) and
+    // z = 1 (calm + 15 bpm) reading 66. Calm + 5 reads about 28, + 10 about 47, + 20 about 81.
+    static let curveB = log(15.0 / 85.0)
+    static let curveA = log(66.0 / 34.0) - curveB
 
     // MARK: Types
 
@@ -172,7 +178,7 @@ public enum StressLevel {
         public var hr: [HRPoint]
         public var beats: [Beat]
         public var motion: [Motion]
-        /// Logged workouts: always activity.
+        /// Logged workouts, and walking, running or cycling the phone saw: always activity.
         public var workouts: [ClosedRange<Int>]
         /// Sleep: still scored (it's mostly rest), marked asleep, and left out of the calm floor.
         public var sleeps: [ClosedRange<Int>]
@@ -234,26 +240,33 @@ public enum StressLevel {
         var out: [Epoch] = []
         out.reserveCapacity(raws.count)
         var sinceActive = Int.max
+        var activeRun = 0
+        func allowance() -> Int { Swift.min(afterActivityMaxEpochs, afterActivityBase + activeRun) }
         for r in raws {
             guard let hr = r.meanHR else {
                 out.append(Epoch(start: r.start, state: r.moving ? .active : .noData, level: nil, meanHR: nil,
                                  rmssd: nil, asleep: r.asleep))
-                if r.moving { sinceActive = 0 } else if sinceActive != .max { sinceActive += 1 }
+                if r.moving { if sinceActive != 0 { activeRun = 0 }; sinceActive = 0; activeRun += 1 }
+                else if sinceActive != .max { sinceActive += 1 }
                 continue
             }
-            // No motion data at all for the epoch: hard exertion by heart rate alone.
+            // Hard exertion by heart rate alone, when motion didn't say so.
             let exertion = !r.asleep && hr > b.calmHR + exertionOverCalmBPM
             if r.moving || exertion {
+                if sinceActive != 0 { activeRun = 0 }
                 sinceActive = 0
+                activeRun += 1
                 out.append(Epoch(start: r.start, state: .active, level: nil, meanHR: hr, rmssd: r.rmssd, asleep: r.asleep))
                 continue
             }
             if sinceActive != .max { sinceActive += 1 }
-            if sinceActive <= afterActivityEpochs, hr > b.calmHR + afterActivityBPM {
+            if sinceActive <= allowance(), hr > b.calmHR + afterActivityBPM {
                 out.append(Epoch(start: r.start, state: .afterActivity, level: nil, meanHR: hr, rmssd: r.rmssd,
                                  asleep: r.asleep))
                 continue
             }
+            // Back down: the recovery is over.
+            if sinceActive != .max, hr <= b.calmHR + afterActivityBPM { sinceActive = .max }
             out.append(Epoch(start: r.start, state: .measured, level: level(meanHR: hr, rmssd: r.rmssd, baseline: b),
                              meanHR: hr, rmssd: r.rmssd, asleep: r.asleep))
         }

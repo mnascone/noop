@@ -473,6 +473,50 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
     }
 
     /// Walking around the house: the classifier says walking and heart rate is up, but GPS never moves.
+    /// Home from a walk, pottering indoors: GPS has no fix, the classifier keeps saying walking and heart
+    /// rate stays a little up. The pedometer's still minutes end it, at the last minute walked.
+    func testPedometerEndsAWalkIndoors() {
+        var e = engine(resting: 55)
+        _ = e.handle(.workoutStarted(context: .walk), at: 0)
+        // 20 minutes walking: 105 steps a minute, heart rate 98.
+        for m in 0..<20 { _ = e.handle(.steps(minuteStart: m * 60, count: 105), at: m * 60 + 59) }
+        feedHR(&e, from: 0, to: 1200) { _ in 98 }
+        // Inside: a few steps a minute, classifier stuck on walking, heart rate 72 (over the 67 walk floor).
+        _ = e.handle(.motion(.walking), at: 1200)
+        var got: [E.Action] = []
+        for m in 20..<26 {
+            got += e.handle(.steps(minuteStart: m * 60, count: 8), at: m * 60 + 59)
+            got += feedHR(&e, from: m * 60, to: m * 60 + 60) { _ in 72 }
+        }
+        let end = ends(got)
+        XCTAssertEqual(end.count, 1)
+        XCTAssertEqual(end.first?.0, 1200, "ends when the walking minutes did")
+        XCTAssertEqual(end.first?.1, .stoppedMoving)
+    }
+
+    /// A slow stretch (waiting at a crossing) isn't three still minutes, so the walk carries on.
+    func testShortPedometerPauseKeepsTheWalk() {
+        var e = engine(resting: 55)
+        _ = e.handle(.workoutStarted(context: .walk), at: 0)
+        var got: [E.Action] = []
+        for m in 0..<12 {
+            let n = (m == 6 || m == 7) ? 5 : 100
+            got += e.handle(.steps(minuteStart: m * 60, count: n), at: m * 60 + 59)
+            got += feedHR(&e, from: m * 60, to: m * 60 + 60) { _ in 95 }
+        }
+        XCTAssertTrue(ends(got).isEmpty)
+    }
+
+    /// With heart rate well under the walk's own level and no GPS movement, a walk ends even when that
+    /// heart rate is still over the walk floor.
+    func testHeartRateWellUnderTheWalkLevelEndsIt() {
+        var e = engine(resting: 55)
+        _ = e.handle(.workoutStarted(context: .walk), at: 0)
+        feedHR(&e, from: 0, to: 1200) { _ in 105 }
+        let got = feedHR(&e, from: 1200, to: 1200 + E.walkCalmEndS + 10) { _ in 78 }
+        XCTAssertEqual(ends(got).count, 1)
+    }
+
     func testPacingIndoorsDoesNotStartAWalk() {
         var e = engine()
         _ = e.handle(.motion(.walking), at: 0)

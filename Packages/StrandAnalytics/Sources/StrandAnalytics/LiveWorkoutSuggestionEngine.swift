@@ -40,6 +40,9 @@ import Foundation
 //   - Place: leaving it ends the workout at the LAST elevated sample (when heart rate dropped for the last
 //     time), not at the exit. Staying put with heart rate under resting + `quietMarginBPM` for the place's
 //     quiet span also ends it, at the last loud sample.
+//   - Walk / run, by the pedometer first: `stepStillMinutes` minutes each under `stepStillPerMin` steps
+//     ends it at the end of the last minute walked. The pedometer counts indoors, where GPS has no fix
+//     and the motion classifier can stick on walking, which is where walks used to run on.
 //   - Walk / run: stopped for `walkStopGraceS` with heart rate back below the walk floor, or stopped for
 //     `walkStopMaxS` regardless, or driving at once. End is the last moment on foot. "Stopped" is the
 //     motion classifier OR GPS: during a walk the app feeds GPS speed, and GPS still for `gpsStillS`
@@ -122,6 +125,9 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         case motion(Motion)
         /// GPS ground speed in metres per second (negative = unknown, ignored).
         case speed(Double)
+        /// Phone pedometer steps in the minute starting at `minuteStart` (unix seconds). The app layer
+        /// re-sends recent minutes as they fill in; the latest count for a minute wins.
+        case steps(minuteStart: Int, count: Int)
         case heartRate(Int)
         /// A workout became active. `context` is what started it, nil when started by hand.
         case workoutStarted(context: Context?)
@@ -195,6 +201,16 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     public static let gpsStillS = 90
     /// Heart rate back under the walk floor this long, with no GPS movement, ends a walk.
     public static let walkCalmEndS = 5 * 60
+    /// Pedometer: a minute under this many steps is standing or sitting; this many or more is walking.
+    /// Walking runs about 90-120 steps a minute, pottering around a room well under 30.
+    public static let stepStillPerMin = 25
+    public static let stepWalkPerMin = 50
+    /// Minutes of pedometer stillness that end a walk, whatever the motion classifier or GPS say: the
+    /// pedometer counts indoors, where GPS has no fix and the classifier can stick on walking.
+    public static let stepStillMinutes = 3
+    /// Heart rate this far under the walk's own level (its median while walking) counts as back down,
+    /// for walks whose level sits close to the walk floor.
+    public static let walkLevelDropBPM = 15
 
     // MARK: - State
 
@@ -224,6 +240,8 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     private var drivingSince: Int?
 
     private var hr: [(ts: Int, bpm: Int)] = []
+    /// Pedometer steps per minute, by minute start.
+    private var stepMinutes: [Int: Int] = [:]
 
     public private(set) var workoutActive = false
     public private(set) var workoutContext: Context?
@@ -318,6 +336,14 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
             applyMotion(m, at: ts)
         case .speed(let mps):
             applySpeed(mps, at: ts)
+        case let .steps(minuteStart, count):
+            let m = (minuteStart / 60) * 60
+            stepMinutes[m] = max(0, count)
+            if count >= Self.stepWalkPerMin {
+                lastOnFootTs = max(lastOnFootTs ?? 0, m + 60)
+            }
+            let cutoff = now - 2 * 3600
+            if stepMinutes.count > 150 { stepMinutes = stepMinutes.filter { $0.key >= cutoff } }
         case .heartRate(let bpm):
             if bpm >= 30, bpm <= 230 {
                 if let last = hr.last, last.ts >= ts {
@@ -464,6 +490,7 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
             }
         }
 
+        evaluateStepEnd(&out)
         evaluateCalmWalkEnd(&out)
 
         if let raised = pendingStartRaisedAt, now - raised >= Self.pendingStartTimeoutS {
@@ -526,6 +553,35 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         }
     }
 
+    /// The pedometer says you've stood still: the last `stepStillMinutes` complete minutes each under
+    /// `stepStillPerMin` steps. Ends a walk or run at the end of the last minute you walked in (or where the
+    /// still minutes began). Needs those minutes reported, so a phone without a pedometer never ends this way.
+    private mutating func evaluateStepEnd(_ out: inout [Action]) {
+        guard workoutActive, !endRaised, workoutContext == .walk || workoutContext == .run,
+              let started = workoutStartedAt else { return }
+        let lastComplete = (now / 60) * 60 - 60
+        let minutes = (0..<Self.stepStillMinutes).map { lastComplete - $0 * 60 }
+        guard minutes.allSatisfy({ $0 >= started - 60 }),
+              minutes.allSatisfy({ (stepMinutes[$0] ?? Int.max) < Self.stepStillPerMin }) else { return }
+        let stillFrom = minutes.last ?? lastComplete
+        let lastWalked = stepMinutes.filter { $0.key >= started - 60 && $0.key < stillFrom && $0.value >= Self.stepWalkPerMin }
+            .keys.max().map { $0 + 60 }
+        let endTs = max(started, lastWalked ?? stillFrom)
+        endRaised = true
+        out.append(.end(context: workoutContext, endTs: endTs, reason: .stoppedMoving))
+        if let p = pendingStart, p.context.placeId == nil { clearPending(&out) }
+        walkBoutStart = nil
+        runSecondsInBout = 0
+        walkStartRaisedForBout = false
+    }
+
+    /// The walk's own heart-rate level: the median from its start until five minutes ago.
+    private func walkLevel() -> Int? {
+        guard let started = workoutStartedAt else { return nil }
+        let w = hr.filter { $0.ts >= started && $0.ts < now - Self.walkCalmEndS }.map(\.bpm).sorted()
+        return w.count >= Self.minHRCoverageSamples ? w[w.count / 2] : nil
+    }
+
     /// A walk or run whose heart rate has been back under the walk floor for `walkCalmEndS`, with no GPS
     /// movement in that time, is over: you stopped walking somewhere the motion classifier didn't notice.
     private mutating func evaluateCalmWalkEnd(_ out: inout [Action]) {
@@ -534,7 +590,11 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         else { return }
         // Moving by GPS within the window means still walking, just gently.
         if let moved = gpsLastMovedTs, now - moved < Self.walkCalmEndS { return }
-        let floor = config.restingBpm + Self.walkMarginBPM
+        // Walking by the pedometer in that time means still walking.
+        let recentSteps = stepMinutes.filter { $0.key >= now - Self.walkCalmEndS }
+        if recentSteps.values.contains(where: { $0 >= Self.stepWalkPerMin }) { return }
+        // Back down: under the walk floor, or well under the walk's own level when that's higher.
+        let floor = max(config.restingBpm + Self.walkMarginBPM, (walkLevel() ?? 0) - Self.walkLevelDropBPM)
         let window = recent(seconds: Self.walkCalmEndS)
         guard window.count >= Self.walkCalmEndS / 6, let first = window.first,
               first.ts - (now - Self.walkCalmEndS) <= 60 else { return }
@@ -563,15 +623,24 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         if endRaised {
             let resumedByHR = sustainedElevated(seconds: Self.resumeElevatedS, floor: quietLine + 5)
             let onFootContext = workoutContext == .walk || workoutContext == .run
-            let resumedByFoot = onFootContext && motion.isOnFoot
-                && (now - (walkBoutStart ?? now)) >= Self.walkStopGraceS
+            // On foot again: the classifier for the grace period (unless the pedometer says still), or two
+            // walking minutes by the pedometer. Heart rate alone doesn't resume a walk: it stays up after
+            // you stop, and resuming on it would end and un-end the walk over and over.
+            let lastMinute = (now / 60) * 60 - 60
+            let pedometerStill = stepMinutes[lastMinute].map { $0 < Self.stepStillPerMin } ?? false
+            let pedometerWalking = [lastMinute, lastMinute - 60].allSatisfy { (stepMinutes[$0] ?? 0) >= Self.stepWalkPerMin }
+            let resumedByFoot = onFootContext
+                && ((motion.isOnFoot && !pedometerStill && (now - (walkBoutStart ?? now)) >= Self.walkStopGraceS)
+                    || pedometerWalking)
             let resumedAtPlace = workoutContext?.placeId != nil && currentPlace == workoutContext?.placeId
                 && resumedByHR
             let resumed: Bool
             if workoutContext?.placeId != nil {
                 resumed = resumedAtPlace
+            } else if onFootContext {
+                resumed = resumedByFoot
             } else {
-                resumed = resumedByHR || resumedByFoot
+                resumed = resumedByHR
             }
             if resumed {
                 endRaised = false

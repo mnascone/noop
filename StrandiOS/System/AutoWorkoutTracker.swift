@@ -57,10 +57,10 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
     private static let endAction = "NOOP_AUTO_END"
     private static let keepAction = "NOOP_AUTO_KEEP"
     private static let discardAction = "NOOP_AUTO_DISCARD"
-    private static let undoAction = "NOOP_AUTO_UNDO"
+    static let undoAction = "NOOP_AUTO_UNDO"
     private static let regionPrefix = "noop.place."
     private static let legacyRegionId = "noop.liveworkout.gym"
-    private static let kContext = "context", kTs = "ts", kSport = "sport", kEndTs = "endTs"
+    static let kContext = "context", kTs = "ts", kSport = "sport", kEndTs = "endTs"
 
     // MARK: Internals
 
@@ -71,7 +71,7 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
     private let pedometer = CMPedometer()
     private var lastStepPoll = Date.distantPast
     private var engine = LiveWorkoutSuggestionEngine(config: .init(restingBpm: 60))
-    private weak var model: AppModel?
+    private(set) weak var model: AppModel?
     private var cancellables: Set<AnyCancellable> = []
     private var motionUpdatesRunning = false
     private var significantChangesRunning = false
@@ -141,6 +141,12 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
 
         NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in self?.wake() }
+            .store(in: &cancellables)
+        // Strap data synced: look for workouts recorded while the phone was away.
+        model.repo.$refreshSeq
+            .dropFirst()
+            .debounce(for: .seconds(20), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.scanForMissedWorkouts() }
             .store(in: &cancellables)
         NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
             .sink { [weak self] _ in self?.foregroundTimer?.invalidate(); self?.foregroundTimer = nil }
@@ -433,6 +439,7 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         feed(.tick)
         catchUpMotion()
         startForegroundTimerIfNeeded()
+        scanForMissedWorkouts()
     }
 
     private func startForegroundTimerIfNeeded() {
@@ -445,7 +452,7 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         foregroundTimer = t
     }
 
-    private static func restingBpm(_ repo: Repository) -> Int {
+    static func restingBpm(_ repo: Repository) -> Int {
         repo.today?.restingHr ?? repo.days.last(where: { $0.restingHr != nil })?.restingHr ?? 60
     }
 
@@ -708,7 +715,7 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
 
     // MARK: - Notifications
 
-    private func add(id: String, content: UNMutableNotificationContent, quiet: Bool) {
+    func add(id: String, content: UNMutableNotificationContent, quiet: Bool) {
         content.sound = quiet ? nil : .default
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
@@ -742,6 +749,10 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
             UNNotificationCategory(identifier: Self.savedCategory,
                                    actions: [action(Self.undoAction, String(localized: "Delete it"), destructive: true)],
                                    intentIdentifiers: [], options: []),
+            UNNotificationCategory(identifier: Self.missedCategory,
+                                   actions: [action(Self.missedSaveAction, String(localized: "Save")),
+                                             action(Self.missedDiscardAction, String(localized: "Discard"), destructive: true)],
+                                   intentIdentifiers: [], options: []),
         ]
         let ours = Set(cats.map(\.identifier))
         let center = UNUserNotificationCenter.current()
@@ -763,6 +774,8 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
                 acceptAskStart(info)
             default:
                 feed(.startDismissed)
+                // Said no: don't offer it again from the strap's data later.
+                if let ts = info[Self.kTs] as? Int { Self.rememberOffered(ts...Int(Date().timeIntervalSince1970)) }
             }
             return true
         case Self.askEndCategory:
@@ -783,6 +796,12 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         case Self.savedCategory:
             if response.actionIdentifier == Self.undoAction { deleteSaved(info) }
             return true
+        case Self.missedCategory:
+            if response.actionIdentifier == Self.missedSaveAction
+                || response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+                saveMissed(info)
+            }
+            return true
         default:
             return false
         }
@@ -800,6 +819,7 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
     private func discard(_ info: [AnyHashable: Any]) {
         guard let model, let ts = info[Self.kTs] as? Int else { return }
         if let w = model.activeWorkout, Int(w.start.timeIntervalSince1970) == ts {
+            Self.rememberOffered(ts...Int(Date().timeIntervalSince1970))
             model.discardWorkout()
             feed(.startDismissed)
             log("auto: discarded running workout")
@@ -810,6 +830,7 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
 
     private func deleteSaved(_ info: [AnyHashable: Any]) {
         guard let model, let ts = info[Self.kTs] as? Int, let sport = info[Self.kSport] as? String else { return }
+        Self.rememberOffered(ts...max(ts, (info[Self.kEndTs] as? Int) ?? Int(Date().timeIntervalSince1970)))
         let box = BackgroundTaskBox()
         box.id = UIApplication.shared.beginBackgroundTask(withName: "noop.auto.delete") { box.end() }
         Task { @MainActor [weak self] in
@@ -834,13 +855,13 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         return m >= 60 ? String(localized: "\(m / 60)h \(m % 60)m") : String(localized: "\(m) min")
     }
 
-    private func log(_ line: String) {
+    func log(_ line: String) {
         model?.live.append(log: AppModel.stamped(line))
     }
 }
 
 @MainActor
-private final class BackgroundTaskBox {
+final class BackgroundTaskBox {
     var id: UIBackgroundTaskIdentifier = .invalid
     func end() {
         guard id != .invalid else { return }

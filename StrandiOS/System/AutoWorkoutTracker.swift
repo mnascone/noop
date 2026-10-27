@@ -514,10 +514,18 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
     private func perform(_ action: LiveWorkoutSuggestionEngine.Action) {
         switch action {
         case let .start(context, startTs, avgBpm):
-            if mode(for: context) == .auto {
-                autoStart(context: context, startTs: startTs)
+            let apply = { [weak self] (start: Int) in
+                guard let self else { return }
+                if self.mode(for: context) == .auto {
+                    self.autoStart(context: context, startTs: start)
+                } else {
+                    self.postAskStart(context: context, startTs: start, avgBpm: avgBpm)
+                }
+            }
+            if context == .walk || context == .run {
+                refineOnFootStart(startTs) { apply($0) }
             } else {
-                postAskStart(context: context, startTs: startTs, avgBpm: avgBpm)
+                apply(startTs)
             }
         case .withdrawStart:
             removeNotification(Self.startRequestId)
@@ -531,6 +539,88 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         case .withdrawEnd:
             removeNotification(Self.endRequestId)
         }
+    }
+
+    // MARK: When a walk really began
+
+    /// Good GPS fixes from the last half hour, while GPS is on for walking pace.
+    private var recentFixes: [CLLocation] = []
+    /// A walk is detected some minutes in (the motion classifier is slow to say "walking", and a bout must
+    /// hold before it counts). Its start goes back to when you actually set off: the earliest minute of
+    /// the walking stretch the pedometer counted (it keeps counting while the app sleeps), or the first GPS
+    /// fix of the moving track, whichever is earlier. At most 20 minutes back, never before the last
+    /// workout ended.
+    static let refineBackS = 20 * 60
+    static let walkingStepsPerMin = 40
+
+    private func refineOnFootStart(_ startTs: Int, done: @escaping (Int) -> Void) {
+        let floorTs = max(startTs - Self.refineBackS, model?.lastWorkout?.endTs ?? 0)
+        var candidates = [startTs]
+        if let gps = gpsTrackStart(before: startTs), gps >= floorTs { candidates.append(gps) }
+        guard CMPedometer.isStepCountingAvailable() else {
+            done(candidates.min() ?? startTs)
+            return
+        }
+        // Per-minute steps from 20 minutes before the detected start to a minute after it.
+        let first = (floorTs / 60) * 60
+        let last = (startTs / 60) * 60 + 60
+        let minutes = Array(stride(from: first, through: last, by: 60))
+        var counts: [Int: Int] = [:]
+        let group = DispatchGroup()
+        let lock = NSLock()
+        for m in minutes {
+            group.enter()
+            let from = Date(timeIntervalSince1970: TimeInterval(m))
+            pedometer.queryPedometerData(from: from, to: from.addingTimeInterval(60)) { data, _ in
+                if let n = data?.numberOfSteps.intValue { lock.lock(); counts[m] = n; lock.unlock() }
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) { [weak self] in
+            // Walk back from the detected start while minutes are walking; one slow minute (a crossing)
+            // doesn't break the stretch, two do.
+            var earliest: Int?
+            var slow = 0
+            var m = (startTs / 60) * 60
+            while m >= first {
+                if (counts[m] ?? 0) >= Self.walkingStepsPerMin {
+                    earliest = m
+                    slow = 0
+                } else {
+                    slow += 1
+                    if slow >= 2 { break }
+                }
+                m -= 60
+            }
+            if let e = earliest, e >= floorTs { candidates.append(e) }
+            let refined = candidates.min() ?? startTs
+            if refined < startTs { self?.log("auto: walk start moved back \((startTs - refined) / 60) min by steps/GPS") }
+            done(refined)
+        }
+    }
+
+    /// The first fix of the moving track that ends at the detected start: walk back while each fix is at
+    /// least walking pace from the one before.
+    private func gpsTrackStart(before startTs: Int) -> Int? {
+        // One fix per 20 s or more, so the distance between them outruns GPS noise.
+        var fixes: [CLLocation] = []
+        for f in recentFixes where Int(f.timestamp.timeIntervalSince1970) <= startTs + 60 {
+            if let last = fixes.last, f.timestamp.timeIntervalSince(last.timestamp) < 20 { continue }
+            fixes.append(f)
+        }
+        guard fixes.count >= 2 else { return nil }
+        var earliest: Int?
+        var i = fixes.count - 1
+        while i > 0 {
+            let a = fixes[i - 1], b = fixes[i]
+            let dt = b.timestamp.timeIntervalSince(a.timestamp)
+            guard dt > 0, dt <= 120 else { break }
+            let moved = b.distance(from: a) - (a.horizontalAccuracy + b.horizontalAccuracy) / 2
+            guard moved / dt >= LiveWorkoutSuggestionEngine.gpsWalkMinMps * 0.8 else { break }
+            earliest = Int(a.timestamp.timeIntervalSince1970)
+            i -= 1
+        }
+        return earliest
     }
 
     private func autoStart(context: LiveWorkoutSuggestionEngine.Context, startTs: Int) {
@@ -801,6 +891,13 @@ extension AutoWorkoutTracker: @preconcurrency CLLocationManagerDelegate {
             checkArrivals(best)
         }
         if watchingSpeed {
+            // Kept for working out, at a start, when the walk really began.
+            for loc in locations where loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy < 30 {
+                recentFixes.append(loc)
+            }
+            if let f = recentFixes.first, Date().timeIntervalSince(f.timestamp) > 1800 {
+                recentFixes.removeAll { Date().timeIntervalSince($0.timestamp) > 1800 }
+            }
             for loc in locations where loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy < 50 {
                 if let mps = Self.speed(of: loc, after: lastSpeedFix) { feed(.speed(mps), at: loc.timestamp) }
                 // The reference fix for derived speed moves on only every 45 s, so the distance between

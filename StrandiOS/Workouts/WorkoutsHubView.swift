@@ -63,6 +63,12 @@ struct WorkoutsHubView: View {
             }
         }
         .task(id: repo.refreshSeq) { await load() }
+        // A type set on a workout or an exercise: rebuild the lift days, so the filter and Lift days agree.
+        .onReceive(workoutTypes.$stored.dropFirst().map { _ in () }
+            .merge(with: ExerciseCategoryStore.shared.$stored.dropFirst().map { _ in () })
+            .debounce(for: .milliseconds(400), scheduler: RunLoop.main)) { _ in
+            Task { liftDays = await LiftDays.build(rows: rows, repo: repo) }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .debounce(for: .milliseconds(300), scheduler: RunLoop.main)) { _ in reapplyRules() }
         .sheet(item: $dayTarget) { target in
@@ -126,15 +132,22 @@ struct WorkoutsHubView: View {
         Dictionary(liftDays.map { ($0.row.startTs, $0) }, uniquingKeysWith: { a, _ in a })
     }
 
+    /// A workout's types: the ones set on it, read live so a change shows at once; else the ones its sets
+    /// and exercises add up to.
+    private func types(_ row: WorkoutRow, _ lifts: [Int: LiftDay]) -> [StrengthCategory] {
+        let chosen = workoutTypes.categories(startTs: row.startTs)
+        if !chosen.isEmpty { return strengthTypes.types.filter(chosen.contains) }
+        guard let d = lifts[row.startTs], !d.typesChosen else { return [] }
+        return d.types
+    }
+
     /// The day's trained workouts that pass the filter.
     private func matching(_ dayRows: [WorkoutRow]) -> [WorkoutRow] {
         let lifts = liftDayByStart
         switch filter {
         case .all: return dayRows
         case .type(let c):
-            return dayRows.filter { r in
-                lifts[r.startTs]?.types.contains(c) ?? workoutTypes.categories(startTs: r.startTs).contains(c)
-            }
+            return dayRows.filter { types($0, lifts).contains(c) }
         case .sport(let sp): return dayRows.filter { $0.sport.lowercased() == sp.lowercased() }
         case .exercise(let e):
             return dayRows.filter { r in lifts[r.startTs]?.exercises.contains { $0.lowercased() == e.lowercased() } ?? false }
@@ -153,7 +166,9 @@ struct WorkoutsHubView: View {
     }
 
     private var filterTypes: [StrengthCategory] {
-        strengthTypes.types.filter { c in liftDays.contains { $0.types.contains(c) } }
+        let lifts = liftDayByStart
+        let used = Set(rows.flatMap { types($0, lifts) })
+        return strengthTypes.types.filter(used.contains)
     }
 
     /// All, then your lift-day types, then a menu for one sport or one exercise.
@@ -218,9 +233,10 @@ struct WorkoutsHubView: View {
 
     private var liftDaysSubtitle: String {
         let month = Int(Date().timeIntervalSince1970) - 30 * 86_400
-        let recent = liftDays.filter { $0.row.startTs >= month }
+        let lifts = liftDayByStart
+        let recent = rows.filter { $0.startTs >= month }.map { types($0, lifts) }
         let parts = strengthTypes.types.compactMap { c -> String? in
-            let n = recent.filter { $0.types.contains(c) }.count
+            let n = recent.filter { $0.contains(c) }.count
             return n > 0 ? "\(c.displayName) \(n)" : nil
         }
         return parts.isEmpty ? String(localized: "Compare push, pull, legs and your other lift days.")
@@ -348,7 +364,7 @@ struct WorkoutsHubView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                         .lineLimit(1)
                     // A strength workout's types, its subcategories.
-                    ForEach(liftDayByStart[row.startTs]?.types ?? [], id: \.self) { StrengthCategoryTag(category: $0) }
+                    ForEach(types(row, liftDayByStart), id: \.self) { StrengthCategoryTag(category: $0) }
                 }
                 Text(rowSubtitle(row, counts: counts))
                     .font(StrandFont.footnote)

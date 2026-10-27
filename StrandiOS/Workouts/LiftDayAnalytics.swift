@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import Charts
 import StrandDesign
 import StrandAnalytics
@@ -191,6 +192,11 @@ struct LiftDaysView: View {
         .task(id: repo.refreshSeq) {
             days = await LiftDays.build(rows: rows, repo: repo)
             loaded = true
+        }
+        .onReceive(WorkoutCategoryStore.shared.$stored.dropFirst().map { _ in () }
+            .merge(with: ExerciseCategoryStore.shared.$stored.dropFirst().map { _ in () })
+            .debounce(for: .milliseconds(400), scheduler: RunLoop.main)) { _ in
+            Task { days = await LiftDays.build(rows: rows, repo: repo) }
         }
         .sheet(item: $detail) { d in
             NavigationStack { WorkoutDetailView(row: d.row).environmentObject(repo) }

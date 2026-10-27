@@ -74,6 +74,8 @@ struct WorkoutDetailView: View {
     @State private var steps: StepReadout?
     /// The sets editor, opened from the toolbar or the sets card.
     @State private var editingSets = false
+    /// The workout's own editor (sport, start, end, heart rate…), as from the Workouts list.
+    @State private var editingWorkout = false
 
     var body: some View {
         ScreenScaffold(title: "\(WorkoutSource.displaySport(row.sport))",
@@ -93,7 +95,7 @@ struct WorkoutDetailView: View {
             #if os(iOS)
             // Sets or intervals counted for this workout, and the way to correct them.
             WorkoutSetsCard(row: row, editing: $editingSets)
-                .id(row.sport)
+                .id("\(row.startTs)-\(row.endTs)-\(row.sport)")
             #endif
             routeCard
             hrCurveCard
@@ -108,16 +110,17 @@ struct WorkoutDetailView: View {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Done") { dismiss() }
             }
-            #if os(iOS)
-            // Sets or intervals can be entered or corrected for a sport that has them (not a walk or a run).
-            if LiveIntervalModes.mode(forSport: row.sport) != nil {
+            // Edit the workout itself: its times, sport and figures. Sets are edited from the Sets card.
+            if canChangeSport {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Edit sets") { editingSets = true }
+                    Button("Edit") { editingWorkout = true }
                 }
             }
-            #endif
         }
-        .task(id: row.sport) { await load() }
+        .sheet(isPresented: $editingWorkout) {
+            ManualWorkoutSheet(editing: row) { new, replacing in saveEdit(new, replacing: replacing) }
+        }
+        .task(id: "\(row.startTs)-\(row.endTs)-\(row.sport)") { await load() }
     }
 
     // MARK: - Load
@@ -313,6 +316,28 @@ struct WorkoutDetailView: View {
         }
     }
 
+    /// Save an edit from the workout's editor, the way the Workouts list does: the edited row replaces the
+    /// old one, is re-scored from the strap's heart rate for its new window, and shows here at once.
+    private func saveEdit(_ new: WorkoutRow, replacing old: WorkoutRow?) {
+        Task {
+            await repo.saveManualWorkout(new, replacing: old)
+            #if os(iOS)
+            if let old {
+                WorkoutSetsStore.move(from: old, to: new)
+            }
+            #endif
+            row = new
+            await AppModel.shared?.intelligence.analyzeRecent()
+            await repo.refresh()
+            // The re-score fills in heart rate, effort and calories: show those.
+            if let fresh = await repo.workoutRows(days: 60).first(where: {
+                $0.startTs == new.startTs && $0.sport == new.sport && $0.source == new.source
+            }) {
+                row = fresh
+            }
+        }
+    }
+
     /// Save the workout under another sport. A detected one becomes a workout of yours, as relabelling it
     /// from the list does; its route and corrected sets follow it.
     private func changeSport(to sport: String) {
@@ -330,7 +355,7 @@ struct WorkoutDetailView: View {
                 await repo.saveManualWorkout(new, replacing: old)
             }
             #if os(iOS)
-            WorkoutSetsStore.move(startTs: old.startTs, from: old.sport, to: sport)
+            WorkoutSetsStore.move(from: old, to: new)
             #endif
             row = new
             await repo.refresh()

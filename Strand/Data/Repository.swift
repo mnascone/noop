@@ -1352,17 +1352,6 @@ final class Repository: ObservableObject {
         return nil
     }
 
-    /// The strap's step samples over `[from, to]` from the first id that has a countable window (the active
-    /// strap first), never merged across ids, as `strapStepTicks` reads them. Empty without a counter.
-    func strapStepSamples(from: Int, to: Int) async -> [StepSample] {
-        guard let store = await ensureStore() else { return [] }
-        for id in importedReadIds {
-            let samples = (try? await store.stepSamples(deviceId: id, from: from, to: to, limit: 200_000)) ?? []
-            if StepsCounter.stepsInWindow(samples) != nil { return samples }
-        }
-        return []
-    }
-
     /// Pure pick of the latest classed activity across the union's per-id step lists: the non-nil
     /// `activityClass` on the sample with the greatest ts, resolving a ts tie in favour of the FIRST list (the
     /// active strap, mirroring the union's active-wins rule). Static + pure so it's unit-testable without a

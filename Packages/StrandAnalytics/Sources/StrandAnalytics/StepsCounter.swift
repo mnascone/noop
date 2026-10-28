@@ -60,24 +60,4 @@ public enum StepsCounter {
         }
         return total > 0 ? total : nil
     }
-
-    /// Raw locomotion ticks a minute at a time, by the same rules as `stepsInWindow`: each increment goes to
-    /// the minute of the later sample, and `runTicks` are the ones the strap classed running (2). Minutes
-    /// with nothing retained are left out. Sorted by minute. iOS-only caller (finding workouts recorded
-    /// without the phone, `MissedWorkoutFinder`); no Kotlin twin yet.
-    public static func perMinute(_ samples: [StepSample]) -> [(start: Int, ticks: Int, runTicks: Int)] {
-        let sorted = samples.sorted { $0.ts < $1.ts }
-        guard sorted.count >= 2 else { return [] }
-        let hasActivityClasses = hasActivityClasses(sorted)
-        var ticks: [Int: Int] = [:], run: [Int: Int] = [:]
-        for i in 1..<sorted.count {
-            let delta = (sorted[i].counter - sorted[i - 1].counter) & 0xFFFF
-            guard shouldCountDelta(activityClass: sorted[i].activityClass, hasActivityClasses: hasActivityClasses),
-                  isPlausibleDelta(previousTs: sorted[i - 1].ts, currentTs: sorted[i].ts, delta: delta) else { continue }
-            let m = (sorted[i].ts / 60) * 60
-            ticks[m, default: 0] += delta
-            if sorted[i].activityClass == 2 { run[m, default: 0] += delta }
-        }
-        return ticks.keys.sorted().map { (start: $0, ticks: ticks[$0] ?? 0, runTicks: run[$0] ?? 0) }
-    }
 }

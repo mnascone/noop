@@ -118,7 +118,9 @@ struct WorkoutDetailView: View {
             }
         }
         .sheet(isPresented: $editingWorkout) {
-            ManualWorkoutSheet(editing: row) { new, replacing in saveEdit(new, replacing: replacing) }
+            ManualWorkoutSheet(editing: row, onDelete: { deleteWorkout() }) { new, replacing in
+                saveEdit(new, replacing: replacing)
+            }
         }
         .task(id: "\(row.startTs)-\(row.endTs)-\(row.sport)") { await load() }
     }
@@ -313,6 +315,18 @@ struct WorkoutDetailView: View {
             } else {
                 Text(sport)
             }
+        }
+    }
+
+    /// Delete from the workout's editor, as from the Workouts list, and close this screen.
+    private func deleteWorkout() {
+        let old = row
+        RouteStore.remove(startTs: old.startTs, sport: old.sport)
+        WorkoutDeletion.forget(old)
+        Task {
+            await repo.deleteWorkout(old)
+            await repo.refresh()
+            dismiss()
         }
     }
 

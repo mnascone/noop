@@ -260,7 +260,8 @@ struct WorkoutsView: View {
             await loadRecoveryTrend(rows: trendRows)
         }
         .sheet(item: $sheet) { target in
-            ManualWorkoutSheet(editing: target.editing) { row, replacing in
+            ManualWorkoutSheet(editing: target.editing,
+                               onDelete: target.isCopy ? nil : target.editing.map { e in { delete(e) } }) { row, replacing in
                 Task {
                     // A copy pre-fills the form but replaces nothing — see `WorkoutSheetTarget.isCopy`.
                     await repo.saveManualWorkout(row, replacing: target.isCopy ? nil : replacing)
@@ -466,6 +467,7 @@ struct WorkoutsView: View {
         // #524: also drop any on-device GPS route stored under this session's natural key, so deleting a
         // workout doesn't leave its route orphaned in the RouteStore side-store.
         RouteStore.remove(startTs: row.startTs, sport: row.sport)
+        WorkoutDeletion.forget(row)
         Task { await repo.deleteWorkout(row); await reload() }
     }
 

@@ -29,6 +29,12 @@ enum WorkoutSetsStore {
         return try? JSONDecoder().decode(SetTimeline.self, from: data)
     }
 
+    /// Drop a deleted workout's sets.
+    static func remove(startTs: Int, sport: String) {
+        guard let url = file(startTs: startTs, sport: sport) else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
     /// Follow a workout whose sport or times were edited. Sets you corrected go with it; ones only
     /// detected are dropped, to be counted again for the new sport and window.
     static func move(from old: WorkoutRow, to new: WorkoutRow) {

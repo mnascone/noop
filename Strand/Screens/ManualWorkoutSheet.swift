@@ -27,6 +27,9 @@ struct ManualWorkoutSheet: View {
     let editing: WorkoutRow?
     /// Called with the validated row (and the original, when editing) once the user taps Save.
     let onSave: (_ row: WorkoutRow, _ replacing: WorkoutRow?) -> Void
+    /// When editing: deletes the workout, after a confirmation. nil hides Delete.
+    let onDelete: (() -> Void)?
+    @State private var confirmingDelete = false
 
     @Environment(\.dismiss) private var dismiss
 
@@ -70,10 +73,11 @@ struct ManualWorkoutSheet: View {
     @State private var categories: Set<StrengthCategory>
 
     /// `endingAt` seeds a fresh add's end time (a past day picked on the Workouts calendar); nil = now.
-    init(editing: WorkoutRow? = nil, endingAt: Date? = nil,
+    init(editing: WorkoutRow? = nil, endingAt: Date? = nil, onDelete: (() -> Void)? = nil,
          onSave: @escaping (_ row: WorkoutRow, _ replacing: WorkoutRow?) -> Void) {
         self.editing = editing
         self.onSave = onSave
+        self.onDelete = editing == nil ? nil : onDelete
         // Pre-fill from the edited row (display "detected" as "Activity" so a re-label starts clean).
         let e = editing
         // Seeds the LOCALE-STABLE editable form, not the localized display: the field's content is
@@ -213,6 +217,25 @@ struct ManualWorkoutSheet: View {
             if let validationNote { noteRow(validationNote) }
             if avgHrEditedNote { noteRow(String(localized: "Avg HR is shown as typed. The HR graph, zones and Effort stay from the recorded session.")) }
             footer
+            if let onDelete {
+                Button(role: .destructive) { confirmingDelete = true } label: {
+                    Label("Delete workout", systemImage: "trash")
+                        .font(StrandFont.subhead.weight(.semibold))
+                        .foregroundStyle(StrandPalette.statusCritical)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, NoopMetrics.space3)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .confirmationDialog("Delete this workout?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+                    Button("Delete", role: .destructive) {
+                        onDelete()
+                        dismiss()
+                    }
+                } message: {
+                    Text("It's removed from your workouts, with its route and sets.")
+                }
+            }
         }
     }
 

@@ -170,12 +170,6 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         engine.config.walkEnabled = walkOn
         places = AutoTrackingPrefs.loadPlaces()
         syncRegions(enabled: placesOn)
-        // Visits to your places, for confirming workouts found afterwards in the strap's heart rate.
-        if placesOn, locationManager.authorizationStatus == .authorizedAlways {
-            locationManager.startMonitoringVisits()
-        } else {
-            locationManager.stopMonitoringVisits()
-        }
 
         // Motion runs for places too: it's how an arrival tells parking from driving past.
         if walkOn || placesOn, CMMotionActivityManager.isActivityAvailable() {
@@ -393,7 +387,6 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
             if fix.timestamp.timeIntervalSince(held) >= Self.arrivalConfirmS {
                 arriving[id] = nil
                 log("auto: arrived at \(p.name)")
-                PlaceVisitLog.entered(id, at: Int(held.timeIntervalSince1970))
                 feed(.placeEntered(id: id, params: p.params), at: held)
             } else {
                 arriving[id] = (state.since, held)
@@ -891,10 +884,8 @@ extension AutoWorkoutTracker: @preconcurrency CLLocationManagerDelegate {
         switch state {
         case .inside:
             // Near, not yet there: GPS confirms you've stopped inside your circle, out of the car.
-            PlaceVisitLog.entered(id, at: Int(Date().timeIntervalSince1970))
             beginArrivalCheck(id)
         case .outside:
-            PlaceVisitLog.left(id, at: Int(Date().timeIntervalSince1970))
             arriving[id] = nil
             if engine.currentPlace == id { log("auto: left \(p.name)") }
             feed(.placeExited(id: id))
@@ -903,21 +894,6 @@ extension AutoWorkoutTracker: @preconcurrency CLLocationManagerDelegate {
             break
         }
         catchUpMotion()
-    }
-
-    /// iOS's own visit detection, delivered afterwards: a stay at one of your places is logged even when
-    /// the geofence didn't wake the app.
-    func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
-        let here = CLLocation(latitude: visit.coordinate.latitude, longitude: visit.coordinate.longitude)
-        guard let p = places.first(where: {
-            here.distance(from: CLLocation(latitude: $0.latitude, longitude: $0.longitude))
-                <= $0.radiusM + min(max(visit.horizontalAccuracy, 0), 100)
-        }) else { return }
-        let start = visit.arrivalDate == .distantPast ? nil : Int(visit.arrivalDate.timeIntervalSince1970)
-        let end = visit.departureDate == .distantFuture ? nil : Int(visit.departureDate.timeIntervalSince1970)
-        guard let s = start ?? end else { return }
-        PlaceVisitLog.visited(p.id, from: s, to: end)
-        log("auto: iOS saw a visit to \(p.name) \(Self.time(s))–\(end.map(Self.time) ?? "now")")
     }
 
     func locationManager(_ manager: CLLocationManager, didStartMonitoringFor region: CLRegion) {

@@ -17,7 +17,9 @@ import Foundation
 //     uses. Stretches of it hold across dips of up to 5 minutes (rest between sets, a bench), stretches of
 //     5+ minutes join across breaks of up to 20 minutes (an intermission), and the whole must last 10+
 //     minutes with heart rate up for at least half of it. Wrist motion must confirm it when there is any:
-//     sitting with a fast heart rate is stress, not a workout.
+//     sitting with a fast heart rate is stress, not a workout. These are candidates only: the caller
+//     confirms each by where the phone was (a visit to one of your places), since heart rate and motion
+//     can't tell a lift from a busy, stressful hour.
 //
 // A bout counts once its end is settled: the data runs at least the end condition past it. Anything that
 // overlaps an excluded span (a logged workout, one already offered, sleep) is left out. Pure: no I/O, no
@@ -58,6 +60,10 @@ public enum MissedWorkoutFinder {
         public let kind: Kind
         public let avgBpm: Int?
         public let peakBpm: Int?
+
+        public init(start: Int, end: Int, kind: Kind, avgBpm: Int?, peakBpm: Int?) {
+            self.start = start; self.end = end; self.kind = kind; self.avgBpm = avgBpm; self.peakBpm = peakBpm
+        }
     }
 
     // MARK: Tunables

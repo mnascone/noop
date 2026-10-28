@@ -10,9 +10,12 @@ import StrandAnalytics
 // Live auto tracking sees only what the phone sees. With the phone left behind, the strap keeps recording
 // and hands its heart rate, wrist motion and steps over at the next sync. After each sync this looks back
 // over the last two days of that data for walks, runs and other workouts nothing logged, using
-// `MissedWorkoutFinder`, and treats each like a live one: Walks and Places settings decide whether it's
-// looked for and whether it's saved (Automatic) or offered (Ask). Each is acted on once: one you delete or
-// discard isn't offered again, and nor is a live one you said no to.
+// `MissedWorkoutFinder`, and treats each like a live one. Walks and runs come from the strap's steps. A
+// workout found from heart rate is recorded only when the phone was at one of your places for it
+// (`PlaceVisitLog`), as that place's sport: heart rate alone recorded stressful hours as lifts. Walks and
+// Places settings decide whether each is looked for and whether it's saved (Automatic) or offered (Ask).
+// Each is acted on once: one you delete or discard isn't offered again, and nor is a live one you said no
+// to.
 
 extension AutoWorkoutTracker {
     static let missedCategory = "NOOP_AUTO_MISSED"
@@ -97,11 +100,31 @@ extension AutoWorkoutTracker {
             restingBpm: Self.restingBpm(repo), exclude: exclude, dataEnd: dataEnd)
             .filter { $0.end <= now - Self.liveGraceS }
 
-        for f in found {
-            let isWalk = f.kind != .effort
+        let visits = PlaceVisitLog.spans(now: now)
+        for bout in found {
+            let isWalk = bout.kind != .effort
             guard isWalk ? AutoTrackingPrefs.walkEnabled : AutoTrackingPrefs.placesEnabled else { continue }
+            var f = bout
+            var sport: String
+            if isWalk {
+                sport = missedSport(f, rows: rows, hr: hr, gravity: gravity, steps: steps)
+            } else {
+                // Heart rate alone can't tell a lift from a stressful hour: one is recorded only when the
+                // phone was at one of your places for it, and then as that place's sport, within the visit.
+                guard let pv = placeVisit(for: f, visits: visits) else {
+                    if MissedScan.unconfirmed.insert(f.start).inserted {
+                        log("auto: heart rate up \(Self.time(f.start))–\(Self.time(f.end)), not at one of your places: not recorded")
+                    }
+                    continue
+                }
+                let (place, visit) = pv
+                let start = max(f.start, visit.lowerBound - Self.visitSlackS)
+                let end = min(f.end, visit.upperBound + Self.visitSlackS)
+                guard end - start >= MissedWorkoutFinder.effortMinS else { continue }
+                f = MissedWorkoutFinder.Found(start: start, end: end, kind: .effort, avgBpm: f.avgBpm, peakBpm: f.peakBpm)
+                sport = place.sport
+            }
             Self.rememberOffered(f.start...f.end)
-            let sport = missedSport(f, rows: rows, hr: hr, gravity: gravity, steps: steps)
             log("auto: found \(sport) \(Self.time(f.start))–\(Self.time(f.end)) in strap data (\(f.kind.rawValue))")
             switch isWalk ? AutoTrackingPrefs.walkMode : AutoTrackingPrefs.placesMode {
             case .auto:
@@ -126,6 +149,26 @@ extension AutoWorkoutTracker {
                 add(id: "noop.auto.missed.\(f.start)", content: content, quiet: false)
             }
         }
+    }
+
+    /// A visit's ends are loose (a geofence fires late, iOS rounds visits): this much either side counts.
+    private static let visitSlackS = 5 * 60
+
+    /// The place a heart-rate workout was at: the phone's visit there covers at least half of it, or 10
+    /// minutes. The place with the most overlap wins.
+
+    private func placeVisit(for f: MissedWorkoutFinder.Found,
+                            visits: [(placeId: String, span: ClosedRange<Int>)]) -> (WorkoutPlace, ClosedRange<Int>)? {
+        let bout = f.start...f.end
+        let need = min(10 * 60, (f.end - f.start) / 2)
+        var best: (WorkoutPlace, ClosedRange<Int>, Int)?
+        for v in visits {
+            guard let p = place(id: v.placeId) else { continue }
+            let widened = (v.span.lowerBound - Self.visitSlackS)...(v.span.upperBound + Self.visitSlackS)
+            let o = max(0, min(bout.upperBound, widened.upperBound) - max(bout.lowerBound, widened.lowerBound))
+            if o >= need, o > (best?.2 ?? 0) { best = (p, v.span, o) }
+        }
+        return best.map { ($0.0, $0.1) }
     }
 
     /// Save an offered one from its notification.
@@ -203,4 +246,6 @@ extension AutoWorkoutTracker {
 private enum MissedScan {
     static var running = false
     static var last = Date.distantPast
+    /// Heart-rate stretches already logged as not at a place, so the log says it once.
+    static var unconfirmed: Set<Int> = []
 }

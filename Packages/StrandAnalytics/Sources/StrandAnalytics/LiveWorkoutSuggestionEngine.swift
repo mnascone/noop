@@ -174,10 +174,11 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     public static let walkNoHRMinBoutS = 10 * 60
     public static let walkStopGraceS = 120
     public static let walkStopMaxS = 5 * 60
-    public static let walkArmAfterS = 60
+    public static let walkArmAfterS = 120
     public static let walkMaxArmS = 30 * 60
-    /// Stop holding the stream for a place visit with no start after this long.
-    public static let placeMaxArmS = 3 * 60 * 60
+    /// Stop holding the stream for a place visit with no start after this long: a workout at a place almost
+    /// always starts within the first hour, and the stream costs phone and strap battery every second.
+    public static let placeMaxArmS = 90 * 60
     /// An elevated stretch ends at a sub-floor gap longer than this (rest between sets is shorter).
     public static let elevatedStretchGapS = 5 * 60
     public static let quietMarginBPM = 10
@@ -266,7 +267,8 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         if workoutActive, workoutContext == .walk || workoutContext == .run { return true }
         if let bout = walkBoutStart, !walkStartRaisedForBout, now - bout >= Self.walkArmAfterS,
            now - bout < Self.walkMaxArmS { return true }
-        guard let exit = lastPlaceExitTs, now - exit < Self.postExitWindowS else { return false }
+        // After leaving a place, GPS watches for a walk away, but not once you're driving.
+        guard let exit = lastPlaceExitTs, now - exit < Self.postExitWindowS, motion != .automotive else { return false }
         return true
     }
 

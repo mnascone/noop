@@ -5,6 +5,7 @@ import WhoopProtocol
 import WhoopStore
 #if os(iOS)
 import CoreMotion
+import UIKit
 #endif
 
 /// One day of the all-day stress level, as stored: its 3-minute epochs and the baseline they were scored
@@ -72,6 +73,20 @@ final class StressLevelService: ObservableObject {
 
     private var lastFingerprint: String?
     private var refreshing = false
+    private var lastScored: Date?
+    /// Scoring reads and scores the whole day, so it runs at most this often: every new 3-minute value on
+    /// screen, every 15 minutes in the background (where only the Lock Screen reads it). Data syncing
+    /// would otherwise re-score the day at every chunk.
+    static let minGapActive: TimeInterval = 170
+    static let minGapBackground: TimeInterval = 15 * 60
+
+    private static var appActive: Bool {
+        #if os(iOS)
+        UIApplication.shared.applicationState == .active
+        #else
+        true
+        #endif
+    }
     private var lastDiagnosis: String?
     /// What made today's activity, from the last scoring: for the log.
     private static var diagnosis: String?
@@ -95,18 +110,23 @@ final class StressLevelService: ObservableObject {
     /// Score today from what's stored. Cheap when nothing changed: a heart-rate fingerprint gates the reads.
     func refresh(repo: Repository, force: Bool = false) async {
         guard !refreshing else { return }
+        let now = Date()
+        let gap = force ? 30 : (Self.appActive ? Self.minGapActive : Self.minGapBackground)
+        if let last = lastScored, now.timeIntervalSince(last) < gap,
+           today?.day == StressLevelStore.dayKey(now) { return }
         refreshing = true
         defer { refreshing = false }
-        let now = Date()
         let cal = Calendar.current
         let start = cal.startOfDay(for: now)
         let from = Int(start.timeIntervalSince1970), to = Int(now.timeIntervalSince1970)
         let key = StressLevelStore.dayKey(now)
         let fp = await repo.hrFingerprintUnion(from: from, to: to)
         let workouts = await repo.workoutRows(days: 2)
-        let fpKey = fp + "|\(workouts.count)|\(activeWorkoutStart ?? 0)|\(to / StressLevel.epochSeconds)"
+        // Nothing new (no heart rate synced, no workout changed): nothing to score.
+        let fpKey = fp + "|\(workouts.count)|\(activeWorkoutStart ?? 0)"
         if !force, fpKey == lastFingerprint, today?.day == key { return }
         lastFingerprint = fpKey
+        lastScored = now
         let stored = StressLevelStore.load(key)
         // The day's first scoring (or the first after the scoring changed): score the days before it
         // first, so today's calm level can come from your recent days rather than from today alone.

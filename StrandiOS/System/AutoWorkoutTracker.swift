@@ -142,6 +142,13 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in self?.wake() }
             .store(in: &cancellables)
+        // The phone's battery, a line in the log at each 1% while the app runs, with what was on: so a
+        // heavy drain can be put down to GPS, the live heart-rate stream, or neither.
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        NotificationCenter.default.publisher(for: UIDevice.batteryLevelDidChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.logPhoneBattery() }
+            .store(in: &cancellables)
         NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
             .sink { [weak self] _ in self?.foregroundTimer?.invalidate(); self?.foregroundTimer = nil }
             .store(in: &cancellables)
@@ -350,8 +357,14 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
     /// Inside the geofence, not yet confirmed: when the check began, and the first fix that's held since.
     private var arriving: [String: (since: Date, heldFrom: Date?)] = [:]
 
+    /// A check that didn't become an arrival isn't started again for this long: living or working near a
+    /// place would otherwise keep precise GPS on, a check at every wake.
+    static let arrivalRetryS: TimeInterval = 30 * 60
+    private var lastFailedArrivalCheck: [String: Date] = [:]
+
     private func beginArrivalCheck(_ id: String) {
         guard engine.currentPlace != id, arriving[id] == nil else { return }
+        if let failed = lastFailedArrivalCheck[id], Date().timeIntervalSince(failed) < Self.arrivalRetryS { return }
         arriving[id] = (Date(), nil)
         if let p = place(id: id) { log("auto: near \(p.name), checking you've arrived") }
         syncLocationUpdates()
@@ -359,15 +372,21 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
 
     /// One fix against every place being checked.
     private func checkArrivals(_ fix: CLLocation) {
+        guard !arriving.isEmpty else { return }
+        // Time out first, whatever the fix: indoors every fix can be too loose to use, and a check that
+        // never times out keeps precise GPS on for good.
+        for (id, state) in arriving where Date().timeIntervalSince(state.since) > Self.arrivalWatchMaxS {
+            arriving[id] = nil
+            lastFailedArrivalCheck[id] = Date()
+            log("auto: didn't settle at \(place(id: id)?.name ?? id), stopped checking")
+        }
         guard !arriving.isEmpty, fix.horizontalAccuracy >= 0, fix.horizontalAccuracy < 100,
-              Date().timeIntervalSince(fix.timestamp) < 30 else { return }
+              Date().timeIntervalSince(fix.timestamp) < 30 else {
+            syncLocationUpdates()
+            return
+        }
         for (id, state) in arriving {
             guard let p = place(id: id) else { arriving[id] = nil; continue }
-            if Date().timeIntervalSince(state.since) > Self.arrivalWatchMaxS {
-                arriving[id] = nil
-                log("auto: didn't settle at \(p.name), stopped checking")
-                continue
-            }
             let centre = CLLocation(latitude: p.latitude, longitude: p.longitude)
             // Half the fix's uncertainty (at most 40 m) counts in your favour: indoors GPS is loose.
             let inside = fix.distance(from: centre) - min(fix.horizontalAccuracy * 0.5, 40) <= p.radiusM
@@ -427,6 +446,19 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
             model.stopRealtimeHR()
             log("auto: live heart rate off")
         }
+    }
+
+    private func logPhoneBattery() {
+        let level = UIDevice.current.batteryLevel
+        guard level >= 0, let model else { return }
+        let charging = UIDevice.current.batteryState == .charging || UIDevice.current.batteryState == .full
+        var on: [String] = []
+        if updatingLocation { on.append(watchingSpeed ? "GPS (walk pace)" : "GPS (arriving)") }
+        if model.ble.realtimeStreaming { on.append(holdingRealtime ? "live HR (auto tracking)" : "live HR") }
+        if model.activeWorkout != nil { on.append("workout") }
+        let app = UIApplication.shared.applicationState == .active ? "on screen" : "background"
+        log("phone battery \(Int((level * 100).rounded()))%\(charging ? " charging" : "") · \(app)"
+            + (on.isEmpty ? "" : " · " + on.joined(separator: ", ")))
     }
 
     private func wake() {

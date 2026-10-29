@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import Combine
 import StrandDesign
 import StrandAnalytics
@@ -31,6 +32,8 @@ struct WorkoutsHubView: View {
     @State private var detail: WorkoutDetailTarget?
     /// Lift days, for the calendar's type and exercise filters and the tags on strength rows.
     @State private var liftDays: [LiftDay] = []
+    /// Data changed while the app was in the background: reload when it's next on screen.
+    @State private var staleInBackground = false
     @State private var filter: CalendarFilter = .all
     @ObservedObject private var strengthTypes = StrengthTypeStore.shared
     @ObservedObject private var workoutTypes = WorkoutCategoryStore.shared
@@ -63,6 +66,11 @@ struct WorkoutsHubView: View {
             }
         }
         .task(id: repo.refreshSeq) { await load() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            guard staleInBackground else { return }
+            staleInBackground = false
+            Task { await load() }
+        }
         // A type set on a workout or an exercise: rebuild the lift days, so the filter and Lift days agree.
         .onReceive(workoutTypes.$stored.dropFirst().map { _ in () }
             .merge(with: ExerciseCategoryStore.shared.$stored.dropFirst().map { _ in () })
@@ -107,6 +115,12 @@ struct WorkoutsHubView: View {
     // MARK: - Data
 
     private func load() async {
+        // A year of workouts, sleeps and every saved set: not worth reading at each background sync, when
+        // nobody sees this tab.
+        guard UIApplication.shared.applicationState == .active else {
+            staleInBackground = true
+            return
+        }
         let loaded = await repo.workoutRows(days: 400)
         let now = Int(Date().timeIntervalSince1970)
         let from = now - 400 * 86_400

@@ -222,7 +222,7 @@ struct WorkoutsView: View {
                 sessionsSection(rows: windowRows)
             }
         }
-        .task(id: repo.refreshSeq) {
+        .task(id: "\(repo.refreshSeq)-\(repo.workoutsSeq)") {
             guard !usesPreviewRows else { return }
             // #797: read only the currently-loaded window (bounded on first paint), not the whole history.
             let r = await repo.workoutRows(days: loadedWindowDays ?? 4000)

@@ -21,7 +21,7 @@ struct WorkoutTypeRow: View {
                               save(s)
                           },
                           onAdd: { c in save(chosen.union([c])) })
-            .task(id: repo.refreshSeq) {
+            .task(id: "\(repo.refreshSeq)-\(repo.workoutsSeq)") {
                 suggested = Set(await LiftDays.build(rows: [row], repo: repo).first?.types ?? [])
             }
     }

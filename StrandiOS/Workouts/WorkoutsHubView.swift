@@ -65,7 +65,7 @@ struct WorkoutsHubView: View {
                 historyCard
             }
         }
-        .task(id: repo.refreshSeq) { await load() }
+        .task(id: "\(repo.refreshSeq)-\(repo.workoutsSeq)") { await load() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             guard staleInBackground else { return }
             staleInBackground = false

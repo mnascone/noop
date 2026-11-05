@@ -189,7 +189,7 @@ struct LiftDaysView: View {
                 }
             }
         }
-        .task(id: repo.refreshSeq) {
+        .task(id: "\(repo.refreshSeq)-\(repo.workoutsSeq)") {
             days = await LiftDays.build(rows: rows, repo: repo)
             loaded = true
         }

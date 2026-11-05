@@ -76,7 +76,7 @@ struct RestWeekCard: View {
                     .foregroundStyle(StrandPalette.textSecondary)
             }
         }
-        .task(id: repo.refreshSeq) { rows = await repo.workoutRows(days: 70) }
+        .task(id: "\(repo.refreshSeq)-\(repo.workoutsSeq)") { rows = await repo.workoutRows(days: 70) }
     }
 
     private static let parser: DateFormatter = {

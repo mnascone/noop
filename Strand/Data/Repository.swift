@@ -203,6 +203,10 @@ final class Repository: ObservableObject {
     /// data load on this so they reload when fresh strap data lands , `today?.day` alone is a stable
     /// date string within a day and would freeze e.g. the Today HR trend until the date rolls over.
     @Published private(set) var refreshSeq = 0
+    /// Bumped whenever a workout is saved, edited, merged or deleted. `refreshSeq` moves only when the
+    /// daily caches change, which a workout edit never does, so a screen listing workouts watches both or
+    /// keeps showing a deleted one.
+    @Published private(set) var workoutsSeq = 0
 
     /// #989: bumped by every hydration mutation (log / edit / delete). Today's hydration card re-reads on
     /// this instead of waiting for a full `refreshSeq` data refresh, which a hydration write never causes,
@@ -2998,6 +3002,7 @@ final class Repository: ObservableObject {
     ///  - an IMPORTED row is never passed here as `replacing` (duplicating one is a pure add), so its
     ///    history is never touched.
     func saveManualWorkout(_ row: WorkoutRow, replacing old: WorkoutRow? = nil) async {
+        defer { workoutsSeq &+= 1 }
         guard let store = await ensureStore() else { return }
         if let old, WorkoutSource.classify(old.source) == .detected {
             // Write the replacement first. If that insert fails, the grandfathered source row and its
@@ -3039,6 +3044,7 @@ final class Repository: ObservableObject {
     /// the detected original. The analytics detector may still enrich this real row on a later pass, but
     /// it no longer recreates a generic detected twin. (#107/#2187)
     func relabelDetected(_ row: WorkoutRow, sport: String) async {
+        defer { workoutsSeq &+= 1 }
         guard let store = await ensureStore() else { return }
         guard WorkoutSource.classify(row.source) == .detected else { return }
         let trimmed = sport.trimmingCharacters(in: .whitespaces)
@@ -3059,6 +3065,7 @@ final class Repository: ObservableObject {
     /// compatibility and suggestion suppression, then deletes the current row so it disappears immediately.
     /// Idempotent: a span already present isn't duplicated. (#107/#2187)
     func dismissDetected(_ row: WorkoutRow) async {
+        defer { workoutsSeq &+= 1 }
         guard WorkoutSource.classify(row.source) == .detected else { return }
         let token = WorkoutSource.dismissedToken(for: row)
         var spans = dismissedDetectedSpans
@@ -3074,6 +3081,7 @@ final class Repository: ObservableObject {
     /// gets a durable dismissal marker; everything else the screen can delete (manual) lives under the
     /// active strap id.
     func deleteWorkout(_ row: WorkoutRow) async {
+        defer { workoutsSeq &+= 1 }
         if WorkoutSource.classify(row.source) == .detected { await dismissDetected(row); return }
         guard let store = await ensureStore() else { return }
         // Sweep every STRAP namespace, not just the active one. A manual row banked under a retained
@@ -3108,6 +3116,7 @@ final class Repository: ObservableObject {
     /// The caller runs `analyzeRecent` (rescores the merged row's strain from the strap HR, the #598
     /// pattern) + reloads afterwards.
     func mergeWorkouts(_ rows: [WorkoutRow], into merged: WorkoutRow) async {
+        defer { workoutsSeq &+= 1 }
         guard rows.count >= 2 else { return }
         // Pick the richest route to carry onto the merged key BEFORE deleting the originals (the DB write
         // below doesn't drop routes, so we read + move them explicitly). Keep the longest polyline.
@@ -3300,6 +3309,7 @@ final class Repository: ObservableObject {
     /// re-queries (the new saved span now excludes this window from re-suggestion).
     @discardableResult
     func saveDetectedWorkout(_ w: DetectedWorkout) async -> Bool {
+        defer { workoutsSeq &+= 1 }
         let durationMin = max(1, w.durationMin)
         let start = Date(timeIntervalSince1970: TimeInterval(w.startSec))
         guard let row = WorkoutSource.buildManualRow(start: start, durationMin: durationMin,

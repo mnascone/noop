@@ -179,6 +179,43 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
         XCTAssertEqual(starts(e.handle(.tick, at: E.walkNoHRMinBoutS)).count, 1)
     }
 
+    /// With GPS required, walking around a building (fixes never 150 m apart) never starts a walk, and
+    /// one that covers ground starts, backdated to the bout's start.
+    func testWalkNeedsGroundCoveredByGPS() {
+        var indoors = E(config: .init(restingBpm: 60, walkNeedsGPS: true))
+        _ = indoors.handle(.motion(.walking), at: 0)
+        var actions: [E.Action] = []
+        for t in stride(from: 0, to: E.walkNoHRMinBoutS + 600, by: 10) {
+            // Wandering within ~60 m.
+            let dLat = Double(t % 120) / 120 * 0.0005
+            actions += indoors.handle(.position(latitude: 42.28 + dLat, longitude: -83.74, accuracyM: 10), at: t)
+            actions += indoors.handle(.heartRate(95), at: t)
+        }
+        XCTAssertTrue(starts(actions).isEmpty)
+
+        var outside = E(config: .init(restingBpm: 60, walkNeedsGPS: true))
+        _ = outside.handle(.motion(.walking), at: 0)
+        actions = []
+        for t in stride(from: 0, to: E.walkMinBoutS + 300, by: 5) {
+            // 1.3 m/s north.
+            let lat = 42.28 + Double(t) * 1.3 / 111_000
+            actions += outside.handle(.position(latitude: lat, longitude: -83.74, accuracyM: 8), at: t)
+            for s in 0..<5 { actions += outside.handle(.heartRate(95), at: t + s) }
+        }
+        XCTAssertEqual(starts(actions).count, 1)
+        XCTAssertEqual(starts(actions).first?.1, 0)
+
+        // Fixes too loose to trust (indoors) never count.
+        var loose = E(config: .init(restingBpm: 60, walkNeedsGPS: true))
+        _ = loose.handle(.motion(.walking), at: 0)
+        actions = []
+        for t in stride(from: 0, to: E.walkNoHRMinBoutS + 300, by: 10) {
+            let lat = 42.28 + Double(t) * 1.3 / 111_000
+            actions += loose.handle(.position(latitude: lat, longitude: -83.74, accuracyM: 60), at: t)
+        }
+        XCTAssertTrue(starts(actions).isEmpty)
+    }
+
     func testShortPauseKeepsBoutAndLongStopEndsIt() {
         var e = engine()
         _ = e.handle(.motion(.walking), at: 0)

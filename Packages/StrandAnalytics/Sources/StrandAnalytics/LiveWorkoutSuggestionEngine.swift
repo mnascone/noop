@@ -125,6 +125,8 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         case motion(Motion)
         /// GPS ground speed in metres per second (negative = unknown, ignored).
         case speed(Double)
+        /// A GPS fix: where you are, and how sure (metres). Only fixes within `walkSpreadAccuracyM` count.
+        case position(latitude: Double, longitude: Double, accuracyM: Double)
         /// Phone pedometer steps in the minute starting at `minuteStart` (unix seconds). The app layer
         /// re-sends recent minutes as they fill in; the latest count for a minute wins.
         case steps(minuteStart: Int, count: Int)
@@ -150,11 +152,16 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         public var restingBpm: Int
         public var placesEnabled: Bool
         public var walkEnabled: Bool
+        /// A walk must cover ground by GPS (`walkMinSpreadM`) before it starts. Off when the app can't
+        /// use location, so walks still start from steps and motion alone.
+        public var walkNeedsGPS: Bool
 
-        public init(restingBpm: Int, placesEnabled: Bool = true, walkEnabled: Bool = true) {
+        public init(restingBpm: Int, placesEnabled: Bool = true, walkEnabled: Bool = true,
+                    walkNeedsGPS: Bool = false) {
             self.restingBpm = restingBpm
             self.placesEnabled = placesEnabled
             self.walkEnabled = walkEnabled
+            self.walkNeedsGPS = walkNeedsGPS
         }
     }
 
@@ -170,6 +177,11 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     /// Fewer samples than this in a window means "no usable heart rate" (the stream runs about 1 Hz).
     public static let minHRCoverageSamples = 30
     public static let walkMinBoutS = 5 * 60
+    /// With location on, a walk starts only once a GPS fix is this far from where the bout's first one was:
+    /// walking around your own building, a hallway or an office never gets there. Indoors GPS rarely gets
+    /// a fix within `walkSpreadAccuracyM` at all, which keeps it from starting too.
+    public static let walkMinSpreadM = 150.0
+    public static let walkSpreadAccuracyM = 25.0
     public static let runMinBoutS = 3 * 60
     public static let walkNoHRMinBoutS = 10 * 60
     public static let walkStopGraceS = 120
@@ -231,6 +243,10 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     /// The last GPS fix at walking pace or faster (on foot).
     private var gpsLastMovedTs: Int?
     private var gpsRunning = false
+    /// The bout the spread was measured for, its first good fix, and the farthest a later one got from it.
+    private var spreadBout: Int?
+    private var spreadOrigin: (lat: Double, lon: Double)?
+    public private(set) var boutSpreadM = 0.0
 
     private var motion: Motion = .unknown
     private var walkBoutStart: Int?
@@ -338,6 +354,8 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
             applyMotion(m, at: ts)
         case .speed(let mps):
             applySpeed(mps, at: ts)
+        case let .position(lat, lon, acc):
+            applyPosition(lat, lon, accuracy: acc, at: ts)
         case let .steps(minuteStart, count):
             let m = (minuteStart / 60) * 60
             stepMinutes[m] = max(0, count)
@@ -440,6 +458,33 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         }
     }
 
+    private mutating func applyPosition(_ lat: Double, _ lon: Double, accuracy: Double, at ts: Int) {
+        guard let bout = walkBoutStart, accuracy >= 0, accuracy <= Self.walkSpreadAccuracyM,
+              ts >= bout - 60 else { return }
+        if spreadBout != bout {
+            spreadBout = bout
+            spreadOrigin = (lat, lon)
+            boutSpreadM = 0
+            return
+        }
+        guard let o = spreadOrigin else { spreadOrigin = (lat, lon); return }
+        boutSpreadM = max(boutSpreadM, Self.metres(o.lat, o.lon, lat, lon))
+    }
+
+    /// Ground covered in this bout, by GPS: enough for a walk, or GPS not required.
+    private var walkCoveredGround: Bool {
+        guard config.walkNeedsGPS else { return true }
+        return spreadBout == walkBoutStart && boutSpreadM >= Self.walkMinSpreadM
+    }
+
+    /// Great-circle distance in metres.
+    static func metres(_ lat1: Double, _ lon1: Double, _ lat2: Double, _ lon2: Double) -> Double {
+        let r = 6_371_000.0, d = Double.pi / 180
+        let dLat = (lat2 - lat1) * d, dLon = (lon2 - lon1) * d
+        let a = sin(dLat / 2) * sin(dLat / 2) + cos(lat1 * d) * cos(lat2 * d) * sin(dLon / 2) * sin(dLon / 2)
+        return 2 * r * asin(min(1, sqrt(a)))
+    }
+
     /// GPS has sat under walking pace for `gpsStillS`.
     private var gpsSaysStill: Bool {
         gpsStillSince.map { now - $0 >= Self.gpsStillS } ?? false
@@ -535,7 +580,7 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         }
 
         if config.walkEnabled, currentPlace == nil, let bout0 = walkBoutStart, !walkStartRaisedForBout,
-           motion.isOnFoot, !gpsSaysStill {
+           motion.isOnFoot, !gpsSaysStill, walkCoveredGround {
             // A bout that began inside a place counts only from when you left it.
             let bout = max(bout0, lastPlaceExitTs ?? bout0)
             let dur = now - bout

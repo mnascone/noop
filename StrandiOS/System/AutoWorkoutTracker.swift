@@ -169,6 +169,9 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         let walkOn = AutoTrackingPrefs.walkEnabled
         engine.config.placesEnabled = placesOn
         engine.config.walkEnabled = walkOn
+        // With background location, a walk has to cover ground by GPS before it starts, so walking around
+        // your building doesn't count. Without it, walks start from steps and motion as before.
+        engine.config.walkNeedsGPS = locationManager.authorizationStatus == .authorizedAlways
         places = AutoTrackingPrefs.loadPlaces()
         syncRegions(enabled: placesOn)
 
@@ -926,6 +929,8 @@ extension AutoWorkoutTracker: @preconcurrency CLLocationManagerDelegate {
             // Kept for working out, at a start, when the walk really began.
             for loc in locations where loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy < 30 {
                 recentFixes.append(loc)
+                feed(.position(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude,
+                               accuracyM: loc.horizontalAccuracy), at: loc.timestamp)
             }
             if let f = recentFixes.first, Date().timeIntervalSince(f.timestamp) > 1800 {
                 recentFixes.removeAll { Date().timeIntervalSince($0.timestamp) > 1800 }

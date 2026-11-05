@@ -57,6 +57,10 @@ enum RestDayRules {
         let wakes: [Int]
         /// A wake older than this before the workout (a night with no data) falls back to the date.
         static let maxGapS = 30 * 3600
+        /// Past midnight, a time counts toward the day you woke on only until this hour (the app's logical
+        /// day rollover): a late night before bed. Later than that it's the new day, even when last night's
+        /// sleep hasn't synced yet (or wasn't recorded), which otherwise put all of today under yesterday.
+        static let lateNightEndHour = Repository.logicalDayRolloverHour
         static let calendar = WakeDays(wakes: [])
 
         init(wakes: [Int]) { self.wakes = wakes.sorted() }
@@ -67,10 +71,12 @@ enum RestDayRules {
                 let mid = (lo + hi) / 2
                 if wakes[mid] <= ts { lo = mid + 1 } else { hi = mid }
             }
-            if lo > 0, ts - wakes[lo - 1] < Self.maxGapS {
-                return Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(wakes[lo - 1])))
-            }
-            return Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(ts)))
+            let at = Date(timeIntervalSince1970: TimeInterval(ts))
+            let date = Repository.localDayKey(at)
+            guard lo > 0, ts - wakes[lo - 1] < Self.maxGapS else { return date }
+            let woke = Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(wakes[lo - 1])))
+            if woke == date || Calendar.current.component(.hour, from: at) < Self.lateNightEndHour { return woke }
+            return date
         }
 
         /// The day you're in now: since your last sleep.

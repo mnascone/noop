@@ -64,6 +64,13 @@ final class RestDayRulesTests: XCTestCase {
         // After waking Tuesday: Tuesday.
         let tueEvening = cal.date(from: DateComponents(year: 2026, month: 10, day: 20, hour: 18))!
         XCTAssertEqual(days.dayKey(Int(tueEvening.timeIntervalSince1970)), "2026-10-20")
+        // Tuesday's sleep not synced (or not recorded) yet: a Tuesday workout is still Tuesday, and so is
+        // "today", not Monday.
+        let mondayOnly = RestDayRules.WakeDays(wakes: [Int(mon.timeIntervalSince1970)])
+        let tueMorning = cal.date(from: DateComponents(year: 2026, month: 10, day: 20, hour: 10))!
+        XCTAssertEqual(mondayOnly.dayKey(Int(tueMorning.timeIntervalSince1970)), "2026-10-20")
+        XCTAssertEqual(mondayOnly.currentDayKey(now: tueMorning), "2026-10-20")
+        XCTAssertEqual(mondayOnly.dayKey(Int(lateNight.timeIntervalSince1970)), "2026-10-19")
         // No sleep recorded for two days: back to the calendar date.
         let thu = cal.date(from: DateComponents(year: 2026, month: 10, day: 22, hour: 18))!
         XCTAssertEqual(days.dayKey(Int(thu.timeIntervalSince1970)), "2026-10-22")

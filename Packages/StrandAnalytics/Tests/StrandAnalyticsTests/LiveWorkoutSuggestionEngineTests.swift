@@ -585,4 +585,70 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
         XCTAssertEqual(starts(out).first?.0, .place("gym"))
         XCTAssertGreaterThanOrEqual(starts(out).first?.1 ?? 0, 120)
     }
+
+    // MARK: - Ends that used to be missed
+
+    /// The app was relaunched mid-lift: the visit is gone and indoors GPS never re-confirmed it, but the
+    /// workout still knows it was the gym's. Leaving the gym ends it at the last elevated sample, using
+    /// heart rate put back from the workout itself.
+    func testLeavingGymEndsWorkoutWhoseVisitWasLostToARelaunch() {
+        var e = engine(resting: 60)
+        e.seedHeartRate((0..<3_000).map { (ts: $0, bpm: $0 < 2_400 ? 115 : 72) })
+        _ = e.handle(.workoutStarted(context: .place("gym")), at: 0)
+        XCTAssertNil(e.currentPlace)
+        let out = e.handle(.placeExited(id: "gym"), at: 3_200)
+        XCTAssertEqual(ends(out).count, 1)
+        XCTAssertEqual(ends(out).first?.0, 2_399, "ends when heart rate last dropped, not at the exit")
+        XCTAssertEqual(ends(out).first?.1, .leftPlace)
+    }
+
+    /// Leaving some other place says nothing about a workout started at the gym.
+    func testLeavingAnotherPlaceDoesNotEndAGymWorkout() {
+        var e = engine()
+        _ = e.handle(.workoutStarted(context: .place("gym")), at: 0)
+        XCTAssertTrue(ends(e.handle(.placeExited(id: "rink"), at: 3_000)).isEmpty)
+    }
+
+    /// Walking home by GPS, then inside: no more fixes, the classifier says stationary, heart rate down.
+    /// The last outdoor fix used to leave GPS reading "on foot" forever, so the walk never stopped.
+    func testWalkEndsIndoorsAfterGPSFixesStop() {
+        var e = engine()
+        _ = e.handle(.motion(.walking), at: 0)
+        _ = e.handle(.workoutStarted(context: .walk), at: 300)
+        feedWalk(&e, from: 300, to: 1_200, bpm: 95, mps: 1.3)
+        _ = e.handle(.motion(.stationary), at: 1_200)
+        let out = feedWalk(&e, from: 1_200, to: 1_200 + E.walkStopGraceS + E.gpsStillS, bpm: 64, mps: nil)
+        XCTAssertEqual(ends(out).count, 1)
+        XCTAssertEqual(ends(out).first?.0, 1_200)
+        XCTAssertEqual(ends(out).first?.1, .stoppedMoving)
+    }
+
+    /// Home from a walk and moving about (30-40 steps a minute, never 3 still minutes in a row): five
+    /// minutes under walking pace with no GPS movement ends it, at the last minute walked.
+    func testPotteringAroundAfterAWalkEndsIt() {
+        var e = engine(resting: 55)
+        _ = e.handle(.workoutStarted(context: .walk), at: 0)
+        for m in 0..<20 { _ = e.handle(.steps(minuteStart: m * 60, count: 105), at: m * 60 + 59) }
+        feedHR(&e, from: 0, to: 1_200) { _ in 98 }
+        var got: [E.Action] = []
+        for m in 20..<27 {
+            got += e.handle(.steps(minuteStart: m * 60, count: m % 2 == 0 ? 40 : 30), at: m * 60 + 59)
+            got += feedHR(&e, from: m * 60, to: m * 60 + 60) { _ in 98 }
+        }
+        XCTAssertEqual(ends(got).count, 1)
+        XCTAssertEqual(ends(got).first?.0, 1_200)
+    }
+
+    /// A stop-start walk outside (a dog sniffing about): slow minutes, but GPS keeps moving, so it carries on.
+    func testSlowMinutesWithGPSMovingKeepTheWalk() {
+        var e = engine(resting: 55)
+        _ = e.handle(.motion(.walking), at: 0)
+        _ = e.handle(.workoutStarted(context: .walk), at: 0)
+        var got: [E.Action] = []
+        for m in 0..<15 {
+            got += feedWalk(&e, from: m * 60, to: m * 60 + 60, bpm: 95, mps: m % 2 == 0 ? 1.0 : 0.3)
+            got += e.handle(.steps(minuteStart: m * 60, count: 40), at: m * 60 + 59)
+        }
+        XCTAssertTrue(ends(got).isEmpty)
+    }
 }

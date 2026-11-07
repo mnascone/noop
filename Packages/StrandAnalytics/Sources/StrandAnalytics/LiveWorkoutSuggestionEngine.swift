@@ -37,11 +37,12 @@ import Foundation
 //     (`wantsLocationUpdates`).
 //
 // End rules (active workout, one end until activity resumes):
-//   - Place: leaving it ends the workout at the LAST elevated sample (when heart rate dropped for the last
-//     time), not at the exit. Staying put with heart rate under resting + `quietMarginBPM` for the place's
+//   - Place: leaving it (even when the visit was lost to a relaunch) ends the workout at the LAST
+//     elevated sample (when heart rate dropped for the last time), not at the exit. Staying put with heart rate under resting + `quietMarginBPM` for the place's
 //     quiet span also ends it, at the last loud sample.
-//   - Walk / run, by the pedometer first: `stepStillMinutes` minutes each under `stepStillPerMin` steps
-//     ends it at the end of the last minute walked. The pedometer counts indoors, where GPS has no fix
+//   - Walk / run, by the pedometer first: `stepStillMinutes` minutes each under `stepStillPerMin` steps,
+//     or `stepSlowMinutes` each under `stepWalkPerMin` with no GPS movement, ends it at the end of the
+//     last minute walked. The pedometer counts indoors, where GPS has no fix
 //     and the motion classifier can stick on walking, which is where walks used to run on.
 //   - Walk / run: stopped for `walkStopGraceS` with heart rate back below the walk floor, or stopped for
 //     `walkStopMaxS` regardless, or driving at once. End is the last moment on foot. "Stopped" is the
@@ -221,6 +222,10 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     /// Minutes of pedometer stillness that end a walk, whatever the motion classifier or GPS say: the
     /// pedometer counts indoors, where GPS has no fix and the classifier can stick on walking.
     public static let stepStillMinutes = 3
+    /// Minutes in a row under `stepWalkPerMin`, with GPS not moving, that also end a walk: pottering around
+    /// the house after a walk (a few dozen steps a minute) kept breaking the 3 still minutes above, so the
+    /// walk ran on. Outdoors a slow, stop-start walk still moves by GPS within five minutes.
+    public static let stepSlowMinutes = 5
     /// Heart rate this far under the walk's own level (its median while walking) counts as back down,
     /// for walks whose level sits close to the walk floor.
     public static let walkLevelDropBPM = 15
@@ -308,6 +313,18 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         hr.filter { $0.ts >= from && $0.ts <= to }
     }
 
+    /// Put back heart rate the engine lost (the app was relaunched mid-workout), so an end can still be
+    /// backdated to when it dropped. Merged in time order, newer live samples win, nothing is evaluated.
+    public mutating func seedHeartRate(_ samples: [(ts: Int, bpm: Int)]) {
+        let have = Set(hr.map(\.ts))
+        let add = samples.filter { $0.bpm >= 30 && $0.bpm <= 230 && !have.contains($0.ts) }
+        guard !add.isEmpty else { return }
+        now = max(now, add.map(\.ts).max() ?? now)
+        hr = (hr + add).sorted { $0.ts < $1.ts }
+        let cutoff = now - Self.hrHistoryS
+        hr.removeAll { $0.ts < cutoff }
+    }
+
     public mutating func handle(_ event: Event, at ts: Int) -> [Action] {
         now = max(now, ts)
         var out: [Action] = []
@@ -333,6 +350,13 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
                 }
             }
         case .placeExited(let id):
+            // A workout started at this place ends when it is left, even when the visit itself isn't
+            // current: after the app is relaunched mid-session the visit is gone, and indoors GPS may never
+            // re-confirm the arrival, so the old `currentPlace == id` gate let the workout run on.
+            if currentPlace != id, workoutActive, !endRaised, workoutContext == .place(id) {
+                endRaised = true
+                out.append(.end(context: workoutContext, endTs: lastElevatedTs(fallback: ts), reason: .leftPlace))
+            }
             if currentPlace == id {
                 currentPlace = nil
                 placeEnteredAt = nil
@@ -485,6 +509,14 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         return 2 * r * asin(min(1, sqrt(a)))
     }
 
+    /// GPS says on foot right now: an on-foot fix within `gpsStillS`. Indoors the fixes stop (the app drops
+    /// loose ones), and `gpsOnFootSince` used to stay set from the last fix outside, which made every stop
+    /// rule read "still walking" until GPS came back.
+    private var gpsOnFootFresh: Bool {
+        guard gpsOnFootSince != nil, let moved = gpsLastMovedTs else { return false }
+        return now - moved < Self.gpsStillS
+    }
+
     /// GPS has sat under walking pace for `gpsStillS`.
     private var gpsSaysStill: Bool {
         gpsStillSince.map { now - $0 >= Self.gpsStillS } ?? false
@@ -493,7 +525,7 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     private func stoppedFor() -> Int? {
         // GPS still outranks the motion classifier, which can keep saying walking after you've sat down.
         if gpsSaysStill, let still = gpsStillSince { return now - still }
-        if motion.isOnFoot || gpsOnFootSince != nil { return 0 }
+        if motion.isOnFoot || gpsOnFootFresh { return 0 }
         guard let last = lastOnFootTs else { return nil }
         return now - last
     }
@@ -607,9 +639,16 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
         guard workoutActive, !endRaised, workoutContext == .walk || workoutContext == .run,
               let started = workoutStartedAt else { return }
         let lastComplete = (now / 60) * 60 - 60
-        let minutes = (0..<Self.stepStillMinutes).map { lastComplete - $0 * 60 }
-        guard minutes.allSatisfy({ $0 >= started - 60 }),
-              minutes.allSatisfy({ (stepMinutes[$0] ?? Int.max) < Self.stepStillPerMin }) else { return }
+        func window(_ n: Int, under limit: Int) -> [Int]? {
+            let m = (0..<n).map { lastComplete - $0 * 60 }
+            guard m.allSatisfy({ $0 >= started - 60 }),
+                  m.allSatisfy({ (stepMinutes[$0] ?? Int.max) < limit }) else { return nil }
+            return m
+        }
+        let gpsMovedInSlowWindow = gpsLastMovedTs.map { $0 >= lastComplete - (Self.stepSlowMinutes - 1) * 60 } ?? false
+        guard let minutes = window(Self.stepStillMinutes, under: Self.stepStillPerMin)
+                ?? (gpsMovedInSlowWindow ? nil : window(Self.stepSlowMinutes, under: Self.stepWalkPerMin))
+        else { return }
         let stillFrom = minutes.last ?? lastComplete
         let lastWalked = stepMinutes.filter { $0.key >= started - 60 && $0.key < stillFrom && $0.value >= Self.stepWalkPerMin }
             .keys.max().map { $0 + 60 }
@@ -633,7 +672,7 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
     /// movement in that time, is over: you stopped walking somewhere the motion classifier didn't notice.
     private mutating func evaluateCalmWalkEnd(_ out: inout [Action]) {
         guard workoutActive, !endRaised, workoutContext == .walk || workoutContext == .run,
-              gpsOnFootSince == nil, let started = workoutStartedAt, now - started >= Self.walkCalmEndS
+              !gpsOnFootFresh, let started = workoutStartedAt, now - started >= Self.walkCalmEndS
         else { return }
         // Moving by GPS within the window means still walking, just gently.
         if let moved = gpsLastMovedTs, now - moved < Self.walkCalmEndS { return }

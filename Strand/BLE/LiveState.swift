@@ -180,11 +180,16 @@ public final class LiveState: ObservableObject {
     /// `rrRecent` for the battery series. `setBattery` appends each reading (with a small dedupe so a
     /// repeated identical % at a near-identical time doesn't pad the buffer), and `batteryEstimate` fits
     /// the recent discharge slope over it. Capped + bounded so it can't grow without limit; cleared on
-    /// disconnect so a stale estimate can't outlive the link.
+    /// disconnect so a stale estimate can't outlive the link, and re-seeded from the stored history on
+    /// every connect.
     @Published public private(set) var batterySamples: [(ts: Int, soc: Double)] = []
-    /// Cap on the SoC buffer. Battery events arrive only every ~8 minutes, so a few hundred readings
-    /// already spans a couple of days, plenty to fit a discharge slope against.
-    static let maxBatterySamples = 400
+    /// Cap on the SoC buffer. At one reading per `batteryBankSpacingS` (plus every 1-point step), 14 days
+    /// fits with room to spare. The old cap of 400 held only about two days of ~8-minute events, so on a
+    /// 12-day strap the last full charge fell out and the fit ran on the last day or so of use.
+    static let maxBatterySamples = 2000
+    /// Readings closer than this are banked only when the charge moved at least `batteryBankStepPct`.
+    static let batteryBankSpacingS = 15 * 60
+    static let batteryBankStepPct = 1.0
 
     // MARK: - Sleep & Rest test-mode live readout (Group E)
 
@@ -652,7 +657,7 @@ public final class LiveState: ObservableObject {
     /// any change in %, or enough elapsed time, banks a fresh point. The oldest readings fall off once the
     /// buffer is full. `now` is injectable so the estimate is unit-testable without a live clock.
     func bankBatterySample(_ pct: Double, now: Int = Int(Date().timeIntervalSince1970)) {
-        if let last = batterySamples.last, last.soc == pct, now - last.ts < 600 { return }
+        if let last = batterySamples.last, Self.tooClose(last, (now, pct)) { return }
         batterySamples.append((ts: now, soc: pct))
         if batterySamples.count > Self.maxBatterySamples {
             batterySamples.removeFirst(batterySamples.count - Self.maxBatterySamples)
@@ -683,11 +688,29 @@ public final class LiveState: ObservableObject {
         let existing = Set(batterySamples.map { $0.ts })
         let fresh = seed.filter { !existing.contains($0.ts) }
         guard !fresh.isEmpty else { return }
-        batterySamples.append(contentsOf: fresh)
-        batterySamples.sort { $0.ts < $1.ts }
+        batterySamples = Self.thinBatterySeries((batterySamples + fresh).sorted { $0.ts < $1.ts })
         if batterySamples.count > Self.maxBatterySamples {
             batterySamples.removeFirst(batterySamples.count - Self.maxBatterySamples)
         }
+    }
+
+    /// The same spacing rule `bankBatterySample` applies live, over a whole sorted series: a reading is
+    /// kept when it is `batteryBankSpacingS` after the last kept one or moved `batteryBankStepPct` from
+    /// it. The newest reading is always kept, so the estimate stays anchored to the current charge.
+    static func thinBatterySeries(_ sorted: [(ts: Int, soc: Double)]) -> [(ts: Int, soc: Double)] {
+        guard let newest = sorted.last else { return [] }
+        var out: [(ts: Int, soc: Double)] = []
+        out.reserveCapacity(min(sorted.count, maxBatterySamples))
+        for s in sorted.dropLast() {
+            if let last = out.last, tooClose(last, s) { continue }
+            out.append(s)
+        }
+        if out.last?.ts != newest.ts { out.append(newest) }
+        return out
+    }
+
+    private static func tooClose(_ a: (ts: Int, soc: Double), _ b: (ts: Int, soc: Double)) -> Bool {
+        b.ts - a.ts < batteryBankSpacingS && abs(b.soc - a.soc) < batteryBankStepPct
     }
 
     /// Drop the banked SoC buffer (called on disconnect) so a stale runtime estimate can't outlive the

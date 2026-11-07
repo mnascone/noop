@@ -127,13 +127,23 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
             .removeDuplicates()
             .sink { [weak self] startTs in
                 guard let self else { return }
-                if startTs != nil {
-                    let ctx = self.startingContext
+                if let startTs {
+                    var ctx = self.startingContext
                     self.startingContext = nil
                     self.removeNotification(Self.startRequestId)
+                    if ctx == nil, let saved = Self.loadRunState(), saved.startTs == startTs {
+                        // The app was relaunched mid-workout (the workout itself comes back from its own
+                        // snapshot). Without what started it, the workout ran with no context and not as
+                        // automatic, so leaving the gym or finishing a walk didn't end it.
+                        self.restore(saved, startTs: startTs)
+                        return
+                    }
                     self.feed(.workoutStarted(context: ctx))
+                    ctx = self.engine.workoutContext
+                    Self.saveRunState(.init(startTs: startTs, context: ctx?.key, auto: false))
                 } else {
                     self.autoStartedWorkoutTs = nil
+                    Self.saveRunState(nil)
                     self.feed(.workoutEnded)
                 }
             }
@@ -663,6 +673,9 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         let sportName = sport(for: context)
         begin(model: model, context: context, sport: sportName, startTs: startTs)
         autoStartedWorkoutTs = model.activeWorkout.map { Int($0.start.timeIntervalSince1970) }
+        if let ts = autoStartedWorkoutTs {
+            Self.saveRunState(.init(startTs: ts, context: engine.workoutContext?.key ?? context.key, auto: true))
+        }
         let at = Self.time(startTs)
         let content = UNMutableNotificationContent()
         content.title = String(localized: "\(sportName) started")
@@ -731,6 +744,44 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         content.threadIdentifier = "noop.auto"
         add(id: Self.endRequestId, content: content, quiet: false)
         log("auto: asked to end reason=\(reason.rawValue)")
+    }
+
+    // MARK: Surviving a relaunch
+
+    /// What started the running workout, and whether this tracker may end it on its own. Kept in
+    /// UserDefaults because iOS can kill and relaunch the app mid-session (memory pressure, a Bluetooth
+    /// or geofence relaunch, installing a build), and the in-memory copy went with it.
+    struct RunState: Codable, Equatable {
+        let startTs: Int
+        let context: String?
+        let auto: Bool
+    }
+
+    private static let runStateKey = "noop.auto.runState"
+
+    static func loadRunState() -> RunState? {
+        guard let data = UserDefaults.standard.data(forKey: runStateKey) else { return nil }
+        return try? JSONDecoder().decode(RunState.self, from: data)
+    }
+
+    static func saveRunState(_ state: RunState?) {
+        if let state, let data = try? JSONEncoder().encode(state) {
+            UserDefaults.standard.set(data, forKey: runStateKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: runStateKey)
+        }
+    }
+
+    /// Pick a restored workout back up: its context, whether it was automatic, its heart rate so far, and
+    /// its real start time (walk ends look back to it).
+    private func restore(_ saved: RunState, startTs: Int) {
+        let ctx = saved.context.flatMap(LiveWorkoutSuggestionEngine.Context.init(key:))
+        if saved.auto { autoStartedWorkoutTs = startTs }
+        if let samples = model?.activeWorkout?.samples, !samples.isEmpty {
+            engine.seedHeartRate(samples.map { (ts: $0.ts, bpm: $0.bpm) })
+        }
+        feed(.workoutStarted(context: ctx), at: Date(timeIntervalSince1970: TimeInterval(startTs)))
+        log("auto: picked up \(ctx?.key ?? "a workout") after a relaunch, auto=\(saved.auto)")
     }
 
     private func begin(model: AppModel, context: LiveWorkoutSuggestionEngine.Context?, sport: String, startTs: Int) {

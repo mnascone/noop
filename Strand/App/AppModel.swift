@@ -307,6 +307,19 @@ final class AppModel: ObservableObject {
             Task { await self.refreshRRTransportFacts() }
         }.store(in: &hrCancellables)
 
+        // Battery "~X days left": every disconnect empties the SoC buffer (`clearBiometrics`), and the
+        // launch-time seed runs once per app launch, so after any reconnect the estimate ran on live readings
+        // since the reconnect only: a few hours of the day's heaviest use, extrapolated over the whole charge.
+        // Re-seed the active strap's last 14 days on every connect.
+        live.$connected.sink { [weak self] isConnected in
+            guard isConnected, let self else { return }
+            Task { @MainActor in
+                let now = Int(Date().timeIntervalSince1970)
+                let rows = await self.repo.batteryHistory(from: now - 14 * 86_400, to: now)
+                self.live.seedBatterySamples(rows)
+            }
+        }.store(in: &hrCancellables)
+
         // Physical-input + wear hooks (fired live by FrameRouter).
         live.onDoubleTap = { [weak self] in self?.handleDoubleTap() }
         live.onWristChange = { [weak self] worn in self?.handleWristChange(worn) }

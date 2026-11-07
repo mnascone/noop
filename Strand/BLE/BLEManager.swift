@@ -1565,7 +1565,10 @@ public final class BLEManager: NSObject, ObservableObject {
         let seedNow = Int(Date().timeIntervalSince1970)
         let fourteenDays = 14 * 24 * 3600
         if let rows = try? await store.batterySamples(
-            deviceId: deviceId, from: seedNow - fourteenDays, to: seedNow, limit: 2000) {
+            // The query is oldest-first, so a LIMIT below the window's row count drops the NEWEST rows: at
+            // 2000 a 14-day window of strap readings came back as its first few days only. Read it all; the
+            // buffer thins it (`LiveState.thinBatterySeries`).
+            deviceId: deviceId, from: seedNow - fourteenDays, to: seedNow, limit: 60_000) {
             let seed = rows.compactMap { row -> (ts: Int, soc: Double)? in
                 guard let soc = row.soc else { return nil }
                 return (ts: row.ts, soc: soc)

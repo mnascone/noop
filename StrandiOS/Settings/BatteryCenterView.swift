@@ -132,10 +132,16 @@ struct BatteryCenterView: View {
                     } else if let est = live.batteryEstimate {
                         Text(String(localized: "About \(Self.left(est.remainingHours)) left"))
                             .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
-                    }
-                    if let r = a.ratePerHour {
-                        Text(String(format: String(localized: "Using %.1f%% a day lately"), r * 24))
-                            .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                        // The rate the days-left figure divides by, so the two lines can't disagree. (They
+                        // did: "about 4 days left" at 60% beside "7.4% a day", from two different series.)
+                        if est.source == .measured, est.remainingHours > 0 {
+                            Text(String(format: String(localized: "At %.1f%% a day on this charge"),
+                                        est.currentSoc / est.remainingHours * 24))
+                                .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                        } else {
+                            Text("Typical for this strap until NOOP has measured this charge")
+                                .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                        }
                     }
                 }
                 Spacer(minLength: 0)
@@ -209,7 +215,11 @@ struct BatteryCenterView: View {
                             HStack {
                                 Text(Self.name(c.feature)).font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
                                 Spacer()
-                                Text(String(format: String(localized: "+%.1f%% a day"), c.extraPerHour * 24))
+                                // Cost per day as actually used: the extra rate times the share of measured
+                                // time it was on. extra x 24 priced it as if on around the clock, so a
+                                // workout on 13 h in a week read as +9.3% a day.
+                                Text(String(format: String(localized: "+%.1f%% a day"),
+                                            c.extraPerHour * 24 * c.hoursOn / max(a.hoursMeasured, c.hoursOn, 1)))
                                     .font(StrandFont.captionNumber.weight(.semibold))
                                     .foregroundStyle(c.extraPerHour >= base * 0.5 ? StrandPalette.recovery030 : StrandPalette.textSecondary)
                             }

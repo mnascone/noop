@@ -90,6 +90,7 @@ struct StrandiOSApp: App {
         // geofence crossing can relaunch the app in the background and its delegate must exist before the
         // event is delivered. Inert until a toggle in Settings is on.
         AutoWorkoutTracker.shared.attach(model: model)
+        MainThreadStallMonitor.shared.start()
         CoachBriefScheduler.register(generateBrief: { [weak coach = model.coach] in
             await coach?.generateBrief()
         }, log: { [weak model] line in

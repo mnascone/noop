@@ -651,4 +651,20 @@ final class LiveWorkoutSuggestionEngineTests: XCTestCase {
         }
         XCTAssertTrue(ends(got).isEmpty)
     }
+
+    /// The periodic log line carries what the walk-end rules decide on: context, step minutes, heart-rate
+    /// coverage. A walk that runs on can then be traced to the missing input.
+    func testEndDiagnosticsNameTheWalkEndInputs() {
+        var e = engine(resting: 55)
+        _ = e.handle(.workoutStarted(context: .walk), at: 0)
+        for m in 0..<6 {
+            _ = feedHR(&e, from: m * 60, to: m * 60 + 60) { _ in 95 }
+            _ = e.handle(.steps(minuteStart: m * 60, count: 100 + m), at: m * 60 + 59)
+        }
+        let line = e.endDiagnostics
+        XCTAssertTrue(line.contains("ctx=walk"), line)
+        XCTAssertTrue(line.contains("steps5m=[100,101,102,103,104]"), line)
+        XCTAssertTrue(line.contains("hr5m="), line)
+        XCTAssertTrue(line.contains("endRaised=false"), line)
+    }
 }

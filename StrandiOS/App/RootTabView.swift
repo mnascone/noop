@@ -108,6 +108,18 @@ struct RootTabView: View {
         )
     }
 
+    /// The tab's name for a main-thread stall line.
+    private static func screenName(_ tag: Int) -> String {
+        switch tag {
+        case 0: return "Today"
+        case 1: return "Performance"
+        case 2: return "Sleep"
+        case 4: return "More"
+        case 5: return "Workouts"
+        default: return "tab \(tag)"
+        }
+    }
+
     private func reselectTab(_ tag: Int) {
         Task { await repo.refresh() }
         if !tabPaths[tag].isEmpty {
@@ -130,7 +142,11 @@ struct RootTabView: View {
         }
         .tint(StrandPalette.accent)
         // Coach (old tag 3) has no tab of its own any more; a restored selection lands on Performance.
-        .onAppear { if selectedTab == 3 { selectedTab = 1 } }
+        .onAppear {
+            if selectedTab == 3 { selectedTab = 1 }
+            MainThreadStallMonitor.currentScreen = Self.screenName(selectedTab)
+        }
+        .onChange(of: selectedTab) { _, tag in MainThreadStallMonitor.currentScreen = Self.screenName(tag) }
         // #1841: the same "Hide bar when scrolling" preference Android drives its own bar with.
         .noopTabBarAutoHide(bottomBarAutoHide)
             // Tab crossfade — README §Motion: ~240ms opacity swap between tab roots, global calm

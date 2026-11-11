@@ -295,6 +295,19 @@ public struct LiveWorkoutSuggestionEngine: Sendable {
 
     // MARK: - Public API
 
+    /// What the end rules see right now, for a periodic log line while a workout runs: when a workout
+    /// doesn't end, this says which input was missing (no heart rate, no step minutes, GPS still "moving").
+    public var endDiagnostics: String {
+        let lastMinute = (now / 60) * 60 - 60
+        let steps = (0..<5).reversed().map { stepMinutes[lastMinute - $0 * 60].map(String.init) ?? "-" }
+        let gps = gpsLastMovedTs.map { "\(now - $0)s" } ?? "never"
+        return "ctx=\(workoutContext?.key ?? "untagged") place=\(currentPlace ?? "none") motion=\(motion.rawValue)"
+            + " steps5m=[\(steps.joined(separator: ","))] hr5m=\(recent(seconds: 300).count)"
+            + " hrMed2m=\(windowMedian(seconds: 120).map(String.init) ?? "-")"
+            + " walkFloor=\(config.restingBpm + Self.walkMarginBPM)"
+            + " gpsMoved=\(gps) gpsOnFoot=\(gpsOnFootFresh) endRaised=\(endRaised)"
+    }
+
     public var wantsRealtime: Bool {
         if workoutActive { return true }
         if config.placesEnabled, currentPlace != nil, let entered = placeEnteredAt {

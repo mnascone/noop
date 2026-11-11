@@ -947,6 +947,8 @@ final class Repository: ObservableObject {
 
     func refresh(days nDays: Int = 4000) async {
         guard let store = await ensureStore() else { return }
+        let perfStart = PerfLog.mark()
+        defer { PerfLog.report("data refresh", since: perfStart, over: 1.0) }
         refreshGen &+= 1
         let myGen = refreshGen
         let now = Date()
@@ -2780,8 +2782,13 @@ final class Repository: ObservableObject {
     /// dismissible and exportable; new scoring passes neither create nor reconcile them (#2187).
     /// Dismissed spans are still filtered HERE so every consumer (Workouts, Today, Coach) preserves the
     /// user's prior "not a workout" decisions and the confirmation card cannot resurrect those windows.
-    func workoutRows(days: Int = 4000) async -> [WorkoutRow] {
+    ///
+    /// `reconcileHr: false` skips the per-workout heart-rate trace reads (up to 300 aggregate queries) and
+    /// returns the stored Avg/Max/Effort: for a first paint that only needs dates and sports, followed by
+    /// the reconciled read.
+    func workoutRows(days: Int = 4000, reconcileHr: Bool = true) async -> [WorkoutRow] {
         guard let store = await ensureStore() else { return [] }
+        let perfStart = PerfLog.mark()
         let now = Int(Date().timeIntervalSince1970)
         let lo = now - days * 86_400, hi = now + 86_400
         // UNION every registered WHOOP + canonical (and computed siblings) so workouts banked before a
@@ -2815,7 +2822,12 @@ final class Repository: ObservableObject {
             deduped = WorkoutSource.dedupCrossSource(filtered)
         }
         let visible = deduped.sorted { $0.startTs > $1.startTs }
-        return await reconcileWorkoutHrWithTrace(visible, store: store)
+        PerfLog.report("workout rows read (\(days) d)", since: perfStart, detail: "\(visible.count) rows")
+        guard reconcileHr else { return visible }
+        let reconcileStart = PerfLog.mark()
+        let out = await reconcileWorkoutHrWithTrace(visible, store: store)
+        PerfLog.report("workout heart-rate reconcile (\(days) d)", since: reconcileStart)
+        return out
     }
 
     /// DISPLAY-ONLY: reconcile each workout's shown Avg/Max HR with the strap trace that actually drives

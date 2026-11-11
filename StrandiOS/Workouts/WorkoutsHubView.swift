@@ -121,7 +121,7 @@ struct WorkoutsHubView: View {
             staleInBackground = true
             return
         }
-        let loaded = await repo.workoutRows(days: 400)
+        let perfStart = PerfLog.mark()
         let now = Int(Date().timeIntervalSince1970)
         let from = now - 400 * 86_400
         // Main sleeps only (3 h or more), so a nap doesn't start a new day.
@@ -129,6 +129,22 @@ struct WorkoutsHubView: View {
         if sleeps.isEmpty { sleeps = await repo.computedSleepSessions(from: from, to: now, limit: 1000) }
         let wakes = sleeps.filter { $0.endTs - $0.effectiveStartTs >= 3 * 3600 && $0.endTs <= now }.map(\.endTs)
         wakeDays = RestDayRules.WakeDays(wakes: wakes)
+        PerfLog.report("Workouts: sleeps for day boundaries", since: perfStart, detail: "\(sleeps.count) sleeps")
+        // The calendar needs dates and sports only, so it paints from the stored rows first. The heart-rate
+        // reconcile behind them (one trace read per strap workout, up to 300) follows and replaces them.
+        if rows.isEmpty {
+            apply(await repo.workoutRows(days: 400, reconcileHr: false))
+            PerfLog.report("Workouts: calendar first paint", since: perfStart)
+        }
+        let loaded = await repo.workoutRows(days: 400)
+        apply(loaded)
+        PerfLog.report("Workouts: rows ready", since: perfStart, detail: "\(loaded.count) workouts")
+        let liftStart = PerfLog.mark()
+        liftDays = await LiftDays.build(rows: loaded, repo: repo)
+        PerfLog.report("Workouts: lift days", since: liftStart)
+    }
+
+    private func apply(_ loaded: [WorkoutRow]) {
         rows = loaded
         var grouped: [String: [WorkoutRow]] = [:]
         for r in loaded {
@@ -137,7 +153,6 @@ struct WorkoutsHubView: View {
         for k in grouped.keys { grouped[k]?.sort { $0.startTs > $1.startTs } }
         byDay = grouped
         reapplyRules(force: true)
-        liftDays = await LiftDays.build(rows: loaded, repo: repo)
     }
 
     // MARK: - Filter

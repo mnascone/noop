@@ -271,6 +271,8 @@ final class AppModel: ObservableObject {
         // inert (one UserDefaults bool read) when the mode is off. `live` is captured strongly, as above.
         self.repo.workoutsLog = { [live] line in live.append(log: line, domain: .workouts) }
         self.gpsRecorder.workoutsLog = { [live] line in live.append(log: line, domain: .workouts) }
+        // Slow-step and main-thread-stall lines (`perf:`): written only when something runs long.
+        PerfLog.sink = { [live] line in live.append(log: AppModel.stamped(line)) }
         // #961: give the read model the user's HRmax + sex so it can backfill a strap-native workout's
         // Effort on display when the stored value is nil (a live/manual session that ended with sparse HR).
         // Seed it now and keep it in step with any profile edit (objectWillChange fires just before a

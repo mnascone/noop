@@ -316,13 +316,32 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         for action in actions {
             switch action {
             case .withdrawStart, .withdrawEnd: perform(action)
-            case .start, .end: if AutoTrackingPrefs.anyEnabled { perform(action) }
+            case .start, .end:
+                if AutoTrackingPrefs.anyEnabled {
+                    perform(action)
+                } else {
+                    log("auto: \(action) dropped, auto tracking is off")
+                }
             }
         }
+        logStatusIfDue()
         if currentPlaceId != engine.currentPlace { currentPlaceId = engine.currentPlace }
         syncRealtime()
         syncLocationUpdates()
         pollStepsIfWalking()
+    }
+
+    /// While a workout runs, every `statusEveryS`: what the end rules see. A gap between these lines is
+    /// the app asleep with nothing waking it, which is itself the answer when a workout runs on.
+    static let statusEveryS: TimeInterval = 5 * 60
+    private var lastStatusLog = Date.distantPast
+
+    private func logStatusIfDue() {
+        guard engine.workoutActive, Date().timeIntervalSince(lastStatusLog) >= Self.statusEveryS else { return }
+        lastStatusLog = Date()
+        let app = UIApplication.shared.applicationState == .active ? "fg" : "bg"
+        log("auto: running \(engine.endDiagnostics) auto=\(autoStartedWorkoutTs != nil) liveHR=\(holdingRealtime) "
+            + "gps=\(updatingLocation) app=\(app)")
     }
 
     /// During a walk or run, once a minute: the last five minutes' steps, a minute at a time.
@@ -688,7 +707,10 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
     }
 
     private func autoEnd(endTs: Int, reason: LiveWorkoutSuggestionEngine.EndReason) {
-        guard let model, model.activeWorkout != nil else { return }
+        guard let model, model.activeWorkout != nil else {
+            log("auto: end reason=\(reason.rawValue) with no active workout")
+            return
+        }
         model.endWorkout(endedAt: Date(timeIntervalSince1970: TimeInterval(endTs)))
         removeNotification(Self.startRequestId)
         guard let row = model.lastWorkout else {
@@ -952,7 +974,13 @@ extension AutoWorkoutTracker: @preconcurrency CLLocationManagerDelegate {
             beginArrivalCheck(id)
         case .outside:
             arriving[id] = nil
-            if engine.currentPlace == id { log("auto: left \(p.name)") }
+            // Every exit is logged, not only one from a confirmed visit: a gym workout that didn't end needs
+            // to show whether the exit never came or came and was ignored.
+            let visit = engine.currentPlace == id ? "visit" : "no visit"
+            let workout = engine.workoutActive ? (engine.workoutContext?.key ?? "untagged") : "none"
+            if engine.currentPlace == id || engine.workoutActive {
+                log("auto: left \(p.name) (\(visit), workout=\(workout))")
+            }
             feed(.placeExited(id: id))
             syncLocationUpdates()
         case .unknown:

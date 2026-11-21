@@ -138,8 +138,10 @@ struct StrandiOSApp: App {
         // stands aside for it. A sync started in the foreground mid-session starts no sync banner.
         // Held back only for a gym banner that will actually show: with its switch off, a session leaves the
         // Lock Screen to the sync, rather than to nothing.
-        SyncLiveActivityController.shared.holdsBackNewBanner = { [weak liftSession] in
-            liftSession?.isActive == true && UnitPrefs.liftLiveActivityEnabled()
+        // Nor during any live workout: opening NOOP mid-workout starts a sync, and its banner popped up over the
+        // workout banner and whatever was playing, every time.
+        SyncLiveActivityController.shared.holdsBackNewBanner = { [weak liftSession, weak model] in
+            (liftSession?.isActive == true && UnitPrefs.liftLiveActivityEnabled()) || model?.activeWorkout != nil
         }
         // Before any view or publisher exists: the first push to the Lock Screen banner must find the
         // session already running, or it ends the banner iOS kept alive across the restart.

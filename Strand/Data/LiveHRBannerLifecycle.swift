@@ -29,14 +29,19 @@ enum LiveHRBannerLifecycle {
 
     /// A banner older than this is replaced by a fresh one while NOOP is on screen.
     static let renewAfter: TimeInterval = 60 * 60
+    /// The same during a live workout. A renewal is a new banner, which iOS animates in and may put ahead of
+    /// what is playing, so mid-workout it waits until iOS's eight-hour limit is near.
+    static let workoutRenewAfter: TimeInterval = 6 * 60 * 60
 
     /// `showing`: a banner exists, started `age` ago (nil when NOOP does not know, which counts as old).
     /// `standsAside`: the Lift Log banner is on screen. `linkUp`: the strap is connected. `appActive`: NOOP is on
     /// screen, the only time iOS lets it start a banner.
+    /// `workoutActive`: a live workout is running (`workoutRenewAfter`).
     static func step(switchOn: Bool, standsAside: Bool, linkUp: Bool, showing: Bool, age: TimeInterval?,
-                     appActive: Bool) -> Step {
+                     appActive: Bool, workoutActive: Bool = false) -> Step {
         guard switchOn, !standsAside else { return showing ? .end : .nothing }
-        if showing { return appActive && (age ?? .infinity) >= renewAfter ? .renew : .push }
+        let renewAt = workoutActive ? workoutRenewAfter : renewAfter
+        if showing { return appActive && (age ?? .infinity) >= renewAt ? .renew : .push }
         return linkUp && appActive ? .start : .nothing
     }
 

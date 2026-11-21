@@ -354,7 +354,8 @@ final class LiveActivityController {
         let age = startedAt.map { now.timeIntervalSince($0) }
         let step = LiveHRBannerLifecycle.step(
             switchOn: switchOn, standsAside: standsAside, linkUp: connected,
-            showing: activity != nil, age: age, appActive: appActive)
+            showing: activity != nil, age: age, appActive: appActive,
+            workoutActive: model?.activeWorkout != nil)
         switch step {
         case .nothing: return
         case .end:

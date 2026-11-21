@@ -593,9 +593,13 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
             }
         case .withdrawStart:
             removeNotification(Self.startRequestId)
-        case let .end(context, endTs, reason):
-            let auto = autoStartedWorkoutTs != nil || (context != nil && mode(for: context) == .auto)
-            if auto {
+        case let .end(_, endTs, reason):
+            // Only a workout this tracker started ends on its own. One started by hand is never ended for
+            // you, at most asked about. A manual start takes the gym or walk it began in as its context, and
+            // that context's Automatic setting used to end it: after a relaunch, at the moment it was
+            // restored, before any heart rate was back, so the end cut every sample and nothing saved.
+            let ownStart = model?.activeWorkout.map { Int($0.start.timeIntervalSince1970) }
+            if let ownStart, autoStartedWorkoutTs == ownStart {
                 autoEnd(endTs: endTs, reason: reason)
             } else {
                 postAskEnd(endTs: endTs, reason: reason)
@@ -711,7 +715,7 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
             log("auto: end reason=\(reason.rawValue) with no active workout")
             return
         }
-        model.endWorkout(endedAt: Date(timeIntervalSince1970: TimeInterval(endTs)))
+        model.endWorkout(endedAt: Date(timeIntervalSince1970: TimeInterval(keepingRecorded(endTs))))
         removeNotification(Self.startRequestId)
         guard let row = model.lastWorkout else {
             log("auto: ended, too short to keep")
@@ -734,6 +738,20 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
         content.threadIdentifier = "noop.auto"
         add(id: Self.endRequestId, content: content, quiet: true)
         log("auto: saved \(row.sport) reason=\(reason.rawValue)")
+    }
+
+    /// An end time that keeps what the workout recorded. An end is backdated to the last elevated heart
+    /// rate, and with none in the engine's window (a gentle session, or one it saw only part of after a
+    /// relaunch) that is the start: the cut left under two samples or under a minute, and the workout was
+    /// discarded unsaved. Then it ends at its last sample instead.
+    private func keepingRecorded(_ endTs: Int) -> Int {
+        guard let w = model?.activeWorkout, w.samples.count >= 2, let last = w.samples.last?.ts else { return endTs }
+        let start = Int(w.start.timeIntervalSince1970)
+        let kept = w.samples.reduce(0) { $0 + ($1.ts <= endTs ? 1 : 0) }
+        let tooShort = { (end: Int) in AppModel.isTooShortToSave(elapsedSeconds: TimeInterval(end - start)) }
+        guard kept < 2 || tooShort(endTs), last > endTs, !tooShort(last) else { return endTs }
+        log("auto: an end \(endTs - start) s in would drop the workout, ending at its last sample")
+        return last
     }
 
     private func postAskStart(context: LiveWorkoutSuggestionEngine.Context, startTs: Int, avgBpm: Int?) {
@@ -799,8 +817,10 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
     private func restore(_ saved: RunState, startTs: Int) {
         let ctx = saved.context.flatMap(LiveWorkoutSuggestionEngine.Context.init(key:))
         if saved.auto { autoStartedWorkoutTs = startTs }
-        if let samples = model?.activeWorkout?.samples, !samples.isEmpty {
-            engine.seedHeartRate(samples.map { (ts: $0.ts, bpm: $0.bpm) })
+        // From the saved snapshot, not `model.activeWorkout`: this runs from the workout's publisher, which
+        // fires before the property is set, so the model's copy still read nil and nothing was seeded.
+        if let snap = ActiveWorkoutPersistence.load(), snap.startSec == startTs, !snap.samples.isEmpty {
+            engine.seedHeartRate(snap.samples.map { (ts: $0.ts, bpm: $0.bpm) })
         }
         feed(.workoutStarted(context: ctx), at: Date(timeIntervalSince1970: TimeInterval(startTs)))
         log("auto: picked up \(ctx?.key ?? "a workout") after a relaunch, auto=\(saved.auto)")
@@ -877,7 +897,7 @@ final class AutoWorkoutTracker: NSObject, ObservableObject {
             switch response.actionIdentifier {
             case Self.endAction:
                 if let endTs = info[Self.kEndTs] as? Int {
-                    model?.endWorkout(endedAt: Date(timeIntervalSince1970: TimeInterval(endTs)))
+                    model?.endWorkout(endedAt: Date(timeIntervalSince1970: TimeInterval(keepingRecorded(endTs))))
                 }
             case Self.keepAction, UNNotificationDismissActionIdentifier:
                 feed(.endDismissed)

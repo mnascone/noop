@@ -70,4 +70,19 @@ final class LiveHRBannerLifecycleTests: XCTestCase {
         XCTAssertFalse(LiveHRBannerLifecycle.removes(.gone, besideFresh: false))
         XCTAssertFalse(LiveHRBannerLifecycle.removes(.gone, besideFresh: true))
     }
+
+    /// Mid-workout a banner is kept until iOS's limit is near rather than renewed hourly: each renewal is a new banner
+    /// that animates in over whatever was playing.
+    func testAWorkoutKeepsItsBannerUntilTheLimitIsNear() {
+        let hour = LiveHRBannerLifecycle.renewAfter
+        let late = LiveHRBannerLifecycle.workoutRenewAfter
+        func inWorkout(_ age: TimeInterval?) -> LiveHRBannerLifecycle.Step {
+            LiveHRBannerLifecycle.step(switchOn: true, standsAside: false, linkUp: true, showing: true, age: age,
+                                       appActive: true, workoutActive: true)
+        }
+        XCTAssertEqual(inWorkout(hour), .push)
+        XCTAssertEqual(inWorkout(late - 1), .push)
+        XCTAssertEqual(inWorkout(late), .renew)
+        XCTAssertEqual(inWorkout(nil), .renew)
+    }
 }
